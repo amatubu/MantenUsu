@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 import zipfile
@@ -27,6 +27,10 @@ def main():
     )
     sys.exit(1)
 
+  if start_dt > end_dt:
+    print("エラー: 開始日時は終了日時より前を指定してください。")
+    sys.exit(1)
+
   # 起点（開始日時）のフォルダ名を作成 (例: output/202608232245)
   dest_dir = Path(dest_base) / start_str
   dest_dir.mkdir(parents=True, exist_ok=True)
@@ -37,16 +41,42 @@ def main():
     print(f"エラー: 'daily_zips' フォルダが見つかりません: {zips_root}")
     return
 
+  # ★ 指定された期間に含まれる「日付（YYMMDD）」のリストを生成する
+  # 例: 2026-08-23 なら '260823'
+  target_dates = set()
+  curr = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+  end_date_only = end_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+  while curr <= end_date_only:
+    # YYMMDD 形式の文字列を作成（例: 2026年8月23日 -> 260823）
+    yy_mm_dd = curr.strftime("%y%m%d")
+    target_dates.add(yy_mm_dd)
+    curr += timedelta(days=1)
+
   extracted_count = 0
 
   print(
       f"検索範囲: {start_dt.strftime('%Y-%m-%d %H:%M')} ～"
       f" {end_dt.strftime('%Y-%m-%d %H:%M')}"
   )
+  print(f"ターゲット日付ZIP: {sorted(list(target_dates))}")
   print(f"出力先フォルダ: {dest_dir}\n")
 
-  # daily_zips内（サブフォルダ含む）のすべての .zip ファイルを走査
-  for zip_path in sorted(zips_root.glob("**/*.zip")):
+  # ★ 対象となる日付のZIPファイルだけをピンポイントで探す
+  target_zips = []
+  for zip_path in zips_root.glob("**/*.zip"):
+    # ZIPファイル名（拡張子除く）が target_dates に含まれるかチェック
+    # （例: 260823.zip や 20260823.zip などの命名揺れにも対応できるように部分一致等で判定）
+    zip_stem = zip_path.stem
+    if any(d in zip_stem for d in target_dates):
+      target_zips.append(zip_path)
+
+  if not target_zips:
+    print("警告: 条件に一致するZIPファイルが見つかりませんでした。")
+    return
+
+  # 該当するZIPファイルだけを処理
+  for zip_path in sorted(target_zips):
     try:
       with zipfile.ZipFile(zip_path, "r") as zf:
         for internal_path in zf.namelist():
