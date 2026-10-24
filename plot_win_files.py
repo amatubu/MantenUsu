@@ -213,11 +213,11 @@ class MantenUsuSeismographApp:
     start_str = self.entry_start.get().strip()
     end_str = self.entry_end.get().strip()
 
-    try:
-      # 指定された日時文字列をYYYYMMDDHHmmとみなして日付・時間形式に変換
-      start_dt = datetime.strptime(start_str, "%Y%m%d%H%M")
-      end_dt = datetime.strptime(end_str, "%Y%m%d%H%M")
+    # 指定された日時文字列をYYYYMMDDHHmmとみなして日付・時間形式に変換
+    start_dt = self.parse_datetime(start_str)
+    end_dt = self.parse_datetime(end_str)
 
+    if start_dt and end_dt:
       # ★ 両端の分（開始日時の分と終了日時の分）を両方含めた区間（個数・分分）として計算するため +1分を加算
       diff = (end_dt - start_dt) + timedelta(minutes=1)
       # 秒単位の間隔
@@ -250,7 +250,7 @@ class MantenUsuSeismographApp:
 
       # 間隔をテキスト表示
       self.lbl_duration.config(text=duration_text, fg="#0066cc")
-    except ValueError:
+    else:
       # 日付・時間形式に変換できなかったときはエラー表示
       self.lbl_duration.config(
           text="形式: YYYYMMDDHHmm (例: 202608232245)", fg="gray"
@@ -393,11 +393,10 @@ class MantenUsuSeismographApp:
     start_str = self.entry_start.get().strip()
     end_str = self.entry_end.get().strip()
 
-    try:
-      # 開始・終了日時をYYYYMMDDHHmmとみなして日付・時間形式に変換
-      start_dt = datetime.strptime(start_str, "%Y%m%d%H%M")
-      end_dt = datetime.strptime(end_str, "%Y%m%d%H%M")
-    except ValueError:
+    # 開始・終了日時をYYYYMMDDHHmmとみなして日付・時間形式に変換
+    start_dt = self.parse_datetime(start_str)
+    end_dt = self.parse_datetime(end_str)
+    if not start_dt or not end_dt:
       # 変換ができなければエラー
       messagebox.showerror(
           "エラー",
@@ -502,10 +501,9 @@ class MantenUsuSeismographApp:
               if len(datetime_str) != 10 or not datetime_str.isdigit():
                 continue
 
-              try:
-                # 20を補ってYYYYMMDDHHmmとみなし日付・時間形式に変換
-                f_dt = datetime.strptime(f"20{datetime_str}", "%Y%m%d%H%M")
-              except ValueError:
+              # 20を補ってYYYYMMDDHHmmとみなし日付・時間形式に変換
+              f_dt = self.parse_datetime(f"20{datetime_str}")
+              if not f_dt:
                 # 日付・時間とみなせなかった場合はスキップ
                 continue
 
@@ -764,6 +762,22 @@ class MantenUsuSeismographApp:
     )
     # 波形を表示
     plt.show()
+
+  @staticmethod
+  def parse_datetime(dt_str):
+    """YYYYMMDDHHmm形式の文字列をdatetimeオブジェクトに変換する
+
+    引数:
+        dt_str: 日時を表す文字列 (例: "202608232245")
+    戻り値:
+        変換成功時は datetime オブジェクト、失敗時は None
+    """
+    if not dt_str:
+      return None
+    try:
+      return datetime.strptime(dt_str.strip(), "%Y%m%d%H%M")
+    except (ValueError, TypeError):
+      return None
 
 # メインルーチン
 def main():
