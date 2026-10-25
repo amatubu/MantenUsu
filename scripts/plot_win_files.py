@@ -386,7 +386,7 @@ class MantenUsuSeismographApp:
         # UIの更新
         self.update_history_ui()
 
-  # WINファイルの取得から波形プロットまでのメイン処理
+# WINファイルの取得から波形プロットまでのメイン処理
   def execute_pipeline(self, is_history_reload=False):
     # 設定されているタイトル、開始・終了日時の取得(前後の空白は除去)
     title_str = self.entry_title.get().strip()
@@ -431,107 +431,124 @@ class MantenUsuSeismographApp:
     # --- Step 1: 抽出 (なければ実行) ---
     # フォルダ内にWINファイルがあるかどうかを確認
     existing_wins = list(dest_dir.glob("*.win"))
-    # あればその数をカウント
-    extracted_count = len(existing_wins)
 
     if not existing_wins:
-      # WINファイルが存在しないときはZipファイルから抽出
-      if not self.zips_root.exists():
-        # Zipファイルの保存ディレクトリがなければエラー
-        messagebox.showerror(
-            "エラー", f"'daily_zips' フォルダが見つかりません:\n{self.zips_root}"
-        )
-        return
-
-      # 指定された期間に含まれる日付（YYMMDD形式）をすべて洗い出す
-      # 空のセットを作成
-      target_dates = set()
-      # 開始・終了日時から日付部分だけを取得(分秒、ミリ秒をすべて0にしたもの)
-      curr = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-      end_date_only = end_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-      # 終了日まで繰り返す
-      while curr <= end_date_only:
-        # セットにYYMMDD形式の年月日を追加
-        target_dates.add(curr.strftime("%y%m%d"))
-        # 次の日へ
-        curr += timedelta(days=1)
-
-      # 期間に該当するZipファイルのリストを作成
-      # 空のリストを作成
-      target_zips = []
-      # Zipファイル格納場所にあるすべてのZipファイルのパスを取得
-      for zip_path in self.zips_root.glob("**/*.zip"):
-        # 期間内の日付がファイル名になっているものがあればリストに追加する
-        if any(d in zip_path.stem for d in target_dates):
-          target_zips.append(zip_path)
-
-      # 期間内の日付のファイルがひとつもなければエラー
-      if not target_zips:
-        messagebox.showwarning(
-            "警告", "指定された期間に一致するZIPファイルが見つかりませんでした。"
-        )
-        return
-
-      # 見つかった対象のZipファイルを順に処理
-      for zip_path in target_zips:
-        try:
-          # Zipファイルを読み取りモードで開く
-          with zipfile.ZipFile(zip_path, "r") as zf:
-            # Zipファイルに含まれるファイル一覧を取得し、順に処理
-            # ファイルの例:
-            #   1070432002/260826/1070432002_2608260858.win
-            #   拠点ID    /年月日/拠点ID    _年月日時分.win
-            for internal_path in zf.namelist():
-              # ファイル名部分を取得
-              p = Path(internal_path)
-              filename = p.name
-              # 拡張子が.winでなければスキップ
-              # .suffixは拡張子
-              if p.suffix != ".win":
-                continue
-              # ファイル名を「_」で分割
-              # .stemは拡張子を除いたファイル名本体
-              parts = p.stem.split("_")
-              # 分割結果が2未満(「_」が含まれていない)の場合はスキップ
-              if len(parts) < 2:
-                continue
-              # ファイル名の後半から日時(年月日時分)の情報を取得
-              datetime_str = parts[1]
-              # 文字数が10文字でないまたは数値でない場合はスキップ
-              if len(datetime_str) != 10 or not datetime_str.isdigit():
-                continue
-
-              # 20を補ってYYYYMMDDHHmmとみなし日付・時間形式に変換
-              f_dt = self.parse_datetime(f"20{datetime_str}")
-              if not f_dt:
-                # 日付・時間とみなせなかった場合はスキップ
-                continue
-
-              # 日付が指定期間内かどうか
-              if start_dt <= f_dt <= end_dt:
-                # コピー先のファイル名
-                dest_file = dest_dir / filename
-                with (
-                  zf.open(internal_path) as src,  # Zipファイルに含まれるファイルを開く
-                  open(dest_file, "wb") as dst    # コピー先のファイルを開く
-                ):
-                  # コピー先のファイルにZipファイルから取り出した内容を書き込む
-                  dst.write(src.read())
-                # コピーしたファイルをカウント
-                extracted_count += 1
-        except Exception as e:
-          # Zipファイルが開けなかったときはエラー表示して次へ
-          print(f"ZIP読み込みエラー ({zip_path.name}): {e}")
-
-      # 該当するWINファイルがひとつもなかったときはエラー終了
+      extracted_count = self.extract_win_files(start_dt, end_dt, dest_dir)
       if extracted_count == 0:
-        messagebox.showwarning(
-            "警告",
-            "指定範囲内に該当するWINファイルが存在しませんでした（0件抽出）。",
-        )
         return
 
     # --- Step 2: 結合 ＆ SAC変換 ---
+    success = self.convert_wins_to_sacs(dest_dir)
+    if not success:
+      return
+
+    # --- 履歴に追加してプロット ---
+    self.add_history(start_str, end_str, title_str)
+    self.plot_waveforms(dest_dir, start_str, end_str, title_str)
+
+  # 指定期間のWINファイルをZIPから抽出する
+  def extract_win_files(self, start_dt, end_dt, dest_dir):
+    # WINファイルが存在しないときはZipファイルから抽出
+    if not self.zips_root.exists():
+      # Zipファイルの保存ディレクトリがなければエラー
+      messagebox.showerror(
+          "エラー", f"'daily_zips' フォルダが見つかりません:\n{self.zips_root}"
+      )
+      return 0
+
+    # 指定された期間に含まれる日付（YYMMDD形式）をすべて洗い出す
+    # 空のセットを作成
+    target_dates = set()
+    # 開始・終了日時から日付部分だけを取得(分秒、ミリ秒をすべて0にしたもの)
+    curr = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_date_only = end_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 終了日まで繰り返す
+    while curr <= end_date_only:
+      # セットにYYMMDD形式の年月日を追加
+      target_dates.add(curr.strftime("%y%m%d"))
+      # 次の日へ
+      curr += timedelta(days=1)
+
+    # 期間に該当するZipファイルのリストを作成
+    # 空のリストを作成
+    target_zips = []
+    # Zipファイル格納場所にあるすべてのZipファイルのパスを取得
+    for zip_path in self.zips_root.glob("**/*.zip"):
+      # 期間内の日付がファイル名になっているものがあればリストに追加する
+      if any(d in zip_path.stem for d in target_dates):
+        target_zips.append(zip_path)
+
+    # 期間内の日付のファイルがひとつもなければエラー
+    if not target_zips:
+      messagebox.showwarning(
+          "警告", "指定された期間に一致するZIPファイルが見つかりませんでした。"
+      )
+      return 0
+
+    extracted_count = 0
+    # 見つかった対象のZipファイルを順に処理
+    for zip_path in target_zips:
+      try:
+        # Zipファイルを読み取りモードで開く
+        with zipfile.ZipFile(zip_path, "r") as zf:
+          # Zipファイルに含まれるファイル一覧を取得し、順に処理
+          # ファイルの例:
+          #   1070432002/260826/1070432002_2608260858.win
+          #   拠点ID    /年月日/拠点ID    _年月日時分.win
+          for internal_path in zf.namelist():
+            # ファイル名部分を取得
+            p = Path(internal_path)
+            filename = p.name
+            # 拡張子が.winでなければスキップ
+            # .suffixは拡張子
+            if p.suffix != ".win":
+              continue
+            # ファイル名を「_」で分割
+            # .stemは拡張子を除いたファイル名本体
+            parts = p.stem.split("_")
+            # 分割結果が2未満(「_」が含まれていない)の場合はスキップ
+            if len(parts) < 2:
+              continue
+            # ファイル名の後半から日時(年月日時分)の情報を取得
+            datetime_str = parts[1]
+            # 文字数が10文字でないまたは数値でない場合はスキップ
+            if len(datetime_str) != 10 or not datetime_str.isdigit():
+              continue
+
+            # 20を補ってYYYYMMDDHHmmとみなし日付・時間形式に変換
+            f_dt = self.parse_datetime(f"20{datetime_str}")
+            if not f_dt:
+              # 日付・時間とみなせなかった場合はスキップ
+              continue
+
+            # 日付が指定期間内かどうか
+            if start_dt <= f_dt <= end_dt:
+              # コピー先のファイル名
+              dest_file = dest_dir / filename
+              with (
+                  zf.open(internal_path) as src,  # Zipファイルに含まれるファイルを開く
+                  open(dest_file, "wb") as dst,  # コピー先のファイルを開く
+              ):
+                # コピー先のファイルにZipファイルから取り出した内容を書き込む
+                dst.write(src.read())
+              # コピーしたファイルをカウント
+              extracted_count += 1
+      except Exception as e:
+        # Zipファイルが開けなかったときはエラー表示して次へ
+        print(f"ZIP読み込みエラー ({zip_path.name}): {e}")
+
+    # 該当するWINファイルがひとつもなかったときはエラー終了
+    if extracted_count == 0:
+      messagebox.showwarning(
+          "警告",
+          "指定範囲内に該当するWINファイルが存在しませんでした（0件抽出）。",
+      )
+      return 0
+
+    return extracted_count
+
+  # WINファイルの結合とSACファイルへの変換処理
+  def convert_wins_to_sacs(self, dest_dir):
     # win2sac_32(WINファイルをSACファイルに変換するツール)のパス
     # OS環境に応じて実行ファイル名を切り替える (Windowsなら .exe)
     win2sac_name = (
@@ -549,7 +566,7 @@ class MantenUsuSeismographApp:
       messagebox.showerror(
           "エラー", "tools または etc 内に必要な実行ファイル/設定が不足しています。"
       )
-      return
+      return False
 
     # チャンネル定義ファイルを出力先フォルダにコピーする
     shutil.copy2(manten_tbl_path, dest_dir / manten_tbl_path.name)
@@ -594,7 +611,7 @@ class MantenUsuSeismographApp:
 
       # 実行する外部コマンド(win2sac_32)のコマンドラインの構成
       # usage: ../win32tools/win2sac.src/win2sac_32 winfile ch_no sacfile [outdir] [-p(prmfile)]
-      #           [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
+      #          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
       cmd = [
           str(win2sac_path.resolve()),     # win2sac_32 のフルパス
           str(combined_win.name),          # 結合されたWINファイル
@@ -614,9 +631,7 @@ class MantenUsuSeismographApp:
         # エラー時の処理（ログ出力やメッセージなど）
         print(f"変換エラー (Station: {station_id}): {result.stderr.decode('utf-8', errors='ignore')}")
 
-    # --- 履歴に追加してプロット ---
-    self.add_history(start_str, end_str, title_str)
-    self.plot_waveforms(dest_dir, start_str, end_str, title_str)
+    return True
 
   # SACファイルの波形を描画
   #   dest_dir   ... SACファイルが格納されているフォルダ
