@@ -20,12 +20,15 @@ os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
 # クラス定義
 class MantenUsuSeismographApp:
+  # バージョン情報
+  APP_VERSION = "1.0.0"
+
   # クラスの初期化
   def __init__(self, root):
     # 表示する波形の時刻等の入力や履歴表示等を行うUIを構築する
     self.root = root
     # ウィンドウタイトル
-    self.root.title("有珠満点地震計プロジェクト 波形ビューワ")
+    self.root.title(f"有珠満点地震計プロジェクト 波形ビューワ v{self.APP_VERSION}")
     # ウィンドウサイズ
     self.root.geometry("460x470")
     # リサイズを許可しない
@@ -603,6 +606,38 @@ class MantenUsuSeismographApp:
           with open(f, "rb") as rfd:
             window_file_obj.write(rfd.read())
 
+      # ★ 古いファイルなどでチャンネル番号の読み替えが必要な場合の処理
+      #   変換ファイルのフォーマット
+      #   旧IDと新IDをタブで区切って記載
+      #   F010	8D04
+      #   F011	8D05
+      #   F012	8D06
+      conv_tbl_path = self.etc_dir / f"{station_id}_conv.tbl"
+      target_win_for_conv = combined_win  # デフォルトは結合ファイルそのまま
+
+      if conv_tbl_path.exists():
+        # wchch_32 実行ファイルのパス
+        wchch_name = "wchch_32.exe" if sys.platform.startswith("win") else "wchch_32"
+        wchch_path = self.tools_dir / wchch_name
+
+        if wchch_path.exists():
+          corrected_win = dest_dir / f"corrected_{station_id}.win"
+
+          # wchch_32 [-Y] [ch conv table] < [in_file] > [out_file] の実行
+          # 標準入力をWINファイル、標準出力を書き換え後ファイルにする
+          with open(combined_win, "rb") as fin, open(corrected_win, "wb") as fout:
+            wchch_cmd = [str(wchch_path.resolve()), str(conv_tbl_path.resolve())]
+            res_wchch = subprocess.run(
+                wchch_cmd,
+                stdin = fin,              # 標準入力
+                stdout = fout,            # 標準出力
+                stderr = subprocess.PIPE  # 標準エラー出力
+            )
+            if res_wchch.returncode == 0:
+              target_win_for_conv = corrected_win  # 成功したら書き換え後のファイルを後続で使う
+            else:
+              print(f"チャンネル変換エラー (Station: {station_id}): {res_wchch.stderr.decode('utf-8', errors='ignore')}")
+
       # 拠点IDごとのチャンネルIDファイル
       station_ch_path = self.etc_dir / f"{station_id}.ch"
       # ファイルが見つからないときは全チャンネルを記載したファイルを使用
@@ -614,7 +649,7 @@ class MantenUsuSeismographApp:
       #          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
       cmd = [
           str(win2sac_path.resolve()),     # win2sac_32 のフルパス
-          str(combined_win.name),          # 結合されたWINファイル
+          str(target_win_for_conv.name),          # 結合されたWINファイル
           str(station_ch_path.resolve()),  # チャンネル定義ファイルのフルパス
           f"{station_id}_sac",             # 出力するSACファイル
           ".",                             # 出力先フォルダ(カレントディレクトリ)
