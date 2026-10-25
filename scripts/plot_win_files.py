@@ -479,6 +479,15 @@ class MantenUsuSeismographApp:
       )
       return
 
+    # ★ 【追加】期間が1日（24時間）以上の場合は確認メッセージを表示する
+    if (end_dt - start_dt) >= timedelta(days=1):
+      if not messagebox.askyesno(
+          "確認 - 長期期間の処理",
+          "指定された期間が1日以上です。\n"
+          "ZIPファイルのダウンロードや処理に時間がかかる場合がありますが、実行しますか？"
+      ):
+        return
+
     # 日時を元にしたWINファイル等の出力先ディレクトリを作成(既にあればok)
     dest_dir = self.output_base / f"{start_str}_{end_str}"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -516,12 +525,8 @@ class MantenUsuSeismographApp:
   # 指定期間のWINファイルをZIPから抽出する
   def extract_win_files(self, start_dt, end_dt, dest_dir):
     # WINファイルが存在しないときはZipファイルから抽出
-    if not self.zips_root.exists():
-      # Zipファイルの保存ディレクトリがなければエラー
-      messagebox.showerror(
-          "エラー", f"'daily_zips' フォルダが見つかりません:\n{self.zips_root}"
-      )
-      return 0
+    # Zip保存ディレクトリがなければ作成
+    self.zips_root.mkdir(parents=True, exist_ok=True)
 
     # 指定された期間に含まれる日付（YYMMDD形式）をすべて洗い出す
     # 空のセットを作成
