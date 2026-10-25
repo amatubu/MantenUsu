@@ -42,7 +42,7 @@ class MantenUsuSeismographApp:
     # ウィンドウタイトル
     self.root.title(f"有珠満点地震計プロジェクト 波形ビューワ v{self.APP_VERSION}")
     # ウィンドウサイズ
-    self.root.geometry("460x600")
+    self.root.geometry("460x640")
     # リサイズを許可しない
     self.root.resizable(False, False)
 
@@ -220,6 +220,61 @@ class MantenUsuSeismographApp:
     )
     btn_del_hist.pack(side=tk.LEFT)
 
+    # ==========================================
+    # 区切り線 1 (期間波形機能 と スタック機能 の間)
+    # ==========================================
+    ttk.Separator(panel, orient="horizontal").pack(fill=tk.X, pady=10)
+
+    # --- 7. 【新機能】1時間スタック波形表示セクション ---
+    tk.Label(
+        panel,
+        text="1時間スタック波形表示 (スダレ状):",
+        font=("sans-serif", 10, "bold")
+    ).pack(anchor="w", pady=(8, 2))
+
+    stack_frame = tk.Frame(panel)
+    stack_frame.pack(fill=tk.X, pady=(0, 8))
+
+    # 日付 (YYYYMMDD)
+    tk.Label(stack_frame, text="日付:", font=("sans-serif", 9)).pack(side=tk.LEFT, padx=(0, 2))
+    self.entry_stack_date = tk.Entry(stack_frame, font=("sans-serif", 10), width=9)
+    self.entry_stack_date.insert(0, "20260823")
+    self.entry_stack_date.pack(side=tk.LEFT, padx=(0, 6))
+
+    # 時間 (HH)
+    tk.Label(stack_frame, text="時間:", font=("sans-serif", 9)).pack(side=tk.LEFT, padx=(0, 2))
+    self.entry_stack_hour = tk.Entry(stack_frame, font=("sans-serif", 10), width=3)
+    self.entry_stack_hour.insert(0, "22")
+    self.entry_stack_hour.pack(side=tk.LEFT, padx=(0, 6))
+
+    # チャンネルコンボボックス (manten_ch.tblから自動読込)
+    self.channel_combo = ttk.Combobox(
+        stack_frame,
+        font=("sans-serif", 9),
+        state="readonly",
+        width=13
+    )
+    channel_list = self.load_channel_options()
+    self.channel_combo["values"] = channel_list
+    if channel_list:
+      self.channel_combo.current(0)
+    self.channel_combo.pack(side=tk.LEFT, padx=(0, 5))
+
+    # 実行ボタン
+    btn_stack_run = tk.Button(
+        stack_frame,
+        text="スタック表示",
+        font=("sans-serif", 9, "bold"),
+        activebackground="#1e88e5",
+        command=self.execute_stack_pipeline
+    )
+    btn_stack_run.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    # ==========================================
+    # 区切り線 2 (スタック機能 と メンテナンス機能 の間)
+    # ==========================================
+    ttk.Separator(panel, orient="horizontal").pack(fill=tk.X, pady=10)
+
     # --- メンテナンス・整理セクション ---
     # 5. 実行履歴セクションの下あたりに「実行ログ」エリアを追加
     tk.Label(
@@ -273,6 +328,30 @@ class MantenUsuSeismographApp:
     # 履歴データの読み込みと初期の時間間隔計算
     self.update_history_ui()
     self.update_duration_display()
+
+  # manten_ch.tbl から 「拠点名.コンポーネント」 のリストを自動生成するヘルパー
+  def load_channel_options(self):
+    tbl_path = self.etc_dir / "manten_ch.tbl"
+    channels = []
+    if tbl_path.exists():
+      try:
+        with open(tbl_path, "r", encoding="utf-8") as f:
+          for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+              continue
+            parts = line.split()
+            if len(parts) >= 5:
+              station = parts[3]
+              comp = parts[4]
+              channels.append(f"{station}.{comp}")
+      except Exception as e:
+        self.log_message(f"チャンネル定義ファイルの読み込みエラー: {e}")
+
+    # 万が一読み込めなかった場合のフォールバック
+    if not channels:
+      channels = ["Hokudai.U", "Hokudai.N", "Hokudai.E"]
+    return channels
 
   # 時間間隔の表示を更新
   def update_duration_display(self):
@@ -453,7 +532,7 @@ class MantenUsuSeismographApp:
         # UIの更新
         self.update_history_ui()
 
-# WINファイルの取得から波形プロットまでのメイン処理
+  # WINファイルの取得から波形プロットまでのメイン処理
   def execute_pipeline(self, is_history_reload=False):
     # 設定されているタイトル、開始・終了日時の取得(前後の空白は除去)
     title_str = self.entry_title.get().strip()
@@ -521,6 +600,183 @@ class MantenUsuSeismographApp:
     # --- 履歴に追加してプロット ---
     self.add_history(start_str, end_str, title_str)
     self.plot_waveforms(dest_dir, start_str, end_str, title_str)
+
+# 1時間スタック波形表示の実行
+  def execute_stack_pipeline(self):
+    date_str = self.entry_stack_date.get().strip()
+    hour_str = self.entry_stack_hour.get().strip()
+    channel_sel = self.channel_combo.get()
+
+    # 入力チェック
+    if not date_str.isdigit() or len(date_str) != 8:
+      messagebox.showerror("エラー", "日付は YYYYMMDD 形式（例: 20260823）で入力してください。")
+      return
+
+    if not hour_str.isdigit() or not (0 <= int(hour_str) <= 23):
+      messagebox.showerror("エラー", "時間は 0 〜 23 の数字で入力してください。")
+      return
+
+    if not channel_sel or "." not in channel_sel:
+      messagebox.showerror("エラー", "チャンネルが正しく選択されていません。")
+      return
+
+    station_name, comp_name = channel_sel.split(".", 1)
+
+    # 開始日時 (HH:00) と 終了日時 (HH+1:00) の文字列を作成
+    start_dt_str = f"{date_str}{hour_str.zfill(2)}00"
+
+    # 1時間後の日時を計算
+    start_dt = self.parse_datetime(start_dt_str)
+    if not start_dt:
+      messagebox.showerror("エラー", "日時の解釈に失敗しました。")
+      return
+    end_dt = start_dt + timedelta(hours=1)
+    end_dt_str = end_dt.strftime("%Y%m%d%H%M")
+
+    self.log_message(f"スタック表示処理を開始します: {date_str} {hour_str}時台 ({channel_sel})")
+
+    # スタック専用の出力ディレクトリ
+    dest_dir = self.output_base / f"stack_{date_str}_{hour_str.zfill(2)}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. 既存の抽出ロジックを利用して1時間分のWINファイルを用意
+    existing_wins = list(dest_dir.glob("*.win"))
+    if not existing_wins:
+      extracted_count = self.extract_win_files(start_dt, end_dt, dest_dir)
+      if extracted_count == 0:
+        return
+
+    # 2. 既存の変換ロジックを利用してSACに変換
+    success = self.convert_wins_to_sacs(dest_dir)
+    if not success:
+      return
+
+    # 3. 変換されたSACから該当チャンネルを読み込み、1分ごとにスライスしてスタックプロット
+    self.plot_stack_waveforms(dest_dir, start_dt, station_name, comp_name)
+
+  # 1時間分のスタック波形を描画するメソッド
+  def plot_stack_waveforms(self, dest_dir, start_dt, station_name, comp_name):
+    # フォント設定
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = ["Hiragino Sans", "Meiryo", "Yu Gothic", "MS Gothic", "sans-serif"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    # すべてのSACファイルを読み込み
+    st = read(str(dest_dir / "*_sac*"))
+    if len(st) == 0:
+      messagebox.showerror("エラー", "SACファイルを開けませんでした。")
+      return
+
+    # 指定されたステーション名とコンポーネントに一致するトレースを抽出
+    target_trace = None
+    for tr in st:
+      # サポートされているステーション名やチャンネル名のマッチング
+      if tr.stats.station.lower() == station_name.lower() and tr.stats.channel[-1].upper() == comp_name.upper():
+        target_trace = tr
+        break
+
+    if not target_trace:
+      messagebox.showerror("エラー", f"指定されたチャンネルのデータが見つかりませんでした: {station_name}.{comp_name}")
+      return
+
+    # 1時間（60分）分のデータを1分（60秒）ごとにスライスしてリストに格納
+    minute_traces = []
+    for i in range(60):
+      t_start = target_trace.stats.starttime + i * 60
+      t_end = t_start + 60
+      # 指定範囲を切り出し
+      sliced_tr = target_trace.copy().trim(starttime=t_start, endtime=t_end)
+      minute_traces.append(sliced_tr)
+
+    # ★ 【追加】1時間全体（全60分）を通した共通の最大振幅を計算する
+    import numpy as np
+    all_data = np.concatenate([tr.data for tr in minute_traces if len(tr.data) > 0])
+    if len(all_data) > 0:
+      global_max = np.max(np.abs(all_data))
+    else:
+      global_max = 1.0
+    if global_max == 0:
+      global_max = 1.0
+
+    scale_factor = 5.0
+    ylim_range = global_max / scale_factor
+
+    # グラフのレイアウト設定 (縦60行)
+    fig_width = 8.5
+    fig_height = 10.0  # 60本並べるため、ある程度の縦の高さを確保
+    fig, axes = plt.subplots(
+        60, 1,
+        sharex=True,
+        figsize=(fig_width, fig_height),
+        gridspec_kw={"hspace": 0}
+    )
+
+    fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.93)
+
+    # 描画ループ (0分〜59分)
+    for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
+      times = tr.times()  # 0 〜 60秒
+      data = tr.data
+
+      # ★ 【変更】clip_on=False を指定して、枠外（上下）へのはみ出しを描画できるようにする
+      ax.plot(times, data, color="#1f77b4", linewidth=0.3, clip_on=False)
+
+      # ★ 全てのサブプロットでY軸の範囲を共通の最大値に固定（これにより大きな揺れが上下にはみ出る）
+      ax.set_ylim(-ylim_range, ylim_range)
+
+      # ★ 【追加】X軸の範囲を0〜60秒に固定し、左右の余白を完全に詰める
+      ax.set_xlim(0, 60)
+      ax.margins(x=0)
+
+      # Y軸のラベルとして「何分目か（例: 00）」を表示
+      minute_label = f"{i:02d}"
+      ax.set_ylabel(minute_label, fontsize=6, rotation=0, labelpad=12, va="center", ha="right")
+
+      # ★ 10秒単位の縦線を「グレーの実線」に変更して表示
+      ax.grid(False)
+
+      ax.grid(True, axis='x', which='major', linestyle='-', color='#cccccc', alpha=0.5)
+
+      # ★ グリッド線や不要な線を削除してスッキリさせる
+      ax.tick_params(axis="y", left=False, labelleft=False)
+      ax.tick_params(labelbottom=False)
+
+      # X軸の目盛り線（ティック）を非表示にする設定例
+      ax.tick_params(
+          axis='x',
+          which='both',
+          bottom=False, # 下側の目盛り線
+          top=False     # 上側の目盛り線
+      )
+
+      # ★ 【変更】グラフ間の線（枠線）を完全に非表示にしてスダレ状にする
+      for spine_name, spine in ax.spines.items():
+        spine.set_visible(False)
+
+      # ★ 【追加】背景を透明にして、上下からはみ出た波形が下のレイヤーに重なって見えるようにする
+      ax.set_facecolor('none')
+
+    # 一番下の軸だけにX軸（秒）のラベルを表示
+    axes[-1].tick_params(labelbottom=True)
+    axes[-1].tick_params(axis='x', which='both', bottom=True)
+    axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
+
+    # ★ 【追加】全サブプロットを包み込む「全体の外枠（実線）」を配置
+    ax_box = fig.add_subplot(111, frameon=True)
+    ax_box.set_facecolor('none')
+    ax_box.tick_params(labelcolor='none', top=False, bottom=False, left=False, right=False)
+    ax_box.tick_params(which='both', length=0)
+    for spine in ax_box.spines.values():
+      spine.set_visible(True)
+      spine.set_linewidth(0.8)
+      spine.set_color("#333333")
+
+    # 全体タイトル
+    date_title = start_dt.strftime("%Y/%m/%d %H:00")
+    plt.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_name}.{comp_name}", fontsize=12)
+
+    self.log_message(f"スタック波形プロット完了: {station_name}.{comp_name} ({date_title})")
+    plt.show()
 
   # 指定期間のWINファイルをZIPから抽出する
   def extract_win_files(self, start_dt, end_dt, dest_dir):
