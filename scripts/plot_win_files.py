@@ -14,6 +14,7 @@ import warnings
 
 from obspy import Stream, read            # SACファイルの波形表示
 import matplotlib.pyplot as plt           # グラフ表示ツール
+from matplotlib.widgets import Button
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -33,7 +34,7 @@ warnings.filterwarnings(
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "1.0.0"
+  APP_VERSION = "2.0.0"
 
   # クラスの初期化
   def __init__(self, root):
@@ -652,54 +653,15 @@ class MantenUsuSeismographApp:
       return
 
     # 3. 変換されたSACから該当チャンネルを読み込み、1分ごとにスライスしてスタックプロット
-    self.plot_stack_waveforms(dest_dir, start_dt, station_name, comp_name)
+    self.plot_stack_waveforms(start_dt, station_name, comp_name)
 
   # 1時間分のスタック波形を描画するメソッド
-  def plot_stack_waveforms(self, dest_dir, start_dt, station_name, comp_name):
+  def plot_stack_waveforms(self, start_dt, station_name, comp_name):
     # フォント設定
     plt.rcParams["font.family"] = "sans-serif"
     plt.rcParams["font.sans-serif"] = ["Hiragino Sans", "Meiryo", "Yu Gothic", "MS Gothic", "sans-serif"]
     plt.rcParams["axes.unicode_minus"] = False
 
-    # すべてのSACファイルを読み込み
-    st = read(str(dest_dir / "*_sac*"))
-    if len(st) == 0:
-      messagebox.showerror("エラー", "SACファイルを開けませんでした。")
-      return
-
-    # 指定されたステーション名とコンポーネントに一致するトレースを抽出
-    target_trace = None
-    for tr in st:
-      # サポートされているステーション名やチャンネル名のマッチング
-      if tr.stats.station.lower() == station_name.lower() and tr.stats.channel[-1].upper() == comp_name.upper():
-        target_trace = tr
-        break
-
-    if not target_trace:
-      messagebox.showerror("エラー", f"指定されたチャンネルのデータが見つかりませんでした: {station_name}.{comp_name}")
-      return
-
-    # 1時間（60分）分のデータを1分（60秒）ごとにスライスしてリストに格納
-    minute_traces = []
-    for i in range(60):
-      t_start = target_trace.stats.starttime + i * 60
-      t_end = t_start + 60
-      # 指定範囲を切り出し
-      sliced_tr = target_trace.copy().trim(starttime=t_start, endtime=t_end)
-      minute_traces.append(sliced_tr)
-
-    # ★ 【追加】1時間全体（全60分）を通した共通の最大振幅を計算する
-    import numpy as np
-    all_data = np.concatenate([tr.data for tr in minute_traces if len(tr.data) > 0])
-    if len(all_data) > 0:
-      global_max = np.max(np.abs(all_data))
-    else:
-      global_max = 1.0
-    if global_max == 0:
-      global_max = 1.0
-
-    scale_factor = 5.0
-    ylim_range = global_max / scale_factor
 
     # グラフのレイアウト設定 (縦60行)
     fig_width = 8.5
@@ -711,55 +673,137 @@ class MantenUsuSeismographApp:
         gridspec_kw={"hspace": 0}
     )
 
-    fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.93)
+    fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.90)
 
-    # 描画ループ (0分〜59分)
-    for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
-      times = tr.times()  # 0 〜 60秒
-      data = tr.data
+    # 描画メイン
+    def update_plot(current_dt):
+      nonlocal axes
 
-      # ★ 【変更】clip_on=False を指定して、枠外（上下）へのはみ出しを描画できるようにする
-      ax.plot(times, data, color="#1f77b4", linewidth=0.3, clip_on=False)
+      # ★ 1. end_dt を正しく定義（current_dt の1時間後）
+      end_dt = current_dt + timedelta(hours=1)
 
-      # ★ 全てのサブプロットでY軸の範囲を共通の最大値に固定（これにより大きな揺れが上下にはみ出る）
-      ax.set_ylim(-ylim_range, ylim_range)
+      # ここで current_dt に応じたディレクトリからデータを読み込み
+      # (※ date_str や hour_str は current_dt から動的に生成するようにします)
+      date_str = current_dt.strftime("%Y%m%d")
+      hour_str = current_dt.strftime("%H")
+      target_dest_dir = self.output_base / f"stack_{date_str}_{hour_str}"
 
-      # ★ 【追加】X軸の範囲を0〜60秒に固定し、左右の余白を完全に詰める
-      ax.set_xlim(0, 60)
-      ax.margins(x=0)
+      # その時間の専用ディレクトリを動的に決定
+      target_dest_dir.mkdir(parents=True, exist_ok=True)
 
-      # Y軸のラベルとして「何分目か（例: 00）」を表示
-      minute_label = f"{i:02d}"
-      ax.set_ylabel(minute_label, fontsize=6, rotation=0, labelpad=12, va="center", ha="right")
+      # もしファイルがなければその場で抽出・変換を実行
+      existing_sacs = list(target_dest_dir.glob("*_sac*"))
+      if not existing_sacs:
+        extracted_count = self.extract_win_files(current_dt, end_dt, target_dest_dir)
+        if extracted_count == 0:
+          return False
+        success = self.convert_wins_to_sacs(target_dest_dir)
+        if not success:
+          return False
 
-      # ★ 10秒単位の縦線を「グレーの実線」に変更して表示
-      ax.grid(False)
+      # すべてのSACファイルを読み込み
+      st = read(str(target_dest_dir / "*_sac*"))
+      if len(st) == 0:
+        messagebox.showerror("エラー", "SACファイルを開けませんでした。")
+        return
+  
+      # 指定されたステーション名とコンポーネントに一致するトレースを抽出
+      target_trace = None
+      for tr in st:
+        # サポートされているステーション名やチャンネル名のマッチング
+        if tr.stats.station.lower() == station_name.lower() and tr.stats.channel[-1].upper() == comp_name.upper():
+          target_trace = tr
+          break
+  
+      if not target_trace:
+        messagebox.showerror("エラー", f"指定されたチャンネルのデータが見つかりませんでした: {station_name}.{comp_name}")
+        return
+  
+      # 1時間（60分）分のデータを1分（60秒）ごとにスライスしてリストに格納
+      minute_traces = []
+      for i in range(60):
+        t_start = target_trace.stats.starttime + i * 60
+        t_end = t_start + 60
+        # 指定範囲を切り出し
+        sliced_tr = target_trace.copy().trim(starttime=t_start, endtime=t_end)
+        minute_traces.append(sliced_tr)
 
-      ax.grid(True, axis='x', which='major', linestyle='-', color='#cccccc', alpha=0.5)
+      # ★ 【追加】1時間全体（全60分）を通した共通の最大振幅を計算する
+      import numpy as np
+      all_data = np.concatenate([tr.data for tr in minute_traces if len(tr.data) > 0])
+      if len(all_data) > 0:
+        global_max = np.max(np.abs(all_data))
+      else:
+        global_max = 1.0
+      if global_max == 0:
+        global_max = 1.0
+  
+      scale_factor = 5.0
+      ylim_range = global_max / scale_factor
 
-      # ★ グリッド線や不要な線を削除してスッキリさせる
-      ax.tick_params(axis="y", left=False, labelleft=False)
-      ax.tick_params(labelbottom=False)
+      # 描画ループ (0分〜59分)
+      for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
+        ax.clear()  # ★【重要】古い描画をクリアして線が重なって太くなるのを防ぐ
 
-      # X軸の目盛り線（ティック）を非表示にする設定例
-      ax.tick_params(
-          axis='x',
-          which='both',
-          bottom=False, # 下側の目盛り線
-          top=False     # 上側の目盛り線
-      )
+        times = tr.times()  # 0 〜 60秒
+        data = tr.data
 
-      # ★ 【変更】グラフ間の線（枠線）を完全に非表示にしてスダレ状にする
-      for spine_name, spine in ax.spines.items():
-        spine.set_visible(False)
+        # ★ 【変更】clip_on=False を指定して、枠外（上下）へのはみ出しを描画できるようにする
+        ax.plot(times, data, color="#1f77b4", linewidth=0.3, clip_on=False)
 
-      # ★ 【追加】背景を透明にして、上下からはみ出た波形が下のレイヤーに重なって見えるようにする
-      ax.set_facecolor('none')
+        # ★ 全てのサブプロットでY軸の範囲を共通の最大値に固定（これにより大きな揺れが上下にはみ出る）
+        ax.set_ylim(-ylim_range, ylim_range)
 
-    # 一番下の軸だけにX軸（秒）のラベルを表示
-    axes[-1].tick_params(labelbottom=True)
-    axes[-1].tick_params(axis='x', which='both', bottom=True)
-    axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
+        # ★ 【追加】X軸の範囲を0〜60秒に固定し、左右の余白を完全に詰める
+        ax.set_xlim(0, 60)
+        ax.margins(x=0)
+
+        # Y軸のラベルとして「何分目か（例: 00）」を表示
+        minute_label = f"{i:02d}"
+        ax.set_ylabel(minute_label, fontsize=6, rotation=0, labelpad=12, va="center", ha="right")
+
+        # ★ 10秒単位の縦線を「グレーの実線」に変更して表示
+        ax.grid(False)
+
+        ax.grid(True, axis='x', which='major', linestyle='-', color='#cccccc', alpha=0.5)
+
+        # ★ グリッド線や不要な線を削除してスッキリさせる
+        ax.tick_params(axis="y", left=False, labelleft=False)
+        ax.tick_params(labelbottom=False)
+
+        # X軸の目盛り線（ティック）を非表示にする設定例
+        ax.tick_params(
+            axis='x',
+            which='both',
+            bottom=False, # 下側の目盛り線
+            top=False     # 上側の目盛り線
+        )
+
+        # ★ 【変更】グラフ間の線（枠線）を完全に非表示にしてスダレ状にする
+        for spine_name, spine in ax.spines.items():
+          spine.set_visible(False)
+
+        # ★ 【追加】背景を透明にして、上下からはみ出た波形が下のレイヤーに重なって見えるようにする
+        ax.set_facecolor('none')
+  
+      # 一番下の軸だけにX軸（秒）のラベルを表示
+      axes[-1].tick_params(labelbottom=True)
+      axes[-1].tick_params(axis='x', which='both', bottom=True)
+      axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
+  
+      # 全体タイトル
+      date_title = current_dt.strftime("%Y/%m/%d %H:00")
+      plt.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_name}.{comp_name}", fontsize=12)
+      fig.canvas.draw_idle()
+
+      self.log_message(f"スタック波形プロット完了: {station_name}.{comp_name} ({date_title})")
+      return True
+
+    # 初回描画の実行
+    current_dt = start_dt
+    if not update_plot(current_dt):
+      plt.close(fig)
+      return
 
     # ★ 【追加】全サブプロットを包み込む「全体の外枠（実線）」を配置
     ax_box = fig.add_subplot(111, frameon=True)
@@ -771,11 +815,29 @@ class MantenUsuSeismographApp:
       spine.set_linewidth(0.8)
       spine.set_color("#333333")
 
-    # 全体タイトル
-    date_title = start_dt.strftime("%Y/%m/%d %H:00")
-    plt.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_name}.{comp_name}", fontsize=12)
+    # --- グラフ上部に「前の1時間」「次の1時間」ボタンを配置 ---
+    ax_prev = fig.add_axes([0.77, 0.91, 0.09, 0.03])  # [left, bottom, width, height]
+    ax_next = fig.add_axes([0.88, 0.91, 0.09, 0.03])
 
-    self.log_message(f"スタック波形プロット完了: {station_name}.{comp_name} ({date_title})")
+    btn_prev = Button(ax_prev, '◀ -1h', color='#f0f0f0', hovercolor='#e0e0e0')
+    btn_next = Button(ax_next, '+1h ▶', color='#f0f0f0', hovercolor='#e0e0e0')
+
+    # ボタンの文字サイズも小さく調整
+    btn_prev.label.set_fontsize(9)
+    btn_next.label.set_fontsize(9)
+    def on_prev(event):
+      nonlocal current_dt
+      current_dt -= timedelta(hours=1)
+      update_plot(current_dt)
+
+    def on_next(event):
+      nonlocal current_dt
+      current_dt += timedelta(hours=1)
+      update_plot(current_dt)
+
+    btn_prev.on_clicked(on_prev)
+    btn_next.on_clicked(on_next)
+
     plt.show()
 
   # 指定期間のWINファイルをZIPから抽出する
