@@ -1,3 +1,4 @@
 */*.zip
 tools/*
 output/*
+service_account/*

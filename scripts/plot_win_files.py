@@ -10,24 +10,39 @@ import subprocess                         # 外部プロセス実行ツール
 import tkinter as tk                      # GUIツール
 from tkinter import messagebox, ttk       # GUIの拡張ツール(ttk = Themed Tkinter)
 import zipfile                            # Zipファイルの処理ツール
+import warnings
 
 from obspy import Stream, read            # SACファイルの波形表示
 import matplotlib.pyplot as plt           # グラフ表示ツール
 
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+
 # MacのTcl/Tk非推奨警告を抑制
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
+# ObsPyのSAC読み込み時のサンプル間隔に関する丸め警告を抑制
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module="obspy.io.sac.util",
+    message=".*Sample spacing read from SAC file.*"
+)
 
 # クラス定義
 class MantenUsuSeismographApp:
+  # バージョン情報
+  APP_VERSION = "1.0.0"
+
   # クラスの初期化
   def __init__(self, root):
     # 表示する波形の時刻等の入力や履歴表示等を行うUIを構築する
     self.root = root
     # ウィンドウタイトル
-    self.root.title("有珠満点地震計プロジェクト 波形ビューワ")
+    self.root.title(f"有珠満点地震計プロジェクト 波形ビューワ v{self.APP_VERSION}")
     # ウィンドウサイズ
-    self.root.geometry("460x470")
+    self.root.geometry("460x600")
     # リサイズを許可しない
     self.root.resizable(False, False)
 
@@ -43,6 +58,8 @@ class MantenUsuSeismographApp:
     self.tools_dir = self.base_dir.parent / "tools"
     # win2sac_32が使用するチャンネル定義ファイル等の格納場所
     self.etc_dir = self.base_dir.parent / "etc"
+    # Googleドライブのサービスアカウントファイルの格納場所
+    self.service_account_dir = self.base_dir.parent / "service_account"
     # 履歴を格納するファイル(JSON)
     self.history_file = self.output_base / "history.json"
 
@@ -203,6 +220,56 @@ class MantenUsuSeismographApp:
     )
     btn_del_hist.pack(side=tk.LEFT)
 
+    # --- メンテナンス・整理セクション ---
+    # 5. 実行履歴セクションの下あたりに「実行ログ」エリアを追加
+    tk.Label(
+        panel,
+        text="メンテナンス:",
+        font=("sans-serif", 10, "bold")
+    ).pack(anchor="w", pady=(10, 2))
+
+    maint_frame = tk.Frame(panel)
+    maint_frame.pack(fill=tk.X, pady=(0, 0))
+
+    # output フォルダの整理
+    btn_clean_output = tk.Button(
+        maint_frame,
+        text="出力データキャッシュ整理",
+        font=("sans-serif", 9),
+        command=self.clean_output_cache,
+    )
+    btn_clean_output.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
+
+    # daily_zips フォルダの整理
+    btn_clean_zips = tk.Button(
+        maint_frame,
+        text="波形Zipファイル整理",
+        font=("sans-serif", 9),
+        command=self.clean_daily_zips,
+    )
+    btn_clean_zips.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
+
+    # クラスの初期化内でのUI追加例
+    # 5. 実行履歴セクションの下あたりに「実行ログ」エリアを追加
+    tk.Label(
+        panel,
+        text="実行ログ:",
+        font=("sans-serif", 10, "bold")
+    ).pack(anchor="w", pady=(10, 2))
+
+    # ログを表示するテキストエリア（スクロール付き、または読み取り専用）
+    self.log_text = tk.Text(
+        panel,
+        height=6,
+        font=("sans-serif", 9),
+        bg="#f9f9f9",
+        fg="#333333",
+        relief="solid",
+        bd=1,
+        state=tk.DISABLED  # 初期状態は書き込み禁止（プログラムからのみ追加）
+    )
+    self.log_text.pack(fill=tk.X, pady=(0, 5))
+
     # 履歴データの読み込みと初期の時間間隔計算
     self.update_history_ui()
     self.update_duration_display()
@@ -292,7 +359,7 @@ class MantenUsuSeismographApp:
         )
     except Exception as e:
       # エラーが発生した際はその旨を表示
-      print(f"履歴保存エラー: {e}")
+      self.log_message(f"履歴保存エラー: {e}")
 
   # 履歴のプルダウンを更新
   def update_history_ui(self):
@@ -469,6 +536,23 @@ class MantenUsuSeismographApp:
       # 次の日へ
       curr += timedelta(days=1)
 
+    # ★ 【追加】期間内の各日付について、ローカルになければGoogleドライブからダウンロードを試みる
+    for d_str in target_dates:
+      # ローカルに該当するZIPファイル（例: 260826.zip や、名前に日付が含まれるもの）が既に存在するか確認
+      existing_zips = list(self.zips_root.glob(f"*{d_str}*.zip"))
+
+      if not existing_zips:
+        # ローカルにない場合はドライブからダウンロードを試みる
+        # （※ ドライブ上のファイル名が 「260826.zip」 のような形式である場合）
+        zip_filename = f"{d_str}.zip"
+        self.log_message(f"ローカルに存在しないため、Googleドライブから取得を試みます: {zip_filename}")
+
+        success = self.download_zip_from_drive(zip_filename)
+        if success:
+          self.log_message(f"ダウンロード完了: {zip_filename}")
+        else:
+          self.log_message(f"ドライブからの取得に失敗したか、ファイルが存在しませんでした: {zip_filename}")
+
     # 期間に該当するZipファイルのリストを作成
     # 空のリストを作成
     target_zips = []
@@ -535,7 +619,7 @@ class MantenUsuSeismographApp:
               extracted_count += 1
       except Exception as e:
         # Zipファイルが開けなかったときはエラー表示して次へ
-        print(f"ZIP読み込みエラー ({zip_path.name}): {e}")
+        self.log_message(f"ZIP読み込みエラー ({zip_path.name}): {e}")
 
     # 該当するWINファイルがひとつもなかったときはエラー終了
     if extracted_count == 0:
@@ -603,6 +687,38 @@ class MantenUsuSeismographApp:
           with open(f, "rb") as rfd:
             window_file_obj.write(rfd.read())
 
+      # ★ 古いファイルなどでチャンネル番号の読み替えが必要な場合の処理
+      #   変換ファイルのフォーマット
+      #   旧IDと新IDをタブで区切って記載
+      #   F010	8D04
+      #   F011	8D05
+      #   F012	8D06
+      conv_tbl_path = self.etc_dir / f"{station_id}_conv.tbl"
+      target_win_for_conv = combined_win  # デフォルトは結合ファイルそのまま
+
+      if conv_tbl_path.exists():
+        # wchch_32 実行ファイルのパス
+        wchch_name = "wchch_32.exe" if sys.platform.startswith("win") else "wchch_32"
+        wchch_path = self.tools_dir / wchch_name
+
+        if wchch_path.exists():
+          corrected_win = dest_dir / f"corrected_{station_id}.win"
+
+          # wchch_32 [-Y] [ch conv table] < [in_file] > [out_file] の実行
+          # 標準入力をWINファイル、標準出力を書き換え後ファイルにする
+          with open(combined_win, "rb") as fin, open(corrected_win, "wb") as fout:
+            wchch_cmd = [str(wchch_path.resolve()), str(conv_tbl_path.resolve())]
+            res_wchch = subprocess.run(
+                wchch_cmd,
+                stdin = fin,              # 標準入力
+                stdout = fout,            # 標準出力
+                stderr = subprocess.PIPE  # 標準エラー出力
+            )
+            if res_wchch.returncode == 0:
+              target_win_for_conv = corrected_win  # 成功したら書き換え後のファイルを後続で使う
+            else:
+              self.log_message(f"チャンネル変換エラー (Station: {station_id}): {res_wchch.stderr.decode('utf-8', errors='ignore')}")
+
       # 拠点IDごとのチャンネルIDファイル
       station_ch_path = self.etc_dir / f"{station_id}.ch"
       # ファイルが見つからないときは全チャンネルを記載したファイルを使用
@@ -614,7 +730,7 @@ class MantenUsuSeismographApp:
       #          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
       cmd = [
           str(win2sac_path.resolve()),     # win2sac_32 のフルパス
-          str(combined_win.name),          # 結合されたWINファイル
+          str(target_win_for_conv.name),          # 結合されたWINファイル
           str(station_ch_path.resolve()),  # チャンネル定義ファイルのフルパス
           f"{station_id}_sac",             # 出力するSACファイル
           ".",                             # 出力先フォルダ(カレントディレクトリ)
@@ -629,7 +745,7 @@ class MantenUsuSeismographApp:
       )
       if result.returncode != 0:
         # エラー時の処理（ログ出力やメッセージなど）
-        print(f"変換エラー (Station: {station_id}): {result.stderr.decode('utf-8', errors='ignore')}")
+        self.log_message(f"変換エラー (Station: {station_id}): {result.stderr.decode('utf-8', errors='ignore')}")
 
     return True
 
@@ -778,6 +894,201 @@ class MantenUsuSeismographApp:
     # 波形を表示
     plt.show()
 
+  # Googleドライブから指定されたZIPファイルをダウンロードする
+  def download_zip_from_drive(self, zip_filename):
+    # キーファイルのパス
+    creds_path = self.service_account_dir / "manten_usu_downloader.json"
+
+    if not creds_path.exists():
+      self.log_message(f"サービスアカウントのキーファイルが見つかりません: {creds_path}")
+      return False
+
+    # 進捗表示用の変数
+    progress_var = tk.StringVar(value=f"Googleドライブからダウンロード中...\n\n{zip_filename}\n(0%)")
+
+    # --- 処理中ポップアップの表示 ---
+    loading_win = tk.Toplevel(self.root)
+    loading_win.title("通信中")
+    loading_win.geometry("300x120")
+    loading_win.resizable(False, False)
+    # 親ウインドウの前面に固定し、操作を一時的にロックする
+    loading_win.transient(self.root)
+    loading_win.grab_set()
+
+    tk.Label(
+        loading_win,
+        textvariable=progress_var,
+        font=("sans-serif", 10),
+        justify=tk.CENTER
+    ).pack(expand=True, padx=10, pady=10)
+
+    # 描画を確実に反映させる
+    loading_win.update()
+
+    try:
+      # サービスアカウントの認証情報を読み込む
+      SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+      creds = service_account.Credentials.from_service_account_file(
+          str(creds_path), scopes=SCOPES
+      )
+
+      # Drive APIクライアントの構築
+      service = build("drive", "v3", credentials=creds)
+
+      # --- 【診断用】サービスアカウントから見えるファイルを最初の10件だけ出力 ---
+      #self.log_message("--- [DEBUG] サービスアカウントがアクセス可能なファイル一覧 ---")
+      #debug_results = service.files().list(pageSize=10, fields="files(id, name)").execute()
+      #debug_files = debug_results.get("files", [])
+      #if not debug_files:
+      #  self.log_message("（警告：サービスアカウントから見えるファイルが1件もありません。フォルダの共有設定を確認してください）")
+      #else:
+      #  for f in debug_files:
+      #    self.log_message(f" - 名前: {f['name']} (ID: {f['id']})")
+      #self.log_message("-------------------------------------------------------------")
+      # -----------------------------------------------------------------
+
+      # ドライブ側でファイル名を検索するクエリ
+
+      # クエリに親フォルダの条件を追加する
+      query = f"name = '{zip_filename}' and trashed = false"
+      results = service.files().list(
+          q=query,
+          spaces="drive",
+          fields="files(id, name)"
+      ).execute()
+      files = results.get("files", [])
+
+      if not files:
+        self.log_message(f"Googleドライブ上にファイルが見つかりませんでした: {zip_filename}")
+        loading_win.destroy()
+        return False
+
+      # 見つかった最初のファイルを対象にする
+      file_id = files[0]["id"]
+
+      # 保存先のパス (daily_zips / ファイル名)
+      dest_path = self.zips_root / zip_filename
+      dest_path.parent.mkdir(parents=True, exist_ok=True)
+
+      # ダウンロードの実行
+      request = service.files().get_media(fileId=file_id)
+      with open(dest_path, "wb") as f:
+        downloader = MediaIoBaseDownload(f, request)
+        done = False
+        while not done:
+          status, done = downloader.next_chunk()
+          if status:
+            # 進捗率（0.0 〜 1.0）をパーセンテージに変換
+            pct = int(status.progress() * 100)
+            progress_var.set(f"Googleドライブからのダウンロード中...\n\n{zip_filename}\n({pct}%)")
+            loading_win.update()
+
+      # 正常終了したらポップアップを閉じる
+      loading_win.destroy()
+      return True
+
+    except Exception as e:
+      loading_win.destroy()
+      self.log_message(f"Googleドライブからのダウンロード中にエラーが発生しました: {e}")
+      return False
+
+  # ディレクトリ内のファイル数と総容量を計算するヘルパー
+  def _calc_dir_stats(self, target_dir):
+    if not target_dir.exists():
+      return 0, 0
+    total_files = 0
+    total_size = 0
+    for p in target_dir.glob("**/*"):
+      if p.is_file():
+        total_files += 1
+        total_size += p.stat().st_size
+    return total_files, total_size
+
+  # 容量を読みやすい単位(Bytes, KB, MB, GB)に変換するヘルパー
+  def _format_size(self, size_bytes):
+    for unit in ["B", "KB", "MB", "GB"]:
+      if size_bytes < 1024.0:
+        return f"{size_bytes:.1f} {unit}"
+      size_bytes /= 1024.0
+    return f"{size_bytes:.1f} TB"
+
+  # outputキャッシュの整理
+  def clean_output_cache(self):
+    if not self.output_base.exists():
+      messagebox.showinfo("情報", "outputディレクトリが存在しません。")
+      return
+
+    # history.json を除いたファイル数と総容量を計算
+    file_count = 0
+    total_size = 0
+    for p in self.output_base.glob("**/*"):
+      if p.is_file():
+        # 履歴ファイルは集計から除外
+        if p.resolve() == self.history_file.resolve():
+          continue
+        file_count += 1
+        total_size += p.stat().st_size
+
+    if file_count == 0:
+      messagebox.showinfo("情報", "削除対象のoutputキャッシュはありません。")
+      return
+    size_str = self._format_size(total_size)
+    msg = (
+        f"outputディレクトリ内のキャッシュを削除します。\n\n"
+        f"・ファイル数: {file_count:,} 件\n"
+        f"・総容量: {size_str}\n\n"
+        f"本当によろしいですか？"
+    )
+
+    if messagebox.askyesno("確認 - outputキャッシュ整理", msg):
+      try:
+        # outputディレクトリ内のフォルダやファイルをすべて削除し、ディレクトリ自体は残す
+        for child in self.output_base.iterdir():
+          # 履歴ファイル本体の場合は削除せずにスキップ
+          if child.resolve() == self.history_file.resolve():
+            continue
+
+          if child.is_dir():
+            shutil.rmtree(child)
+          else:
+            child.unlink()
+        messagebox.completed = messagebox.showinfo(
+            "完了", "outputキャッシュの整理が完了しました。"
+        )
+      except Exception as e:
+        messagebox.showerror("エラー", f"削除中にエラーが発生しました:\n{e}")
+
+  # daily_zipsの整理
+  def clean_daily_zips(self):
+    if not self.zips_root.exists():
+      messagebox.showinfo("情報", "daily_zipsディレクトリが存在しません。")
+      return
+
+    # zipファイルのみを対象にする
+    zip_files = list(self.zips_root.glob("**/*.zip"))
+    if not zip_files:
+      messagebox.showinfo("情報", "対象のZIPファイルが見つかりません。")
+      return
+
+    total_files = len(zip_files)
+    total_size = sum(p.stat().st_size for p in zip_files if p.is_file())
+    size_str = self._format_size(total_size)
+
+    msg = (
+        f"daily_zipsディレクトリ内のZIPファイルを削除します。\n\n"
+        f"・ZIPファイル数: {total_files:,} 件\n"
+        f"・総容量: {size_str}\n\n"
+        f"本当によろしいですか？"
+    )
+
+    if messagebox.askyesno("確認 - daily_zips整理", msg):
+      try:
+        for p in zip_files:
+          p.unlink()
+        messagebox.showinfo("完了", "ZIPファイルの整理が完了しました。")
+      except Exception as e:
+        messagebox.showerror("エラー", f"削除中にエラーが発生しました:\n{e}")
+
   @staticmethod
   def parse_datetime(dt_str):
     """YYYYMMDDHHmm形式の文字列をdatetimeオブジェクトに変換する
@@ -793,6 +1104,15 @@ class MantenUsuSeismographApp:
       return datetime.strptime(dt_str.strip(), "%Y%m%d%H%M")
     except (ValueError, TypeError):
       return None
+
+  # 画面のログエリアにメッセージを追加するメソッド
+  def log_message(self, message):
+    # 画面のログテキストボックスに追記
+    if hasattr(self, "log_text"):
+      self.log_text.config(state=tk.NORMAL)  # 一時的に書き込み許可
+      self.log_text.insert(tk.END, message + "\n")
+      self.log_text.see(tk.END)              # 自動で一番下にスクロール
+      self.log_text.config(state=tk.DISABLED) # 再び書き込み禁止に戻す
 
 # メインルーチン
 def main():
