@@ -2,3 +2,4 @@
 tools/*
 output/*
 service_account/*
+batch_plots/*

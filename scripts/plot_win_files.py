@@ -1,4 +1,5 @@
 # 必要なライブラリのインポート
+import argparse                           # 入力引数の処理
 from collections import defaultdict       # 強化れた辞書機能
 from datetime import datetime, timedelta  # 日付・時刻の処理
 import json
@@ -12,8 +13,8 @@ from tkinter import messagebox, ttk       # GUIの拡張ツール(ttk = Themed T
 import zipfile                            # Zipファイルの処理ツール
 import warnings
 
-from obspy import Stream, read            # SACファイルの波形表示
-import matplotlib.pyplot as plt           # グラフ表示ツール
+from obspy import Stream, read, UTCDateTime  # SACファイルの波形表示
+import matplotlib.pyplot as plt              # グラフ表示ツール
 from matplotlib.widgets import Button
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
@@ -33,16 +34,18 @@ warnings.filterwarnings(
 )
 
 # TODO
-# 1. 1時間ごとの波形表示をバッチ処理化(UIは作らず、daily_zipsにあるZipファイルについて一括処理。パラメータとして、チャンネル名または番号を指定)
+# [実装中]1. 1時間ごとの波形表示をバッチ処理化(UIは作らず、daily_zipsにあるZipファイルについて一括処理。パラメータとして、チャンネル名または番号を指定)
 # 2. 4拠点のグラフ表示を2x2のグリッド表示させる
 # 4. Googleドライブからのダウンロード中に中止処理を追加
 # 5. log_messageのprintへの出力用にデバッグオプション(コマンドラインオプション)を追加する
 # 6. 震度の推測
+# 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
+# 8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
 
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "2.0.0"
+  APP_VERSION = "2.1.0"
 
   # クラスの初期化
   def __init__(self, root):
@@ -998,8 +1001,86 @@ class MantenUsuSeismographApp:
 
     plt.show()
 
+  # 1時間分の波形を描画するヘルパー
+  def _render_stack_plot_on_axes(self, fig, axes, target_trace, current_dt, station_name, comp_name, max_amp_text=None):
+    # 1. 1時間データを1分ごとにスライス
+    minute_traces = []
+
+    for i in range(60):
+      # 標準 datetime に秒数を足す
+      dt_start = current_dt + timedelta(seconds=i * 60)
+      dt_end = dt_start + timedelta(seconds=60)
+
+      # ObsPyの trim() が受け取れるよう UTCDateTime に変換する
+      t_start = UTCDateTime(dt_start)
+      t_end = UTCDateTime(dt_end)
+
+      sliced_tr = target_trace.copy().trim(starttime=t_start, endtime=t_end, pad=True, fill_value=0)
+      minute_traces.append(sliced_tr)
+
+    # 2. 共通の最大振幅とスケール計算
+    import numpy as np
+    all_data = np.concatenate([tr.data for tr in minute_traces if len(tr.data) > 0])
+    global_max = np.max(np.abs(all_data)) if len(all_data) > 0 else 1.0
+    if global_max == 0:
+      global_max = 1.0
+
+    scale_factor = 5.0
+    ylim_range = global_max / scale_factor
+
+    amp_str = f"最大振幅: {global_max:,.2f}"
+
+    # 3. 最大振幅テキストの表示処理（GUIなら更新、なければ新規描画）
+    if max_amp_text is not None:
+      max_amp_text.set_text(amp_str)
+    else:
+      # バッチ保存時など、テキストオブジェクトがない場合は直接図に配置する
+      fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.94)
+      fig.text(0.95, 0.95, amp_str, fontsize=9, va="center", ha="right", color="#333333")
+
+    # 3. 60本の波形プロット描画
+    for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
+      ax.clear()
+      times = tr.times()
+      data = tr.data
+
+      ax.plot(times, data, color="#1f77b4", linewidth=0.3, clip_on=False)
+      ax.set_ylim(-ylim_range, ylim_range)
+      ax.set_xlim(0, 60)
+      ax.margins(x=0)
+
+      minute_label = f"{i:02d}"
+      ax.set_ylabel(minute_label, fontsize=6, rotation=0, labelpad=12, va="center", ha="right")
+      ax.grid(False)
+      ax.grid(True, axis='x', which='major', linestyle='-', color='#cccccc', alpha=0.5)
+      ax.tick_params(axis="y", left=False, labelleft=False)
+      ax.tick_params(labelbottom=False)
+      ax.tick_params(axis='x', which='both', bottom=False, top=False)
+
+      for spine in ax.spines.values():
+        spine.set_visible(False)
+      ax.set_facecolor('none')
+
+    axes[-1].tick_params(labelbottom=True)
+    axes[-1].tick_params(axis='x', which='both', bottom=True)
+    axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
+
+    date_title = current_dt.strftime("%Y/%m/%d %H:00")
+    plt.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_name}.{comp_name}", fontsize=12)
+
+    # 4. 全体を包み込む外枠（ax_box）も共通でここで配置してしまう
+    ax_box = fig.add_subplot(111, frameon=True)
+    ax_box.set_facecolor('none')
+    ax_box.tick_params(labelcolor='none', top=False, bottom=False, left=False, right=False)
+    ax_box.tick_params(which='both', length=0)
+    for spine in ax_box.spines.values():
+      spine.set_visible(True)
+      spine.set_linewidth(0.8)
+      spine.set_color("#333333")
+    ax_box.set_zorder(-10)
+
   # 指定期間のWINファイルをZIPから抽出する
-  def extract_win_files(self, start_dt, end_dt, dest_dir):
+  def extract_win_files(self, start_dt, end_dt, dest_dir, show_dialog=True):
     # WINファイルが存在しないときはZipファイルから抽出
     # Zip保存ディレクトリがなければ作成
     self.zips_root.mkdir(parents=True, exist_ok=True)
@@ -1009,7 +1090,10 @@ class MantenUsuSeismographApp:
     target_dates = set()
     # 開始・終了日時から日付部分だけを取得(分秒、ミリ秒をすべて0にしたもの)
     curr = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_date_only = end_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    # ★【追加・修正】終了日時が翌日0:00の場合などに翌日ZIPまで取得してしまうのを防ぐため、
+    # 1秒巻き戻した時刻を基準に日付を切り出す
+    adjusted_end_dt = end_dt - timedelta(seconds=1)
+    end_date_only = adjusted_end_dt.replace(hour=0, minute=0, second=0, microsecond=0)
     # 終了日まで繰り返す
     while curr <= end_date_only:
       # セットにYYMMDD形式の年月日を追加
@@ -1045,9 +1129,10 @@ class MantenUsuSeismographApp:
 
     # 期間内の日付のファイルがひとつもなければエラー
     if not target_zips:
-      messagebox.showwarning(
-          "警告", "指定された期間に一致するZIPファイルが見つかりませんでした。"
-      )
+      if show_dialog:
+        messagebox.showwarning(
+            "警告", "指定された期間に一致するZIPファイルが見つかりませんでした。"
+        )
       return 0
 
     extracted_count = 0
@@ -1104,10 +1189,11 @@ class MantenUsuSeismographApp:
 
     # 該当するWINファイルがひとつもなかったときはエラー終了
     if extracted_count == 0:
-      messagebox.showwarning(
-          "警告",
-          "指定範囲内に該当するWINファイルが存在しませんでした（0件抽出）。",
-      )
+      if show_dialog:
+        messagebox.showwarning(
+            "警告",
+            "指定範囲内に該当するWINファイルが存在しませんでした（0件抽出）。",
+        )
       return 0
 
     return extracted_count
@@ -1596,14 +1682,160 @@ class MantenUsuSeismographApp:
       self.log_text.see(tk.END)              # 自動で一番下にスクロール
       self.log_text.config(state=tk.DISABLED) # 再び書き込み禁止に戻す
 
+  # --- 【新機能】バッチ処理実行メソッド（UIなしでの一括処理） ---
+  def run_batch_processing(self, channel, start_date=None, end_date=None, overwrite=False):
+    print(f"=== 1時間スタック波形バッチ処理を開始します ===")
+    print(f"  - チャンネル: {channel}")
+    print(f"  - 開始日: {start_date or '指定なし (全対象)'}")
+    print(f"  - 終了日: {end_date or '指定なし (全対象)'}")
+
+    if "." in channel:
+      station_name, comp_name = channel.split(".", 1)
+    else:
+      station_name = "Hokudai"
+      comp_name = channel
+
+    self.zips_root.mkdir(parents=True, exist_ok=True)
+    zip_files = sorted(list(self.zips_root.glob("**/*.zip")))
+
+    if not zip_files:
+      print("[エラー] daily_zips内にZIPファイルが見つかりません。")
+      return
+
+    import re
+    target_zips = []
+    for zpath in zip_files:
+      stem = zpath.stem
+      digits = re.findall(r'\d+', stem)
+      if not digits:
+        continue
+      d_str_raw = digits[-1]
+      if len(d_str_raw) == 6:
+        full_date_str = f"20{d_str_raw}"
+      elif len(d_str_raw) == 8:
+        full_date_str = d_str_raw
+      else:
+        continue
+
+      if start_date and full_date_str < start_date:
+        continue
+      if end_date and full_date_str > end_date:
+        continue
+
+      target_zips.append((full_date_str, zpath))
+
+    if not target_zips:
+      print("[警告] 指定された条件に一致するZIPファイルがありません。")
+      return
+
+    batch_output_dir = self.base_dir.parent / "batch_plots"
+    batch_output_dir.mkdir(parents=True, exist_ok=True)
+
+    for date_str, zpath in target_zips:
+      print(f"\n[処理中] 日付: {date_str} (ZIP: {zpath.name})")
+      for hour in range(24):
+        hour_str = f"{hour:02d}"
+        start_dt_str = f"{date_str}{hour_str}00"
+        start_dt = self.parse_datetime(start_dt_str)
+        if not start_dt:
+          continue
+        end_dt = start_dt + timedelta(hours=1)
+
+        print(f"  -> {date_str} {hour_str}:00 枠を処理中...")
+        dest_dir = self.output_base / f"stack_{date_str}_{hour_str}"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # ★【追加】最終的な出力予定のPNG画像のパスを事前に定義
+        out_img_path = batch_output_dir / f"stack_{date_str}_{hour_str}_{station_name}_{comp_name}.png"
+
+        # ★【追加】画像が既に存在し、かつ上書きモードでない（＝デフォルトのスキップ）場合はここで丸ごとスキップ
+        if out_img_path.exists() and not overwrite:
+          print(f"     [スキップ] 既に画像が存在します: {out_img_path.name}")
+          continue
+
+        existing_sacs = list(dest_dir.glob("*_sac*"))
+        if not existing_sacs:
+          extracted_count = self.extract_win_files(start_dt, end_dt, dest_dir, show_dialog=False)
+          if extracted_count == 0:
+            print("     [スキップ] WINファイルが抽出できませんでした。")
+            continue
+          success = self.convert_wins_to_sacs(dest_dir)
+          if not success:
+            print("     [スキップ] SAC変換に失敗しました。")
+            continue
+
+        try:
+          st = read(str(dest_dir / "*_sac*"))
+          if len(st) == 0:
+            continue
+
+          target_trace = None
+          for tr in st:
+            if tr.stats.station.lower() == station_name.lower() and tr.stats.channel[-1].upper() == comp_name.upper():
+              target_trace = tr
+              break
+
+          if not target_trace:
+            print(f"     [スキップ] チャンネル {channel} が見つかりませんでした。")
+            continue
+
+          # 日本語フォント設定
+          plt.rcParams["font.family"] = "sans-serif"
+          plt.rcParams["font.sans-serif"] = ["Hiragino Sans", "Meiryo", "Yu Gothic", "MS Gothic", "sans-serif"]
+          plt.rcParams["axes.unicode_minus"] = False
+
+          plt.ioff()
+          fig_width = 8.5
+          fig_height = 10.0
+          fig, axes = plt.subplots(
+              60, 1,
+              sharex=True,
+              figsize=(fig_width, fig_height),
+              gridspec_kw={"hspace": 0}
+          )
+
+          # ★共通描画メソッドを呼び出して見た目を完全一致させる
+          self._render_stack_plot_on_axes(fig, axes, target_trace, start_dt, station_name, comp_name)
+
+          fig.savefig(out_img_path, dpi=150)
+          plt.close(fig)
+          print(f"     [保存完了] {out_img_path.name}")
+
+        except Exception as e:
+          print(f"     [エラー] プロット生成中にエラー: {e}")
+          import traceback
+          traceback.print_exc()
+
+    print("\n=== バッチ処理がすべて完了しました ===")
+
 # メインルーチン
 def main():
+  # コマンドラインオプションの取得
+  parser = argparse.ArgumentParser(description="有珠満点地震計プロジェクト 波形ビューワ / バッチ処理ツール")
+  parser.add_argument("--batch", action="store_true", help="UIを起動せず、バッチ処理モードで実行する")
+  parser.add_argument("--channel", "-c", type=str, default="Hokudai.U", help="対象チャンネル名 (例: Hokudai.U または U)")
+  parser.add_argument("--start-date", "-s", type=str, help="テスト用開始日 (YYYYMMDD形式)")
+  parser.add_argument("--end-date", "-e", type=str, help="テスト用終了日 (YYYYMMDD形式)")
+  parser.add_argument("--overwrite", action="store_true", help="既存の画像を上書きする (デフォルトはスキップ)")
+
+  args = parser.parse_args()
+
   # GUIのウィンドウを生成
   root = tk.Tk()
   # MantenUsuSeismographApp クラスのインスタンスを生成
   app = MantenUsuSeismographApp(root)
-  # イベントループ処理
-  root.mainloop()
+
+  if args.batch:
+    root.withdraw() # GUIウィンドウを非表示にする
+    app.run_batch_processing(
+        channel=args.channel,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        overwrite=args.overwrite
+    )
+    root.destroy()
+  else:
+    root.mainloop()  # イベントループ処理
 
 # コマンドを実行されたときは main() を呼び出す
 if __name__ == "__main__":
