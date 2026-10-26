@@ -69,6 +69,16 @@ class MantenUsuSeismographApp:
     self.etc_dir = self.base_dir.parent / "etc"
     # Googleドライブのサービスアカウントファイルの格納場所
     self.service_account_dir = self.base_dir.parent / "service_account"
+    # GoogleドライブのフォルダIDの定義ファイル(JSON)
+    self.folder_config_file = self.service_account_dir / "folder_config.json"
+    self.target_folder_id = None
+    try:
+      with open(self.folder_config_file, "r", encoding="utf-8") as f:
+        config = json.load(f)
+        self.target_folder_id = config.get("daily_zips_id")
+    except Exception as e:
+      # ファイル読み込み失敗時のフォールバックやエラーログ
+      print(f"Googleドライブのフォルダ設定ファイルの読み込みに失敗しました: {e}")
     # 履歴を格納するファイル(JSON)
     self.history_file = self.output_base / "history.json"
 
@@ -1406,26 +1416,24 @@ class MantenUsuSeismographApp:
       # Drive APIクライアントの構築
       service = build("drive", "v3", credentials=creds)
 
-      # --- 【診断用】サービスアカウントから見えるファイルを最初の10件だけ出力 ---
-      #self.log_message("--- [DEBUG] サービスアカウントがアクセス可能なファイル一覧 ---")
-      #debug_results = service.files().list(pageSize=10, fields="files(id, name)").execute()
-      #debug_files = debug_results.get("files", [])
-      #if not debug_files:
-      #  self.log_message("（警告：サービスアカウントから見えるファイルが1件もありません。フォルダの共有設定を確認してください）")
-      #else:
-      #  for f in debug_files:
-      #    self.log_message(f" - 名前: {f['name']} (ID: {f['id']})")
-      #self.log_message("-------------------------------------------------------------")
-      # -----------------------------------------------------------------
+      if not self.target_folder_id:
+        try:
+          with open(self.folder_config_file, "r", encoding="utf-8") as f:
+            config = json.load(f)
+            self.target_folder_id = config.get("daily_zips_id")
+        except Exception as e:
+          # ファイル読み込み失敗時のフォールバックやエラーログ
+          print(f"設定ファイルの読み込みに失敗しました: {e}")
 
-      # ドライブ側でファイル名を検索するクエリ
+      query = f"'{self.target_folder_id}' in parents and name = '{zip_filename}' and trashed = false"
 
-      # クエリに親フォルダの条件を追加する
-      query = f"name = '{zip_filename}' and trashed = false"
+      files = []
       results = service.files().list(
-          q=query,
-          spaces="drive",
-          fields="files(id, name)"
+        q=query,
+        spaces="drive",
+        fields="files(id, name)",
+        supportsAllDrives=True,          # マイドライブと共有ドライブをサポート
+        includeItemsFromAllDrives=True   # 共有ドライブをレスポンスに含める
       ).execute()
       files = results.get("files", [])
 
