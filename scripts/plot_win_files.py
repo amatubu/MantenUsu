@@ -15,6 +15,7 @@ import warnings
 from obspy import Stream, read            # SACファイルの波形表示
 import matplotlib.pyplot as plt           # グラフ表示ツール
 from matplotlib.widgets import Button
+from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -30,6 +31,13 @@ warnings.filterwarnings(
     module="obspy.io.sac.util",
     message=".*Sample spacing read from SAC file.*"
 )
+
+# TODO
+# 1. 1時間ごとの波形表示をバッチ処理化(UIは作らず、daily_zipsにあるZipファイルについて一括処理。パラメータとして、チャンネル名または番号を指定)
+# 2. 4拠点のグラフ表示を2x2のグリッド表示させる
+# 4. Googleドライブからのダウンロード中に中止処理を追加
+# 5. log_messageのprintへの出力用にデバッグオプション(コマンドラインオプション)を追加する
+# 6. 震度の推測
 
 # クラス定義
 class MantenUsuSeismographApp:
@@ -657,11 +665,19 @@ class MantenUsuSeismographApp:
 
   # 1時間分のスタック波形を描画するメソッド
   def plot_stack_waveforms(self, start_dt, station_name, comp_name):
+    # ★追加：ツールバーから「保存」と「ホーム」以外のボタン（ズーム・パン等）を削除する
+    NavigationToolbar2Tk.toolitems = [
+        t
+        for t in NavigationToolbar2Tk.toolitems
+        if t[0] == "Save"
+    ]
+    # ウィンドウごとに完全に独立した状態を保持するコンテナ
+    state = {"current_dt": start_dt}
+
     # フォント設定
     plt.rcParams["font.family"] = "sans-serif"
     plt.rcParams["font.sans-serif"] = ["Hiragino Sans", "Meiryo", "Yu Gothic", "MS Gothic", "sans-serif"]
     plt.rcParams["axes.unicode_minus"] = False
-
 
     # グラフのレイアウト設定 (縦60行)
     fig_width = 8.5
@@ -676,10 +692,11 @@ class MantenUsuSeismographApp:
     fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.90)
 
     # 描画メイン
-    def update_plot(current_dt):
-      nonlocal axes
+    def update_plot():
+      nonlocal axes  # 変数を共有できるようにする
 
       # ★ 1. end_dt を正しく定義（current_dt の1時間後）
+      current_dt = state["current_dt"]
       end_dt = current_dt + timedelta(hours=1)
 
       # ここで current_dt に応じたディレクトリからデータを読み込み
@@ -741,6 +758,10 @@ class MantenUsuSeismographApp:
       scale_factor = 5.0
       ylim_range = global_max / scale_factor
 
+      # ★【追加】計算された最大振幅を画面上のテキストに反映（小数点以下の桁数はお好みで調整可能）
+      if 'max_amp_text' in locals():
+        max_amp_text.set_text(f"最大振幅: {global_max:,.2f}")
+
       # 描画ループ (0分〜59分)
       for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
         ax.clear()  # ★【重要】古い描画をクリアして線が重なって太くなるのを防ぐ
@@ -785,12 +806,12 @@ class MantenUsuSeismographApp:
 
         # ★ 【追加】背景を透明にして、上下からはみ出た波形が下のレイヤーに重なって見えるようにする
         ax.set_facecolor('none')
-  
+
       # 一番下の軸だけにX軸（秒）のラベルを表示
       axes[-1].tick_params(labelbottom=True)
       axes[-1].tick_params(axis='x', which='both', bottom=True)
       axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
-  
+
       # 全体タイトル
       date_title = current_dt.strftime("%Y/%m/%d %H:00")
       plt.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_name}.{comp_name}", fontsize=12)
@@ -798,12 +819,6 @@ class MantenUsuSeismographApp:
 
       self.log_message(f"スタック波形プロット完了: {station_name}.{comp_name} ({date_title})")
       return True
-
-    # 初回描画の実行
-    current_dt = start_dt
-    if not update_plot(current_dt):
-      plt.close(fig)
-      return
 
     # ★ 【追加】全サブプロットを包み込む「全体の外枠（実線）」を配置
     ax_box = fig.add_subplot(111, frameon=True)
@@ -815,6 +830,12 @@ class MantenUsuSeismographApp:
       spine.set_linewidth(0.8)
       spine.set_color("#333333")
 
+    # ★ここを追加：外枠を一番奥（下層）に下げて、マウスイベントを波形側に通す
+    ax_box.set_zorder(-10)
+
+    # ★【追加】「-1h」ボタンの左側に最大振幅を表示するテキストを配置
+    max_amp_text = fig.text(0.75, 0.925, "", fontsize=9, va="center", ha="right", color="#333333")
+
     # --- グラフ上部に「前の1時間」「次の1時間」ボタンを配置 ---
     ax_prev = fig.add_axes([0.77, 0.91, 0.09, 0.03])  # [left, bottom, width, height]
     ax_next = fig.add_axes([0.88, 0.91, 0.09, 0.03])
@@ -825,18 +846,145 @@ class MantenUsuSeismographApp:
     # ボタンの文字サイズも小さく調整
     btn_prev.label.set_fontsize(9)
     btn_next.label.set_fontsize(9)
+
     def on_prev(event):
-      nonlocal current_dt
-      current_dt -= timedelta(hours=1)
-      update_plot(current_dt)
+      state["current_dt"] -= timedelta(hours=1)
+      update_plot()
 
     def on_next(event):
-      nonlocal current_dt
-      current_dt += timedelta(hours=1)
-      update_plot(current_dt)
+      state["current_dt"] += timedelta(hours=1)
+      update_plot()
 
     btn_prev.on_clicked(on_prev)
     btn_next.on_clicked(on_next)
+
+    # 初期化用の箱を用意しておく
+    initial_xlim = (0, 60)
+    full_width = 60.0
+
+    def on_scroll(event):
+      # 波形プロット領域以外のイベント（ボタンなど）は無視
+      if event.inaxes in [ax_prev, ax_next] or event.inaxes is None:
+        return
+
+      cur_xlim = axes[0].get_xlim()
+      xdata = event.xdata
+      if xdata is None:
+        return
+
+      if event.button == 'down':
+        scale_factor = 1.2
+      elif event.button == 'up':
+        scale_factor = 1 / 1.2
+      else:
+        return
+
+      cur_width = cur_xlim[1] - cur_xlim[0]
+      new_width = cur_width * scale_factor
+
+      if new_width >= full_width * 0.99:
+        new_xmin, new_xmax = initial_xlim
+      else:
+        min_width = full_width * 0.01
+        if new_width < min_width and scale_factor < 1:
+          return
+
+        relx = (cur_xlim[1] - xdata) / cur_width
+        new_xmin = xdata - new_width * (1 - relx)
+        new_xmax = xdata + new_width * relx
+
+        if new_xmin < initial_xlim[0]:
+          new_xmin = initial_xlim[0]
+          new_xmax = initial_xlim[0] + new_width
+        if new_xmax > initial_xlim[1]:
+          new_xmax = initial_xlim[1]
+          new_xmin = initial_xlim[1] - new_width
+
+      # ★ 60行分の波形プロット（axes）のみを一斉更新
+      for ax in axes:
+        ax.set_xlim(new_xmin, new_xmax)
+
+      fig.canvas.draw()
+      fig.canvas.flush_events()
+
+    # ドラッグ操作用の状態管理（開始時の位置をしっかり記憶させる）
+    drag_state = {
+        "dragging": False,
+        "press_xdata": None,
+        "start_xmin": None,
+        "start_xmax": None,
+    }
+
+    # クリック（押下）時の処理
+    def on_press(event):
+      if event.inaxes in [ax_prev, ax_next] or event.inaxes is None:
+        return
+
+      if event.dblclick:
+        for ax in axes_list:
+          ax.set_xlim(initial_xlim)
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        return
+
+      if event.button == 1:
+        drag_state["dragging"] = True
+        drag_state["press_xdata"] = event.xdata
+        # ★追加：ドラッグ開始した瞬間のX軸の範囲を保存しておく
+        cur_xlim = axes[0].get_xlim()
+        drag_state["start_xmin"] = cur_xlim[0]
+        drag_state["start_xmax"] = cur_xlim[1]
+
+    # ドラッグ中の処理
+    def on_motion(event):
+      if not drag_state["dragging"]:
+        return
+      if event.inaxes is None or event.xdata is None:
+        return
+      if drag_state["press_xdata"] is None:
+        return
+
+      # ドラッグ開始位置からのデータ座標の移動量を計算
+      dx = drag_state["press_xdata"] - event.xdata
+
+      # 保存しておいた開始時の位置に移動量を足し引きする
+      new_xmin = drag_state["start_xmin"] + dx
+      new_xmax = drag_state["start_xmax"] + dx
+
+      # 現在のズーム幅を維持
+      width = drag_state["start_xmax"] - drag_state["start_xmin"]
+
+      # 全体範囲（0〜60秒）の端にぶつかったときのガード
+      if new_xmin < initial_xlim[0]:
+        new_xmin = initial_xlim[0]
+        new_xmax = initial_xlim[0] + width
+      if new_xmax > initial_xlim[1]:
+        new_xmax = initial_xlim[1]
+        new_xmin = initial_xlim[1] - width
+
+      for ax in axes_list:
+        ax.set_xlim(new_xmin, new_xmax)
+
+      fig.canvas.draw()
+      fig.canvas.flush_events()
+
+    def on_release(event):
+      drag_state["dragging"] = False
+      drag_state["press_xdata"] = None
+
+    # イベントをキャンバスに紐付け
+    fig.canvas.mpl_connect('scroll_event', on_scroll)
+    fig.canvas.mpl_connect('button_press_event', on_press)
+    fig.canvas.mpl_connect('motion_notify_event', on_motion)
+    fig.canvas.mpl_connect('button_release_event', on_release)
+
+    # 初回描画の実行
+    if not update_plot():
+      plt.close(fig)
+      return
+
+    # 念のため axes を通常のリストにしておく
+    axes_list = list(axes)
 
     plt.show()
 
@@ -982,8 +1130,8 @@ class MantenUsuSeismographApp:
     # 空の辞書(中身はリスト)を作成
     station_files = defaultdict(list)
     for win_file in dest_dir.glob("*.win"):
-      # 結合後のファイル(「combined_」で始まる)が見つかった場合はスキップ
-      if win_file.name.startswith("combined_"):
+      # 結合後のファイル(「combined_」で始まる)やチャンネル変換後のファイル(「corrected_」で始まる)が見つかった場合はスキップ
+      if win_file.name.startswith("combined_") or win_file.name.startswith("corrected_"):
         continue
       # ファイル名の例:
       #   1070432002_2608260858.win
@@ -1430,6 +1578,9 @@ class MantenUsuSeismographApp:
 
   # 画面のログエリアにメッセージを追加するメソッド
   def log_message(self, message):
+
+    print( message )
+
     # 画面のログテキストボックスに追記
     if hasattr(self, "log_text"):
       self.log_text.config(state=tk.NORMAL)  # 一時的に書き込み許可
