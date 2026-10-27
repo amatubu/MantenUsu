@@ -41,6 +41,9 @@ warnings.filterwarnings(
 # 6. 震度の推測
 # 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
 # 8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
+# 9. キャッシュ整理処理で、WINファイルのみ、結合前WINファイルのみなどのオプション追加
+# 10. P波、S波の到着時刻計算
+# 11. 震源位置、地震発生時刻の推測
 
 # クラス定義
 class MantenUsuSeismographApp:
@@ -758,79 +761,20 @@ class MantenUsuSeismographApp:
         sliced_tr = target_trace.copy().trim(starttime=t_start, endtime=t_end)
         minute_traces.append(sliced_tr)
 
-      # ★ 【追加】1時間全体（全60分）を通した共通の最大振幅を計算する
-      import numpy as np
-      all_data = np.concatenate([tr.data for tr in minute_traces if len(tr.data) > 0])
-      if len(all_data) > 0:
-        global_max = np.max(np.abs(all_data))
-      else:
-        global_max = 1.0
-      if global_max == 0:
-        global_max = 1.0
-  
-      scale_factor = 5.0
-      ylim_range = global_max / scale_factor
+      # ★ ここで共通描画ルーチンを呼び出す！
+      self._render_stack_plot_on_axes(
+          fig=fig,
+          axes=axes,
+          target_trace=target_trace,
+          current_dt=current_dt,
+          station_name=station_name,
+          comp_name=comp_name,
+          max_amp_text=max_amp_text
+      )
 
-      # ★【追加】計算された最大振幅を画面上のテキストに反映（小数点以下の桁数はお好みで調整可能）
-      if 'max_amp_text' in locals():
-        max_amp_text.set_text(f"最大振幅: {global_max:,.2f}")
-
-      # 描画ループ (0分〜59分)
-      for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
-        ax.clear()  # ★【重要】古い描画をクリアして線が重なって太くなるのを防ぐ
-
-        times = tr.times()  # 0 〜 60秒
-        data = tr.data
-
-        # ★ 【変更】clip_on=False を指定して、枠外（上下）へのはみ出しを描画できるようにする
-        ax.plot(times, data, color="#1f77b4", linewidth=0.3, clip_on=False)
-
-        # ★ 全てのサブプロットでY軸の範囲を共通の最大値に固定（これにより大きな揺れが上下にはみ出る）
-        ax.set_ylim(-ylim_range, ylim_range)
-
-        # ★ 【追加】X軸の範囲を0〜60秒に固定し、左右の余白を完全に詰める
-        ax.set_xlim(0, 60)
-        ax.margins(x=0)
-
-        # Y軸のラベルとして「何分目か（例: 00）」を表示
-        minute_label = f"{i:02d}"
-        ax.set_ylabel(minute_label, fontsize=6, rotation=0, labelpad=12, va="center", ha="right")
-
-        # ★ 10秒単位の縦線を「グレーの実線」に変更して表示
-        ax.grid(False)
-
-        ax.grid(True, axis='x', which='major', linestyle='-', color='#cccccc', alpha=0.5)
-
-        # ★ グリッド線や不要な線を削除してスッキリさせる
-        ax.tick_params(axis="y", left=False, labelleft=False)
-        ax.tick_params(labelbottom=False)
-
-        # X軸の目盛り線（ティック）を非表示にする設定例
-        ax.tick_params(
-            axis='x',
-            which='both',
-            bottom=False, # 下側の目盛り線
-            top=False     # 上側の目盛り線
-        )
-
-        # ★ 【変更】グラフ間の線（枠線）を完全に非表示にしてスダレ状にする
-        for spine_name, spine in ax.spines.items():
-          spine.set_visible(False)
-
-        # ★ 【追加】背景を透明にして、上下からはみ出た波形が下のレイヤーに重なって見えるようにする
-        ax.set_facecolor('none')
-
-      # 一番下の軸だけにX軸（秒）のラベルを表示
-      axes[-1].tick_params(labelbottom=True)
-      axes[-1].tick_params(axis='x', which='both', bottom=True)
-      axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
-
-      # 全体タイトル
-      date_title = current_dt.strftime("%Y/%m/%d %H:00")
-      plt.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_name}.{comp_name}", fontsize=12)
       fig.canvas.draw_idle()
 
-      self.log_message(f"スタック波形プロット完了: {station_name}.{comp_name} ({date_title})")
+      self.log_message(f"スタック波形プロット完了: {station_name}.{comp_name} ({current_dt.strftime('%Y/%m/%d %H:00')})")
       return True
 
     # ★ 【追加】全サブプロットを包み込む「全体の外枠（実線）」を配置
@@ -1039,32 +983,54 @@ class MantenUsuSeismographApp:
       fig.text(0.95, 0.95, amp_str, fontsize=9, va="center", ha="right", color="#333333")
 
     # 3. 60本の波形プロット描画
+    # 描画ループ (0分〜59分)
     for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
       ax.clear()
-      times = tr.times()
+      times = tr.times()  # 0 〜 60秒
       data = tr.data
 
+      # ★ 【変更】clip_on=False を指定して、枠外（上下）へのはみ出しを描画できるようにする
       ax.plot(times, data, color="#1f77b4", linewidth=0.3, clip_on=False)
+
+      # ★ 全てのサブプロットでY軸の範囲を共通の最大値に固定（これにより大きな揺れが上下にはみ出る）
       ax.set_ylim(-ylim_range, ylim_range)
+
+      # ★ 【追加】X軸の範囲を0〜60秒に固定し、左右の余白を完全に詰める
       ax.set_xlim(0, 60)
       ax.margins(x=0)
 
+      # Y軸のラベルとして「何分目か（例: 00）」を表示
       minute_label = f"{i:02d}"
       ax.set_ylabel(minute_label, fontsize=6, rotation=0, labelpad=12, va="center", ha="right")
+
+      # ★ 10秒単位の縦線を「グレーの実線」に変更して表示
       ax.grid(False)
       ax.grid(True, axis='x', which='major', linestyle='-', color='#cccccc', alpha=0.5)
+
+      # ★ グリッド線や不要な線を削除してスッキリさせる
       ax.tick_params(axis="y", left=False, labelleft=False)
       ax.tick_params(labelbottom=False)
-      ax.tick_params(axis='x', which='both', bottom=False, top=False)
+      # X軸の目盛り線（ティック）を非表示にする
+      ax.tick_params(
+          axis='x',
+          which='both',
+          bottom=False, # 下側の目盛り線
+          top=False     # 上側の目盛り線
+      )
 
+      # ★ 【変更】グラフ間の線（枠線）を完全に非表示にしてスダレ状にする
       for spine in ax.spines.values():
         spine.set_visible(False)
+
+      # ★ 【追加】背景を透明にして、上下からはみ出た波形が下のレイヤーに重なって見えるようにする
       ax.set_facecolor('none')
 
+    # 一番下の軸だけにX軸（秒）のラベルを表示
     axes[-1].tick_params(labelbottom=True)
     axes[-1].tick_params(axis='x', which='both', bottom=True)
     axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
 
+    # 全体タイトル
     date_title = current_dt.strftime("%Y/%m/%d %H:00")
     plt.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_name}.{comp_name}", fontsize=12)
 
