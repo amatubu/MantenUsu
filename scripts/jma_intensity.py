@@ -3,6 +3,64 @@ import numpy as np
 import matplotlib.pyplot as plt
 from plot_common import plot_components
 
+# 計測震度から気象庁震度階級へ変換
+#   I ... 計測震度
+def convert_to_jma_scale( I ):
+  """計測震度を気象庁震度階級に変換する関数"""
+  if I < 0.5: return "0"
+  elif I < 1.5: return "1"
+  elif I < 2.5: return "2"
+  elif I < 3.5: return "3"
+  elif I < 4.5: return "4"
+  elif I < 5.0: return "5弱"
+  elif I < 5.5: return "5強"
+  elif I < 6.0: return "6弱"
+  elif I < 6.5: return "6強"
+  else: return "7"
+
+# 気象庁震度計測のためのフィルター
+#   data          ... 波形データ
+#   sampling_rate ... サンプリングレート(Hz)
+def apply_jma_filter(data, sampling_rate):
+  """気象庁定義のフィルターを加速度波形データに適用する関数"""
+  n = len( data )
+  # フーリエ変換
+  # yfは周波数ごとのデータの配列。要素数はn
+  yf = fft( data )
+
+  # 周波数軸を作成
+  # xfは周波数ごとのラベルの配列。要素数はn
+  xf = fftfreq( n, 1 / sampling_rate )
+
+  # --- ここからフィルターを数式通りに作成 ---
+  # 周波数が0や負の値の場合を考慮してエラーを回避
+  xf_positive = np.abs( xf )
+
+  # 1. ローカットフィルター
+  # 1Hz未満のものを小さく
+  fl = np.sqrt( 1 - np.exp( -(xf_positive / 0.5)**3 ) )
+
+  # 2. ハイカットフィルター
+  # 10Hz以上くらいのものを小さく
+  y = xf_positive / 10.0
+  fh = ( 1 + 0.694*y**2 + 0.241*y**4 + 0.0557*y**6 + 0.009664*y**8 + 0.00134*y**10 + 0.000155*y**12 )**( -0.5 )
+
+  # 3. 周期効果フィルター (f=0でのゼロ割を避ける)
+  # 周波数の小さいものを少し大きく、大きいものを少し小さく
+  ff = np.sqrt( 1 / np.where( xf_positive == 0, 1e-9, xf_positive ) )
+
+  # 総合フィルター（1～3のフィルタを合成）
+  # 配列を要素ごとにかけ合わせる
+  total_filter = fl * fh * ff
+
+  # フィルターを適用
+  # 配列を要素ごとにかけあわせる
+  yf_filtered = yf * total_filter
+
+  # 逆フーリエ変換で時間領域の波形に戻す
+  # 結果は複素数になるため、実部を取り出す
+  return np.real( ifft( yf_filtered ) )
+
 # 震度推定画面を表示
 #    stream ... 波形データ(3要素)
 # 参考
@@ -34,64 +92,6 @@ def analyze_jma_scale(stream):
     ax.set_ylabel( ylabel )
     ax.legend( loc="upper right", fontsize="small" )
     ax.grid(True)
-
-  # 計測震度から気象庁震度階級へ変換
-  #   I ... 計測震度
-  def convert_to_jma_scale( I ):
-    """計測震度を気象庁震度階級に変換する関数"""
-    if I < 0.5: return "0"
-    elif I < 1.5: return "1"
-    elif I < 2.5: return "2"
-    elif I < 3.5: return "3"
-    elif I < 4.5: return "4"
-    elif I < 5.0: return "5弱"
-    elif I < 5.5: return "5強"
-    elif I < 6.0: return "6弱"
-    elif I < 6.5: return "6強"
-    else: return "7"
-
-  # 気象庁震度計測のためのフィルター
-  #   data          ... 波形データ
-  #   sampling_rate ... サンプリングレート(Hz)
-  def apply_jma_filter(data, sampling_rate):
-    """気象庁定義のフィルターを加速度波形データに適用する関数"""
-    n = len( data )
-    # フーリエ変換
-    # yfは周波数ごとのデータの配列。要素数はn
-    yf = fft( data )
-
-    # 周波数軸を作成
-    # xfは周波数ごとのラベルの配列。要素数はn
-    xf = fftfreq( n, 1 / sampling_rate )
-
-    # --- ここからフィルターを数式通りに作成 ---
-    # 周波数が0や負の値の場合を考慮してエラーを回避
-    xf_positive = np.abs( xf )
-
-    # 1. ローカットフィルター
-    # 1Hz未満のものを小さく
-    fl = np.sqrt( 1 - np.exp( -(xf_positive / 0.5)**3 ) )
-
-    # 2. ハイカットフィルター
-    # 10Hz以上くらいのものを小さく
-    y = xf_positive / 10.0
-    fh = ( 1 + 0.694*y**2 + 0.241*y**4 + 0.0557*y**6 + 0.009664*y**8 + 0.00134*y**10 + 0.000155*y**12 )**( -0.5 )
-
-    # 3. 周期効果フィルター (f=0でのゼロ割を避ける)
-    # 周波数の小さいものを少し大きく、大きいものを少し小さく
-    ff = np.sqrt( 1 / np.where( xf_positive == 0, 1e-9, xf_positive ) )
-
-    # 総合フィルター（1～3のフィルタを合成）
-    # 配列を要素ごとにかけ合わせる
-    total_filter = fl * fh * ff
-
-    # フィルターを適用
-    # 配列を要素ごとにかけあわせる
-    yf_filtered = yf * total_filter
-
-    # 逆フーリエ変換で時間領域の波形に戻す
-    # 結果は複素数になるため、実部を取り出す
-    return np.real( ifft( yf_filtered ) )
 
   # --- 1. 元の速度波形 ---
   plot_three_components(axes[0], st, "1. 元の速度波形 (Original Velocity)", "速度 (m/s)")
