@@ -12,6 +12,8 @@ import tkinter as tk                      # GUIツール
 from tkinter import messagebox, ttk       # GUIの拡張ツール(ttk = Themed Tkinter)
 import zipfile                            # Zipファイルの処理ツール
 import warnings
+import traceback
+import re
 
 from obspy import Stream, read, UTCDateTime  # SACファイルの波形表示
 import matplotlib.pyplot as plt              # グラフ表示ツール
@@ -967,7 +969,6 @@ class MantenUsuSeismographApp:
       minute_traces.append(sliced_tr)
 
     # 2. 共通の最大振幅とスケール計算
-    import numpy as np
     all_data = np.concatenate([tr.data for tr in minute_traces if len(tr.data) > 0])
     global_max = np.max(np.abs(all_data)) if len(all_data) > 0 else 1.0
     if global_max == 0:
@@ -1702,7 +1703,7 @@ class MantenUsuSeismographApp:
     btn_measure_jma_scale.pack(side=tk.LEFT, padx=(0, 10))
 
     # 「P波・S波検出」ボタンが押されたときの処理
-    def on_ps_anlyize():
+    def on_ps_analyze():
       selected_station = station_combobox.get()
       if not selected_station:
         messagebox.showwarning("警告", "拠点名が選択されていません。")
@@ -1719,8 +1720,8 @@ class MantenUsuSeismographApp:
       plot_ps_arrival_time(station_st)
 
     # 「P波・S波検出」ボタン
-    btn_anylize_ps_arrival = ttk.Button(control_frame, text="P波・S波検出", command=on_ps_anlyize)
-    btn_anylize_ps_arrival.pack(side=tk.LEFT, padx=(0, 10))
+    btn_analyze_ps_arrival = ttk.Button(control_frame, text="P波・S波検出", command=on_ps_analyze)
+    btn_analyze_ps_arrival.pack(side=tk.LEFT, padx=(0, 10))
 
   # Googleドライブから指定されたZIPファイルをダウンロードする
   def download_zip_from_drive(self, zip_filename):
@@ -1963,7 +1964,6 @@ class MantenUsuSeismographApp:
       print("[エラー] daily_zips内にZIPファイルが見つかりません。")
       return
 
-    import re
     target_zips = []
     for zpath in zip_files:
       stem = zpath.stem
@@ -2064,7 +2064,6 @@ class MantenUsuSeismographApp:
 
         except Exception as e:
           print(f"     [エラー] プロット生成中にエラー: {e}")
-          import traceback
           traceback.print_exc()
 
     print("\n=== バッチ処理がすべて完了しました ===")
