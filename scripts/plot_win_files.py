@@ -24,6 +24,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
+from ps_picker import plot_ps_arrival_time
+
 # MacのTcl/Tk非推奨警告を抑制
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
@@ -40,17 +42,17 @@ warnings.filterwarnings(
 # 2. 4拠点のグラフ表示を2x2のグリッド表示させる
 # 4. Googleドライブからのダウンロード中に中止処理を追加
 # 5. log_messageのprintへの出力用にデバッグオプション(コマンドラインオプション)を追加する
-# [実装中]6. 震度の推測
+# [完了]6. 震度の推測
 # 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
 # 8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
 # 9. キャッシュ整理処理で、WINファイルのみ、結合前WINファイルのみなどのオプション追加
-# 10. P波、S波の到着時刻計算
+# [実装中]10. P波、S波の到着時刻計算
 # 11. 震源位置、地震発生時刻の推測
 
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "2.1.0"
+  APP_VERSION = "2.2.0"
 
   # クラスの初期化
   def __init__(self, root):
@@ -1679,7 +1681,7 @@ class MantenUsuSeismographApp:
     station_combobox.pack(side=tk.LEFT, padx=(0, 10))
 
     # 「震度推定」ボタンが押されたときの処理
-    def on_seismic_measured():
+    def on_jma_scale():
       selected_station = station_combobox.get()
       if not selected_station:
         messagebox.showwarning("警告", "拠点名が選択されていません。")
@@ -1696,8 +1698,29 @@ class MantenUsuSeismographApp:
       self.analyze_jma_scale(station_st)
 
     # 「震度推定」ボタン
-    btn_measure = ttk.Button(control_frame, text="震度推定", command=on_seismic_measured)
-    btn_measure.pack(side=tk.LEFT)
+    btn_measure_jma_scale = ttk.Button(control_frame, text="震度推定", command=on_jma_scale)
+    btn_measure_jma_scale.pack(side=tk.LEFT, padx=(0, 10))
+
+    # 「P波・S波検出」ボタンが押されたときの処理
+    def on_ps_anlyize():
+      selected_station = station_combobox.get()
+      if not selected_station:
+        messagebox.showwarning("警告", "拠点名が選択されていません。")
+        return
+
+      station_st = ordered_st.select(station=selected_station)
+
+      # 該当拠点のデータが空でないかチェック
+      if len(station_st) == 0:
+        messagebox.showerror("エラー", f"拠点 [{selected_station}] の波形データが見つかりません。")
+        return
+
+      # P波・S波検出メソッドを呼ぶ
+      plot_ps_arrival_time(station_st)
+
+    # 「P波・S波検出」ボタン
+    btn_anylize_ps_arrival = ttk.Button(control_frame, text="P波・S波検出", command=on_ps_anlyize)
+    btn_anylize_ps_arrival.pack(side=tk.LEFT, padx=(0, 10))
 
   # Googleドライブから指定されたZIPファイルをダウンロードする
   def download_zip_from_drive(self, zip_filename):
