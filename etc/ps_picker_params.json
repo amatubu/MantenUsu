@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "params": {
+    "p_sta": 2.5,
+    "p_lta": 7.5,
+    "p_thr": 2.9,
+    "s_sta": 4.0,
+    "s_lta": 10.0,
+    "s_thr": 2.4,
+    "omori_k": 8.0
+  }
+}

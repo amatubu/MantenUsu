@@ -6,6 +6,8 @@ from obspy.signal.trigger import recursive_sta_lta
 import json
 from pathlib import Path
 
+from plot_common import plot_components
+
 # ==========================================
 # 設定ファイル・プリセット
 # ==========================================
@@ -73,9 +75,6 @@ def save_params(params):
     except OSError as e:
         print(f"設定の保存に失敗しました: {e}")
 
-# 波形の色分けの定義
-component_colors = {"U": "#1f77b4", "N": "#ff7f0e", "E": "#2ca02c"}
-
 # 波形データをファイルから読み込む
 def read_waveform_data(ew_file, ns_file, ud_file):
     """3成分のSACファイルを読み込む関数"""
@@ -88,25 +87,6 @@ def read_waveform_data(ew_file, ns_file, ud_file):
     except Exception as e:
         print(f"ファイルの読み込みに失敗しました: {e}")
         return None
-
-# Streamの各成分を描画
-def plot_components(ax, stream_obj):
-    """Stream内の各成分を、成分ごとの色で ax に描画する共通ルーチン"""
-    for tr in stream_obj:
-        ch_name = tr.stats.channel
-        color = "gray"  # デフォルト
-        for key, col in component_colors.items():
-            if key in ch_name:
-                color = col
-                break
-        ax.plot(
-            tr.times(),
-            tr.data,
-            label=ch_name,
-            alpha=0.8,
-            linewidth=0.5,
-            color=color,
-        )
 
 # P波・S波の到着時刻を推定し、結果を辞書で返す
 #   tr_u     ... 垂直方向(U)の波形データ

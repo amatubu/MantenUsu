@@ -20,7 +20,6 @@ import matplotlib.pyplot as plt              # グラフ表示ツール
 from matplotlib.widgets import Button
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvasTkAgg
 import numpy as np                        # 数値計算用
-from numpy.fft import fft, ifft, fftfreq  # フーリエ変換
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -28,6 +27,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from ps_picker import plot_ps_arrival_time
 from jma_intensity import analyze_jma_scale
+from plot_common import get_component_color, setup_japanese_font
 
 # MacのTcl/Tk非推奨警告を抑制
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
@@ -697,11 +697,6 @@ class MantenUsuSeismographApp:
     # ウィンドウごとに完全に独立した状態を保持するコンテナ
     state = {"current_dt": start_dt}
 
-    # フォント設定
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["font.sans-serif"] = ["Hiragino Sans", "Meiryo", "Yu Gothic", "MS Gothic", "sans-serif"]
-    plt.rcParams["axes.unicode_minus"] = False
-
     # グラフのレイアウト設定 (縦60行)
     fig_width = 8.5
     fig_height = 10.0  # 60本並べるため、ある程度の縦の高さを確保
@@ -1294,17 +1289,6 @@ class MantenUsuSeismographApp:
   #   end_str    ... 終了日時(YYYYMMDDHHmm)
   #   title_str  ... 波形上部に表示するタイトル(日本語表示可)
   def plot_waveforms(self, dest_dir, start_str, end_str, title_str):
-    # クロスプラットフォーム対応のフォント設定（左から優先的に探す）
-    plt.rcParams["font.family"] = "sans-serif"
-    plt.rcParams["font.sans-serif"] = [
-        "Hiragino Sans",  # Macの標準日本語フォント
-        "Meiryo",         # Windowsのメイリオ
-        "Yu Gothic",      # Windowsの游ゴシック
-        "MS Gothic",      # WindowsのMSゴシック
-        "sans-serif",     # 最後の砦（ダメならデフォルト）
-    ]
-    plt.rcParams["axes.unicode_minus"] = False  # マイナス記号が文字化けするのを防ぐ
-
     # 出力フォルダにあるSACファイルをObspyですべて読み込み
     st = read(str(dest_dir / "*_sac*"))
     # ファイルが存在しない、もしくは読み込めなかった場合はエラー
@@ -1358,12 +1342,6 @@ class MantenUsuSeismographApp:
       top    = 0.92   # 上: 8%(タイトルの高さを確保)
     )
 
-    # 波形の色分けの定義
-    #   U(上下): 青
-    #   N(南北): オレンジ
-    #   E(東西): 緑
-    component_colors = {"U": "#1f77b4", "N": "#ff7f0e", "E": "#2ca02c"}
-
     # 波形データ(ordered_st)と描画領域(axes)をzipでペアにしてループさせる
     for tr, ax in zip(ordered_st, axes):
       # 時間軸データ(横軸)の取得
@@ -1372,8 +1350,8 @@ class MantenUsuSeismographApp:
       data = tr.data
       # チャンネル名
       ch = tr.stats.channel
-      # チャンネル名を元に色を決定(U、N、E以外はグレー)
-      col = component_colors.get(ch, "#333333")
+      # チャンネル名を元に色を決定(U、N、E以外はデフォルト色)
+      col = get_component_color(ch)
 
       # 波形を描画する
       ax.plot(
@@ -1831,11 +1809,6 @@ class MantenUsuSeismographApp:
             print(f"     [スキップ] チャンネル {channel} が見つかりませんでした。")
             continue
 
-          # 日本語フォント設定
-          plt.rcParams["font.family"] = "sans-serif"
-          plt.rcParams["font.sans-serif"] = ["Hiragino Sans", "Meiryo", "Yu Gothic", "MS Gothic", "sans-serif"]
-          plt.rcParams["axes.unicode_minus"] = False
-
           plt.ioff()
           fig_width = 8.5
           fig_height = 10.0
@@ -1861,6 +1834,9 @@ class MantenUsuSeismographApp:
 
 # メインルーチン
 def main():
+  # 日本語フォント設定
+  setup_japanese_font()
+
   # コマンドラインオプションの取得
   parser = argparse.ArgumentParser(description="有珠満点地震計プロジェクト 波形ビューワ / バッチ処理ツール")
   parser.add_argument("--batch", action="store_true", help="UIを起動せず、バッチ処理モードで実行する")

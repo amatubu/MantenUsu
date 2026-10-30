@@ -3,3 +3,7 @@ tools/*
 output/*
 service_account/*
 batch_plots/*
+scripts/__pycache__/*
+test_scripts/*
+.DS_Store
+diff.txt

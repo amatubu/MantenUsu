@@ -1,7 +1,7 @@
 from numpy.fft import fft, ifft, fftfreq
 import numpy as np
 import matplotlib.pyplot as plt
-#from plot_common import plot_components
+from plot_common import plot_components
 
 # 震度推定画面を表示
 #    stream ... 波形データ(3要素)
@@ -16,9 +16,6 @@ def analyze_jma_scale(stream):
   for tr in st:
     tr.data = tr.data * 1e-9
 
-  # 波形の色分けの定義
-  component_colors = {"U": "#1f77b4", "N": "#ff7f0e", "E": "#2ca02c"}
-
   # 3行2列のサブプロット（グリッド）を作成
   fig, axes = plt.subplots(3, 2, figsize=(15, 9))
   axes = axes.flatten()
@@ -29,25 +26,7 @@ def analyze_jma_scale(stream):
   #   titie      ... グラフに表示させるタイトル
   #   ylabel     ... 縦軸のラベル
   def plot_three_components( ax, stream_obj, title, ylabel ):
-    # 波形データに含まれる成分をひとつひとつ抽出
-    for tr in stream_obj:
-      # チャンネル名
-      ch_name = tr.stats.channel
-      # チャンネル名に含まれる文字（E, N, U）から色を決定
-      color = 'gray' # デフォルト
-      for key, col in component_colors.items():
-        if key in ch_name:
-          color = col
-          break
-      # 指定された色で波形を描画
-      ax.plot(
-        tr.times(),
-        tr.data,
-        label=ch_name,
-        alpha=0.8,
-        linewidth=0.5,
-        color=color
-      )
+    plot_components(ax, stream_obj)          # 色分けして描画(共通部品)
 
     # タイトル、X軸、Y軸のラベルを設定
     ax.set_title( title )
