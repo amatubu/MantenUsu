@@ -18,15 +18,15 @@ COMP_ORDER = ["U", "N", "E"]
 def sort_stream(st):
   # 並び替え後のリストを得る
   ordered_st = Stream(
-      sorted(
-          st,  # 並び替えたいStreamオブジェクト
-          key=lambda tr: (  # st からひとつひとつ取り出して tr に格納し、繰り返す
-              tr.stats.station,  # 拠点名
-              COMP_ORDER.index(tr.stats.channel[-1])  # チャンネルの並び順を末尾の文字から設定
-              if tr.stats.channel[-1] in COMP_ORDER
-              else 99,  # U、N、E 以外だったら 99番にして最後に並べる
-          ),
-      )
+    sorted(
+      st,  # 並び替えたいStreamオブジェクト
+      key=lambda tr: (  # st からひとつひとつ取り出して tr に格納し、繰り返す
+        tr.stats.station,  # 拠点名
+        COMP_ORDER.index(tr.stats.channel[-1])  # チャンネルの並び順を末尾の文字から設定
+        if tr.stats.channel[-1] in COMP_ORDER
+        else 99,  # U、N、E 以外だったら 99番にして最後に並べる
+      ),
+    )
   )
   return ordered_st
 
@@ -95,8 +95,8 @@ def set_figure_title(fig, ordered_st, title_str):
   if title_str:
     title_display += f" : {title_str}"
   fig.suptitle(
-      f"有珠・満点地震計波形 ({title_display}) - 波形数: {len(ordered_st)}",
-      fontsize=13,
+    f"有珠・満点地震計波形 ({title_display}) - 波形数: {len(ordered_st)}",
+    fontsize=13,
   )
 
 # すべての波形を縦に1列に並べて描く(横軸の時間は共通)

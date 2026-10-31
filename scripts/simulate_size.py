@@ -28,9 +28,9 @@ def main():
     for date_folder in os.listdir(id_path):
       date_path = os.path.join(id_path, date_folder)
       if (
-          not os.path.isdir(date_path)
-          or not date_folder.isdigit()
-          or len(date_folder) != 6
+        not os.path.isdir(date_path)
+        or not date_folder.isdigit()
+        or len(date_folder) != 6
       ):
         continue
 

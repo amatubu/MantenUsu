@@ -52,7 +52,7 @@ def download_file_from_drive(creds_path, folder_id, filename, dest_path, on_prog
 
   # サービスアカウントの認証情報を読み込み、Drive APIクライアントを構築
   creds = service_account.Credentials.from_service_account_file(
-      str(creds_path), scopes=SCOPES)
+    str(creds_path), scopes=SCOPES)
   service = build("drive", "v3", credentials=creds)
 
   # フォルダ内から同名のファイルを検索

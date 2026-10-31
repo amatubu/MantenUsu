@@ -28,10 +28,10 @@ os.environ["TK_SILENCE_DEPRECATION"] = "1"
 
 # ObsPyのSAC読み込み時のサンプル間隔に関する丸め警告を抑制
 warnings.filterwarnings(
-    "ignore",
-    category=UserWarning,
-    module="obspy.io.sac.util",
-    message=".*Sample spacing read from SAC file.*"
+  "ignore",
+  category=UserWarning,
+  module="obspy.io.sac.util",
+  message=".*Sample spacing read from SAC file.*"
 )
 
 # TODO
@@ -97,19 +97,19 @@ class MantenUsuSeismographApp:
     # 1. 地震タイトル / コメント
     # ラベル
     tk.Label(
-        panel,
-        text = "地震タイトル / コメント:",
-        font = ("sans-serif", 10, "bold")
+      panel,
+      text = "地震タイトル / コメント:",
+      font = ("sans-serif", 10, "bold")
     ).pack(anchor="w", pady=(0, 2))
     # テキスト入力項目の定義
     self.entry_title = tk.Entry(
-        panel,
-        font = ("sans-serif", 11),
-        bg = "white",
-        fg = "black",
-        insertbackground = "black",
-        relief = "solid",
-        bd = 1,                      # 枠線の太さ
+      panel,
+      font = ("sans-serif", 11),
+      bg = "white",
+      fg = "black",
+      insertbackground = "black",
+      relief = "solid",
+      bd = 1,                      # 枠線の太さ
     )
     # 初期表示
     self.entry_title.insert(0, "浦河沖地震")
@@ -119,19 +119,19 @@ class MantenUsuSeismographApp:
     # 2. 開始日時
     # ラベル
     tk.Label(
-        panel,
-        text = "開始日時 (YYYYMMDDHHmm):",
-        font = ("sans-serif", 10, "bold")
+      panel,
+      text = "開始日時 (YYYYMMDDHHmm):",
+      font = ("sans-serif", 10, "bold")
     ).pack(anchor="w", pady=(0, 2))
     # テキスト入力項目の定義
     self.entry_start = tk.Entry(
-        panel,
-        font = ("sans-serif", 11),
-        bg = "white",
-        fg = "black",
-        insertbackground = "black",
-        relief = "solid",
-        bd = 1,
+      panel,
+      font = ("sans-serif", 11),
+      bg = "white",
+      fg = "black",
+      insertbackground = "black",
+      relief = "solid",
+      bd = 1,
     )
     # 初期表示
     self.entry_start.insert(0, "202608232245")
@@ -144,30 +144,30 @@ class MantenUsuSeismographApp:
 
     # ラベル
     tk.Label(
-        end_frame,
-        text = "終了日時 (YYYYMMDDHHmm):",
-        font = ("sans-serif", 10, "bold")
+      end_frame,
+      text = "終了日時 (YYYYMMDDHHmm):",
+      font = ("sans-serif", 10, "bold")
     ).pack(side=tk.LEFT)
 
     # 開始時間をコピーするためのボタン定義
     btn_copy = tk.Button(
-        end_frame,
-        text = "開始時間をコピー",            # ボタンに表示されるラベル
-        font = ("sans-serif", 9),
-        command = self.copy_start_to_end,  # ボタンが押された際に実行されるメソッド
+      end_frame,
+      text = "開始時間をコピー",            # ボタンに表示されるラベル
+      font = ("sans-serif", 9),
+      command = self.copy_start_to_end,  # ボタンが押された際に実行されるメソッド
     )
     # ボタンは右側に揃える
     btn_copy.pack(side=tk.RIGHT)
 
     # テキスト入力項目の定義
     self.entry_end = tk.Entry(
-        panel,
-        font = ("sans-serif", 11),
-        bg = "white",
-        fg = "black",
-        insertbackground = "black",
-        relief = "solid",
-        bd = 1,
+      panel,
+      font = ("sans-serif", 11),
+      bg = "white",
+      fg = "black",
+      insertbackground = "black",
+      relief = "solid",
+      bd = 1,
     )
     # 初期表示
     self.entry_end.insert(0, "202608232249")
@@ -175,9 +175,9 @@ class MantenUsuSeismographApp:
 
     # 時間間隔（●分間）のリアルタイム表示ラベル
     self.lbl_duration = tk.Label(
-        panel, text = "",
-        font = ("sans-serif", 9, "italic"),
-        fg = "#0066cc"
+      panel, text = "",
+      font = ("sans-serif", 9, "italic"),
+      fg = "#0066cc"
     )
     self.lbl_duration.pack(anchor="w", pady=(0, 12))
 
@@ -190,22 +190,22 @@ class MantenUsuSeismographApp:
     # 4. 実行ボタン
     # ボタンの定義
     btn_run = tk.Button(
-        panel,
-        text = "抽出・変換・プロット実行 (自動判定)",    # ボタンに表示されるラベル
-        font = ("sans-serif", 11, "bold"),
-        bg = "#4CAF50",
-        fg = "white",
-        activebackground = "#45a049",
-        command = self.execute_pipeline,  # ボタンが押された際に実行されるメソッド
+      panel,
+      text = "抽出・変換・プロット実行 (自動判定)",    # ボタンに表示されるラベル
+      font = ("sans-serif", 11, "bold"),
+      bg = "#4CAF50",
+      fg = "white",
+      activebackground = "#45a049",
+      command = self.execute_pipeline,  # ボタンが押された際に実行されるメソッド
     )
     btn_run.pack(fill=tk.X, ipady=4, pady=(0, 15))
 
     # 5. 履歴セクション
     # ラベル
     tk.Label(
-        panel,
-        text = "過去の実行履歴 (再表示・削除):",
-        font = ("sans-serif", 10, "bold")
+      panel,
+      text = "過去の実行履歴 (再表示・削除):",
+      font = ("sans-serif", 10, "bold")
     ).pack(anchor="w", pady=(0, 2))
 
     # 履歴のプルダウン、再表示・削除ボタンを配置するパネル
@@ -214,28 +214,28 @@ class MantenUsuSeismographApp:
 
     # 履歴のプルダウンの定義
     self.history_combo = ttk.Combobox(
-        hist_frame,
-        font = ("sans-serif", 10),
-        state = "readonly"          # 直接入力不可
+      hist_frame,
+      font = ("sans-serif", 10),
+      state = "readonly"          # 直接入力不可
     )
     self.history_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
 
     # 履歴の再表示ボタン(履歴の内容を呼び出して反映させる)
     btn_load_hist = tk.Button(
-        hist_frame,
-        text="再表示",
-        font=("sans-serif", 9),
-        command=self.load_from_history,  # ボタンが押された際に実行されるメソッド
+      hist_frame,
+      text="再表示",
+      font=("sans-serif", 9),
+      command=self.load_from_history,  # ボタンが押された際に実行されるメソッド
     )
     btn_load_hist.pack(side=tk.LEFT, padx=(0, 3))
 
     # 履歴の削除ボタン(履歴の内容を削除する)
     btn_del_hist = tk.Button(
-        hist_frame,
-        text = "削除",
-        font = ("sans-serif", 9),
-        fg = "red",
-        command = self.delete_history  # ボタンが押された際に実行されるメソッド
+      hist_frame,
+      text = "削除",
+      font = ("sans-serif", 9),
+      fg = "red",
+      command = self.delete_history  # ボタンが押された際に実行されるメソッド
     )
     btn_del_hist.pack(side=tk.LEFT)
 
@@ -246,9 +246,9 @@ class MantenUsuSeismographApp:
 
     # --- 7. 【新機能】1時間スタック波形表示セクション ---
     tk.Label(
-        panel,
-        text="1時間スタック波形表示 (スダレ状):",
-        font=("sans-serif", 10, "bold")
+      panel,
+      text="1時間スタック波形表示 (スダレ状):",
+      font=("sans-serif", 10, "bold")
     ).pack(anchor="w", pady=(8, 2))
 
     stack_frame = tk.Frame(panel)
@@ -268,10 +268,10 @@ class MantenUsuSeismographApp:
 
     # チャンネルコンボボックス (manten_ch.tblから自動読込)
     self.channel_combo = ttk.Combobox(
-        stack_frame,
-        font=("sans-serif", 9),
-        state="readonly",
-        width=13
+      stack_frame,
+      font=("sans-serif", 9),
+      state="readonly",
+      width=13
     )
     channel_list = self.load_channel_options()
     self.channel_combo["values"] = channel_list
@@ -281,11 +281,11 @@ class MantenUsuSeismographApp:
 
     # 実行ボタン
     btn_stack_run = tk.Button(
-        stack_frame,
-        text="スタック表示",
-        font=("sans-serif", 9, "bold"),
-        activebackground="#1e88e5",
-        command=self.execute_stack_pipeline
+      stack_frame,
+      text="スタック表示",
+      font=("sans-serif", 9, "bold"),
+      activebackground="#1e88e5",
+      command=self.execute_stack_pipeline
     )
     btn_stack_run.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
@@ -297,9 +297,9 @@ class MantenUsuSeismographApp:
     # --- メンテナンス・整理セクション ---
     # 5. 実行履歴セクションの下あたりに「実行ログ」エリアを追加
     tk.Label(
-        panel,
-        text="メンテナンス:",
-        font=("sans-serif", 10, "bold")
+      panel,
+      text="メンテナンス:",
+      font=("sans-serif", 10, "bold")
     ).pack(anchor="w", pady=(10, 2))
 
     maint_frame = tk.Frame(panel)
@@ -307,40 +307,40 @@ class MantenUsuSeismographApp:
 
     # output フォルダの整理
     btn_clean_output = tk.Button(
-        maint_frame,
-        text="出力データキャッシュ整理",
-        font=("sans-serif", 9),
-        command=self.clean_output_cache,
+      maint_frame,
+      text="出力データキャッシュ整理",
+      font=("sans-serif", 9),
+      command=self.clean_output_cache,
     )
     btn_clean_output.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
 
     # daily_zips フォルダの整理
     btn_clean_zips = tk.Button(
-        maint_frame,
-        text="波形Zipファイル整理",
-        font=("sans-serif", 9),
-        command=self.clean_daily_zips,
+      maint_frame,
+      text="波形Zipファイル整理",
+      font=("sans-serif", 9),
+      command=self.clean_daily_zips,
     )
     btn_clean_zips.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
 
     # クラスの初期化内でのUI追加例
     # 5. 実行履歴セクションの下あたりに「実行ログ」エリアを追加
     tk.Label(
-        panel,
-        text="実行ログ:",
-        font=("sans-serif", 10, "bold")
+      panel,
+      text="実行ログ:",
+      font=("sans-serif", 10, "bold")
     ).pack(anchor="w", pady=(10, 2))
 
     # ログを表示するテキストエリア（スクロール付き、または読み取り専用）
     self.log_text = tk.Text(
-        panel,
-        height=6,
-        font=("sans-serif", 9),
-        bg="#f9f9f9",
-        fg="#333333",
-        relief="solid",
-        bd=1,
-        state=tk.DISABLED  # 初期状態は書き込み禁止（プログラムからのみ追加）
+      panel,
+      height=6,
+      font=("sans-serif", 9),
+      bg="#f9f9f9",
+      fg="#333333",
+      relief="solid",
+      bd=1,
+      state=tk.DISABLED  # 初期状態は書き込み禁止（プログラムからのみ追加）
     )
     self.log_text.pack(fill=tk.X, pady=(0, 5))
     # log_message の出力先として登録
@@ -393,7 +393,7 @@ class MantenUsuSeismographApp:
       # 開始日時終了日時だったらエラー表示
       if start_dt > end_dt:
         self.lbl_duration.config(
-            text="⚠️ エラー: 終了日時が開始日時より前です", fg="red"
+          text="⚠️ エラー: 終了日時が開始日時より前です", fg="red"
         )
         return
 
@@ -406,7 +406,7 @@ class MantenUsuSeismographApp:
       # 1時間以上であれば時間、分、秒を表示
       if hours > 0:
         duration_text = (
-            f"間隔: {hours}時間 {rem_mins}分 ({secs:,}秒間)"
+          f"間隔: {hours}時間 {rem_mins}分 ({secs:,}秒間)"
         )
       elif mins > 0:
         # 1分以上であれば分を表示
@@ -420,7 +420,7 @@ class MantenUsuSeismographApp:
     else:
       # 日付・時間形式に変換できなかったときはエラー表示
       self.lbl_duration.config(
-          text="形式: YYYYMMDDHHmm (例: 202608232245)", fg="gray"
+        text="形式: YYYYMMDDHHmm (例: 202608232245)", fg="gray"
       )
 
   # 開始日時を終了日時にコピー
@@ -468,8 +468,8 @@ class MantenUsuSeismographApp:
     # 履歴リストからひとつひとつを取り出し、開始・終了日時とタイトルを取得
     # プルダウンに表示するリストに再構築
     display_list = [
-        f"{item['start']} ～ {item['end']} [{item.get('title', '')}]"
-        for item in history
+      f"{item['start']} ～ {item['end']} [{item.get('title', '')}]"
+      for item in history
     ]
     # 履歴プルダウンに設定
     self.history_combo["values"] = display_list
@@ -543,7 +543,7 @@ class MantenUsuSeismographApp:
       # 削除してもいいかどうかの確認
       # selected には選択されている項目のテキストが入っている
       if messagebox.askyesno(
-          "確認", f"以下の履歴を削除しますか？\n\n{selected}"
+        "確認", f"以下の履歴を削除しますか？\n\n{selected}"
       ):
         # Yesが押されたら該当の履歴を削除する
         # 選択されているインデックスの履歴リストを削除
@@ -567,25 +567,25 @@ class MantenUsuSeismographApp:
     if not start_dt or not end_dt:
       # 変換ができなければエラー
       messagebox.showerror(
-          "エラー",
-          "日時の形式が正しくありません。\nYYYYMMDDHHmm (例: 202608232245)"
-          " で入力してください。",
+        "エラー",
+        "日時の形式が正しくありません。\nYYYYMMDDHHmm (例: 202608232245)"
+        " で入力してください。",
       )
       return
 
     # 開始日時終了日時だったらエラー表示
     if start_dt > end_dt:
       messagebox.showerror(
-          "エラー", "終了日時が開始日時より前です。"
+        "エラー", "終了日時が開始日時より前です。"
       )
       return
 
     # ★ 【追加】期間が1日（24時間）以上の場合は確認メッセージを表示する
     if (end_dt - start_dt) >= timedelta(days=1):
       if not messagebox.askyesno(
-          "確認 - 長期期間の処理",
-          "指定された期間が1日以上です。\n"
-          "ZIPファイルのダウンロードや処理に時間がかかる場合がありますが、実行しますか？"
+        "確認 - 長期期間の処理",
+        "指定された期間が1日以上です。\n"
+        "ZIPファイルのダウンロードや処理に時間がかかる場合がありますが、実行しますか？"
       ):
         return
 
@@ -762,7 +762,7 @@ class MantenUsuSeismographApp:
     if not target_zips:
       if show_dialog:
         messagebox.showwarning(
-            "警告", "指定された期間に一致するZIPファイルが見つかりませんでした。"
+          "警告", "指定された期間に一致するZIPファイルが見つかりませんでした。"
         )
       return 0
 
@@ -771,8 +771,8 @@ class MantenUsuSeismographApp:
     if extracted_count == 0:
       if show_dialog:
         messagebox.showwarning(
-            "警告",
-            "指定範囲内に該当するWINファイルが存在しませんでした（0件抽出）。",
+          "警告",
+          "指定範囲内に該当するWINファイルが存在しませんでした（0件抽出）。",
         )
       return 0
 
@@ -829,10 +829,10 @@ class MantenUsuSeismographApp:
     loading_win.grab_set()
 
     tk.Label(
-        loading_win,
-        textvariable=progress_var,
-        font=("sans-serif", 10),
-        justify=tk.CENTER
+      loading_win,
+      textvariable=progress_var,
+      font=("sans-serif", 10),
+      justify=tk.CENTER
     ).pack(expand=True, padx=10, pady=(10, 0))
 
     # 中止ボタン。押されたら次の区切り(CHUNK_SIZE ごと)でダウンロードを止める
@@ -893,10 +893,10 @@ class MantenUsuSeismographApp:
       return
 
     msg = (
-        f"daily_zipsディレクトリ内のZIPファイルを削除します。\n\n"
-        f"・ZIPファイル数: {len(zip_files):,} 件\n"
-        f"・総容量: {cache_manager.format_size(cache_manager.total_size(zip_files))}\n\n"
-        f"本当によろしいですか？"
+      f"daily_zipsディレクトリ内のZIPファイルを削除します。\n\n"
+      f"・ZIPファイル数: {len(zip_files):,} 件\n"
+      f"・総容量: {cache_manager.format_size(cache_manager.total_size(zip_files))}\n\n"
+      f"本当によろしいですか？"
     )
 
     if messagebox.askyesno("確認 - daily_zips整理", msg):
@@ -1053,10 +1053,10 @@ def main():
   if args.batch:
     root.withdraw() # GUIウィンドウを非表示にする
     app.run_batch_processing(
-        channel=args.channel,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        overwrite=args.overwrite
+      channel=args.channel,
+      start_date=args.start_date,
+      end_date=args.end_date,
+      overwrite=args.overwrite
     )
     root.destroy()
   else:

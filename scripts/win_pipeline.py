@@ -147,8 +147,8 @@ def correct_channels(combined_win, station_id, tools_dir, etc_dir):
   # wchch_32 [ch conv table] < [in_file] > [out_file]
   with open(combined_win, "rb") as fin, open(corrected_win, "wb") as fout:
     res = subprocess.run(
-        [str(wchch_path.resolve()), str(conv_tbl_path.resolve())],
-        stdin=fin, stdout=fout, stderr=subprocess.PIPE)
+      [str(wchch_path.resolve()), str(conv_tbl_path.resolve())],
+      stdin=fin, stdout=fout, stderr=subprocess.PIPE)
   if res.returncode != 0:
     log_message(f"チャンネル変換エラー (Station: {station_id}): "
                 f"{res.stderr.decode('utf-8', errors='ignore')}")
@@ -182,12 +182,12 @@ def convert_wins_to_sacs(dest_dir, tools_dir, etc_dir):
     # usage: win2sac_32 winfile ch_no sacfile [outdir] [-p(prmfile)]
     #          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
     cmd = [
-        str(win2sac_path.resolve()),     # win2sac_32 のフルパス
-        target_win.name,                 # 結合された(読み替え後の)WINファイル
-        str(station_ch_path.resolve()),  # チャンネル定義ファイルのフルパス
-        f"{station_id}_sac",             # 出力するSACファイル
-        ".",                             # 出力先フォルダ(カレントディレクトリ)
-        f"-p{win_prm_path.resolve()}",   # prmファイルのフルパス
+      str(win2sac_path.resolve()),     # win2sac_32 のフルパス
+      target_win.name,                 # 結合された(読み替え後の)WINファイル
+      str(station_ch_path.resolve()),  # チャンネル定義ファイルのフルパス
+      f"{station_id}_sac",             # 出力するSACファイル
+      ".",                             # 出力先フォルダ(カレントディレクトリ)
+      f"-p{win_prm_path.resolve()}",   # prmファイルのフルパス
     ]
     result = subprocess.run(cmd, cwd=dest_dir,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)

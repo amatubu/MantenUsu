@@ -170,7 +170,7 @@ def plot_jma_analysis(result):
   # ウィンドウのタイトル(既定の「Figure 1」の代わり)
   if fig.canvas.manager is not None:
     fig.canvas.manager.set_window_title(
-        f"震度推定 - {result['station']} ({result['start_time']})")
+      f"震度推定 - {result['station']} ({result['start_time']})")
   axes = axes.flatten()
 
   # --- 1. 元の速度波形 ---
@@ -214,8 +214,8 @@ def plot_jma_analysis(result):
 
   # テキストを描画
   ax_text.text(0.05, 0.5, result_text, fontsize=10.5,
-              bbox=dict(boxstyle='round,pad=1', facecolor='lightyellow', edgecolor='orange', alpha=0.8),
-              verticalalignment='center')
+               bbox=dict(boxstyle='round,pad=1', facecolor='lightyellow', edgecolor='orange', alpha=0.8),
+               verticalalignment='center')
 
   # レイアウト調整
   plt.tight_layout()

@@ -27,7 +27,7 @@ for zip_path in daily_zips_dir.glob("**/*.zip"):
                 # YYMMDDHHMM 形式から日時へ変換
                 dt = datetime.strptime(time_str, "%y%m%d%H%M")
                 records.append(
-                    {"station": station_id, "time": dt, "zip_name": zip_path.name}
+                  {"station": station_id, "time": dt, "zip_name": zip_path.name}
                 )
               except ValueError:
                 pass
@@ -56,29 +56,29 @@ else:
     for t in times[1:]:
       if t - prev_t > gap_threshold:
         summary_list.append({
-            "Station": station,
-            "Start_Time": block_start,
-            "End_Time": prev_t,
-            "File_Count": len(
-                group[
-                    (group["time"] >= block_start)
-                    & (group["time"] <= prev_t)
-                ]
-            ),
+          "Station": station,
+          "Start_Time": block_start,
+          "End_Time": prev_t,
+          "File_Count": len(
+            group[
+              (group["time"] >= block_start)
+              & (group["time"] <= prev_t)
+            ]
+          ),
         })
         block_start = t
       prev_t = t
 
     # 最後のブロックを追加
     summary_list.append({
-        "Station": station,
-        "Start_Time": block_start,
-        "End_Time": prev_t,
-        "File_Count": len(
-            group[
-                (group["time"] >= block_start) & (group["time"] <= prev_t)
-            ]
-        ),
+      "Station": station,
+      "Start_Time": block_start,
+      "End_Time": prev_t,
+      "File_Count": len(
+        group[
+          (group["time"] >= block_start) & (group["time"] <= prev_t)
+        ]
+      ),
     })
 
   summary_df = pd.DataFrame(summary_list)
@@ -90,8 +90,8 @@ else:
   summary_df.to_excel("data_availability_summary.xlsx", index=False)
   summary_df.to_csv("data_availability_summary.csv", index=False)
   print(
-      "\n[保存完了] 'data_availability_summary.xlsx' および .csv"
-      " に出力しました。"
+    "\n[保存完了] 'data_availability_summary.xlsx' および .csv"
+    " に出力しました。"
   )
 
   # ガントチャート（タイムライン風）で視覚化
@@ -102,19 +102,19 @@ else:
   for _, row in summary_df.iterrows():
     y = y_mapping[row["Station"]]
     plt.barh(
-        y,
-        row["End_Time"] - row["Start_Time"],
-        left=row["Start_Time"],
-        height=0.4,
-        color="skyblue",
-        edgecolor="navy",
+      y,
+      row["End_Time"] - row["Start_Time"],
+      left=row["Start_Time"],
+      height=0.4,
+      color="skyblue",
+      edgecolor="navy",
     )
 
   plt.yticks(list(y_mapping.values()), list(y_mapping.keys()))
   plt.xlabel("Timeline", fontsize=12)
   plt.ylabel("Station ID", fontsize=12)
   plt.title(
-      "Data Availability Timeline per Station (from ZIP files)", fontsize=14
+    "Data Availability Timeline per Station (from ZIP files)", fontsize=14
   )
   plt.grid(axis="x", linestyle="--", alpha=0.5)
   plt.tight_layout()

@@ -93,9 +93,9 @@ class OutputCacheDialog:
   # --- 集計 ---
   def scan(self):
     self.stats = cache_manager.scan_output(
-        self.output_base,
-        on_progress=lambda n: setattr(self, "progress", n),
-        cancelled=lambda: self.cancel)
+      self.output_base,
+      on_progress=lambda n: setattr(self, "progress", n),
+      cancelled=lambda: self.cancel)
 
   def on_scanned(self):
     if self.stats is None:   # 中止された
@@ -104,8 +104,8 @@ class OutputCacheDialog:
     for key, label in cache_manager.OUTPUT_KINDS:
       count, size = self.stats[key]
       self.checks[key].config(
-          text=f"{label}　{count:,} 件 / {cache_manager.format_size(size)}",
-          state=tk.NORMAL if count else tk.DISABLED)
+        text=f"{label}　{count:,} 件 / {cache_manager.format_size(size)}",
+        state=tk.NORMAL if count else tk.DISABLED)
       if not count:
         self.vars[key].set(False)
     self.update_total()
@@ -131,10 +131,10 @@ class OutputCacheDialog:
     count, size = self.selected_total()
     labels = "\n".join(f"・{label}" for key, label in cache_manager.OUTPUT_KINDS if key in kinds)
     if not messagebox.askyesno(
-        "確認 - 出力データキャッシュ整理",
-        f"次のファイルを削除します。\n\n{labels}\n\n"
-        f"合計: {count:,} 件 / {cache_manager.format_size(size)}\n\n本当によろしいですか？",
-        parent=self.win):
+      "確認 - 出力データキャッシュ整理",
+      f"次のファイルを削除します。\n\n{labels}\n\n"
+      f"合計: {count:,} 件 / {cache_manager.format_size(size)}\n\n本当によろしいですか？",
+      parent=self.win):
       return
     for chk in self.checks.values():
       chk.config(state=tk.DISABLED)
@@ -146,9 +146,9 @@ class OutputCacheDialog:
 
   def delete(self, kinds):
     self.result = cache_manager.delete_output_kinds(
-        self.output_base, kinds,
-        on_progress=lambda n: setattr(self, "progress", n),
-        cancelled=lambda: self.cancel)
+      self.output_base, kinds,
+      on_progress=lambda n: setattr(self, "progress", n),
+      cancelled=lambda: self.cancel)
 
   def on_deleted(self):
     log_message(f"出力データキャッシュの削除が完了しました（{self.result:,} 件）")
@@ -161,7 +161,7 @@ class OutputCacheDialog:
     if self.thread is not None and self.thread.is_alive():
       deleting = self.stats is not None
       if deleting and not messagebox.askyesno(
-          "確認", "削除を中止しますか？（削除済みのファイルは戻りません）", parent=self.win):
+        "確認", "削除を中止しますか？（削除済みのファイルは戻りません）", parent=self.win):
         return
       self.cancel = True
       if deleting:

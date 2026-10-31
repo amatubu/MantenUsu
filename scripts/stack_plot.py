@@ -180,9 +180,9 @@ class StackWindow:
 
     # グラフ上部左側に、拠点ボタン(上段)と成分ボタン(下段)を配置
     self.station_buttons = self._make_button_row(
-        self.stations, y=0.930, width=0.085, on_click=self.set_station)
+      self.stations, y=0.930, width=0.085, on_click=self.set_station)
     self.comp_buttons = self._make_button_row(
-        self.comps, y=0.905, width=0.06, on_click=self.set_comp)
+      self.comps, y=0.905, width=0.06, on_click=self.set_comp)
 
     # 横軸のズーム・ドラッグ・リセットを設定
     attach_zoom_pan(self.fig, self.stack.ax)
@@ -280,7 +280,7 @@ class StackWindow:
     # ウィンドウのタイトル(既定の「Figure 1」の代わり。時間・拠点・成分の切り替えに追従)
     if self.fig.canvas.manager is not None:
       self.fig.canvas.manager.set_window_title(
-          f"1時間スタック波形 - {self.station}.{self.comp} ({self.dt.strftime('%Y/%m/%d %H:00')})")
+        f"1時間スタック波形 - {self.station}.{self.comp} ({self.dt.strftime('%Y/%m/%d %H:00')})")
     self._refresh_buttons()
     self.log(f"スタック波形プロット完了: {self.station}.{self.comp} "
              f"({self.dt.strftime('%Y/%m/%d %H:00')})")
@@ -326,7 +326,7 @@ class StackWindow:
     if minutes is not None:
       last = min(minute + minutes, STACK_ROWS)   # この1時間の外は表示しない
       self._highlights.append(
-          self.stack.ax.axhspan(minute - 0.5, last - 0.5, color="#ffd54f", alpha=0.35, zorder=0, lw=0))
+        self.stack.ax.axhspan(minute - 0.5, last - 0.5, color="#ffd54f", alpha=0.35, zorder=0, lw=0))
     # メニュー表示中でもすぐ反映されるよう、その場で描画する
     self.fig.canvas.draw()
     self.fig.canvas.get_tk_widget().update_idletasks()

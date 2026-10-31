@@ -14,8 +14,8 @@ def main():
   # 引数のチェック (開始日時, 終了日時, 出力先親フォルダ)
   if len(sys.argv) < 3:
     print(
-        "使い方: python3 extract_win.py <開始YYYYMMDDHHmm>"
-        " <終了YYYYMMDDHHmm> [出力先親ディレクトリ]"
+      "使い方: python3 extract_win.py <開始YYYYMMDDHHmm>"
+      " <終了YYYYMMDDHHmm> [出力先親ディレクトリ]"
     )
     sys.exit(1)
 
@@ -29,7 +29,7 @@ def main():
     end_dt = datetime.strptime(end_str, "%Y%m%d%H%M")
   except ValueError:
     print(
-        "エラー: 日時の形式は YYYYMMDDHHmm (例: 202608232245) で指定してください。"
+      "エラー: 日時の形式は YYYYMMDDHHmm (例: 202608232245) で指定してください。"
     )
     sys.exit(1)
 
@@ -50,8 +50,8 @@ def main():
   target_dates = win_pipeline.target_dates(start_dt, end_dt)
 
   print(
-      f"検索範囲: {start_dt.strftime('%Y-%m-%d %H:%M')} ～"
-      f" {end_dt.strftime('%Y-%m-%d %H:%M')}"
+    f"検索範囲: {start_dt.strftime('%Y-%m-%d %H:%M')} ～"
+    f" {end_dt.strftime('%Y-%m-%d %H:%M')}"
   )
   print(f"ターゲット日付ZIP: {sorted(target_dates)}")
   print(f"出力先フォルダ: {dest_dir}\n")

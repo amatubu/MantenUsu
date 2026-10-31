@@ -30,7 +30,7 @@ def main():
 
   # 処理前の情報表示(lenでファイル数を取得)
   print(
-      f"合計 {len(zip_files)} 個のZipファイルを処理し、日単位のZipに再構築します...\n"
+    f"合計 {len(zip_files)} 個のZipファイルを処理し、日単位のZipに再構築します...\n"
   )
 
   # 処理されたファイルの数を記録
@@ -77,7 +77,7 @@ def main():
           file_data = zin.read(filename)
           # 日単位Zipを追記(append)モードで開く。存在しなければ作成する
           with zipfile.ZipFile(
-              daily_zip_path, "a", zipfile.ZIP_DEFLATED
+            daily_zip_path, "a", zipfile.ZIP_DEFLATED
           ) as zout:
             # 重複書き込みを防ぐため、既にZip内に存在しない場合のみ追加
             if new_filename not in zout.namelist():
@@ -92,7 +92,7 @@ def main():
 
   # 処理の出力
   print(
-      f"\n完了しました！ 合計 {total_processed} 個のファイルを日単位Zipに整理しました。"
+    f"\n完了しました！ 合計 {total_processed} 個のファイルを日単位Zipに整理しました。"
   )
   print(f"保存先: {OUTPUT_DIR}")
 

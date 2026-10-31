@@ -17,7 +17,7 @@ def main():
     return
 
   print(
-      f"合計 {len(zip_files)} 個のZipファイルをスキャンして構造をチェックします...\n"
+    f"合計 {len(zip_files)} 個のZipファイルをスキャンして構造をチェックします...\n"
   )
 
   total_zips = 0
@@ -85,8 +85,8 @@ def main():
 
   if anomaly_count > 0:
     print(
-        f"\n[注意] 想定外のファイルが {anomaly_count} 件検出されました。"
-        "リパッケージ時にスキップまたはエラーになる可能性があります。"
+      f"\n[注意] 想定外のファイルが {anomaly_count} 件検出されました。"
+      "リパッケージ時にスキップまたはエラーになる可能性があります。"
     )
   else:
     print("\n[判定] すべてのファイルが想定通りの構造です！")
