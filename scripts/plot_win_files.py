@@ -1,16 +1,11 @@
 # 必要なライブラリのインポート
 import argparse                           # 入力引数の処理
-from collections import defaultdict       # 強化れた辞書機能
 from datetime import datetime, timedelta  # 日付・時刻の処理
 import json
 import os
-import sys
 from pathlib import Path
-import shutil                             # ファイル操作ツール
-import subprocess                         # 外部プロセス実行ツール
 import tkinter as tk                      # GUIツール
 from tkinter import messagebox, ttk       # GUIの拡張ツール(ttk = Themed Tkinter)
-import zipfile                            # Zipファイルの処理ツール
 import warnings
 import traceback
 import re
@@ -24,6 +19,8 @@ from ps_picker import plot_ps_arrival_time
 from jma_intensity import analyze_jma_scale
 from plot_common import NM_TO_CM, get_component_color, setup_japanese_font
 from log_common import log_message, set_console, set_log_widget
+import win_pipeline
+import cache_manager
 from stack_plot import StackWindow, find_trace
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
@@ -599,7 +596,7 @@ class MantenUsuSeismographApp:
 
     # --- キャッシュチェック (Smart Caching) ---
     # フォルダ内にSACファイルがあるかどうかを確認
-    existing_sacs = list(dest_dir.glob("*_sac*"))
+    existing_sacs = win_pipeline.find_sacs(dest_dir)
 
     if existing_sacs:
       # 既存のSACファイルがある場合はそれを利用して波形を描画
@@ -611,7 +608,7 @@ class MantenUsuSeismographApp:
 
     # --- Step 1: 抽出 (なければ実行) ---
     # フォルダ内にWINファイルがあるかどうかを確認
-    existing_wins = list(dest_dir.glob("*.win"))
+    existing_wins = win_pipeline.find_wins(dest_dir)
 
     if not existing_wins:
       extracted_count = self.extract_win_files(start_dt, end_dt, dest_dir)
@@ -640,10 +637,10 @@ class MantenUsuSeismographApp:
   def ensure_sacs(self, start_dt, end_dt, dest_dir, show_dialog=True):
     dest_dir.mkdir(parents=True, exist_ok=True)
     # すでにSACがあれば何もしない
-    if list(dest_dir.glob("*_sac*")):
+    if win_pipeline.find_sacs(dest_dir):
       return True
     # WINがなければZIPから抽出
-    if not list(dest_dir.glob("*.win")):
+    if not win_pipeline.find_wins(dest_dir):
       if self.extract_win_files(start_dt, end_dt, dest_dir, show_dialog) == 0:
         return False
     # SACに変換
@@ -729,61 +726,34 @@ class MantenUsuSeismographApp:
     if not self.ensure_sacs(dt, dt + timedelta(hours=1), dest_dir):
       return None
 
-    st = read(str(dest_dir / "*_sac*"))
+    st = read(str(dest_dir / win_pipeline.SAC_PATTERN))
     if len(st) == 0:
       messagebox.showerror("エラー", "SACファイルを開けませんでした。")
       return None
     return st
 
-  # 指定期間のWINファイルをZIPから抽出する
+  # 指定期間のWINファイルをZIPから抽出する(ローカルに無い日のZIPはGoogleドライブから取得)
+  #   戻り値 ... 取り出したWINファイルの数(0なら失敗)
   def extract_win_files(self, start_dt, end_dt, dest_dir, show_dialog=True):
-    # WINファイルが存在しないときはZipファイルから抽出
     # Zip保存ディレクトリがなければ作成
     self.zips_root.mkdir(parents=True, exist_ok=True)
 
-    # 指定された期間に含まれる日付（YYMMDD形式）をすべて洗い出す
-    # 空のセットを作成
-    target_dates = set()
-    # 開始・終了日時から日付部分だけを取得(分秒、ミリ秒をすべて0にしたもの)
-    curr = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    # ★【追加・修正】終了日時が翌日0:00の場合などに翌日ZIPまで取得してしまうのを防ぐため、
-    # 1秒巻き戻した時刻を基準に日付を切り出す
-    adjusted_end_dt = end_dt - timedelta(seconds=1)
-    end_date_only = adjusted_end_dt.replace(hour=0, minute=0, second=0, microsecond=0)
-    # 終了日まで繰り返す
-    while curr <= end_date_only:
-      # セットにYYMMDD形式の年月日を追加
-      target_dates.add(curr.strftime("%y%m%d"))
-      # 次の日へ
-      curr += timedelta(days=1)
+    # 期間に含まれる日付(YYMMDD)
+    dates = win_pipeline.target_dates(start_dt, end_dt)
 
-    # ★ 【追加】期間内の各日付について、ローカルになければGoogleドライブからダウンロードを試みる
-    for d_str in target_dates:
-      # ローカルに該当するZIPファイル（例: 260826.zip や、名前に日付が含まれるもの）が既に存在するか確認
-      existing_zips = list(self.zips_root.glob(f"*{d_str}*.zip"))
-
-      if not existing_zips:
-        # ローカルにない場合はドライブからダウンロードを試みる
+    # 期間内の各日付について、ローカルになければGoogleドライブからダウンロードを試みる
+    for d_str in dates:
+      if not list(self.zips_root.glob(f"*{d_str}*.zip")):
         # （※ ドライブ上のファイル名が 「260826.zip」 のような形式である場合）
         zip_filename = f"{d_str}.zip"
         log_message(f"ローカルに存在しないため、Googleドライブから取得を試みます: {zip_filename}")
-
-        success = self.download_zip_from_drive(zip_filename)
-        if success:
+        if self.download_zip_from_drive(zip_filename):
           log_message(f"ダウンロード完了: {zip_filename}")
         else:
           log_message(f"ドライブからの取得に失敗したか、ファイルが存在しませんでした: {zip_filename}")
 
-    # 期間に該当するZipファイルのリストを作成
-    # 空のリストを作成
-    target_zips = []
-    # Zipファイル格納場所にあるすべてのZipファイルのパスを取得
-    for zip_path in self.zips_root.glob("**/*.zip"):
-      # 期間内の日付がファイル名になっているものがあればリストに追加する
-      if any(d in zip_path.stem for d in target_dates):
-        target_zips.append(zip_path)
-
-    # 期間内の日付のファイルがひとつもなければエラー
+    # 期間に該当するZipファイルが無ければエラー
+    target_zips = win_pipeline.find_zips(self.zips_root, dates)
     if not target_zips:
       if show_dialog:
         messagebox.showwarning(
@@ -791,59 +761,8 @@ class MantenUsuSeismographApp:
         )
       return 0
 
-    extracted_count = 0
-    # 見つかった対象のZipファイルを順に処理
-    for zip_path in target_zips:
-      try:
-        # Zipファイルを読み取りモードで開く
-        with zipfile.ZipFile(zip_path, "r") as zf:
-          # Zipファイルに含まれるファイル一覧を取得し、順に処理
-          # ファイルの例:
-          #   1070432002/260826/1070432002_2608260858.win
-          #   拠点ID    /年月日/拠点ID    _年月日時分.win
-          for internal_path in zf.namelist():
-            # ファイル名部分を取得
-            p = Path(internal_path)
-            filename = p.name
-            # 拡張子が.winでなければスキップ
-            # .suffixは拡張子
-            if p.suffix != ".win":
-              continue
-            # ファイル名を「_」で分割
-            # .stemは拡張子を除いたファイル名本体
-            parts = p.stem.split("_")
-            # 分割結果が2未満(「_」が含まれていない)の場合はスキップ
-            if len(parts) < 2:
-              continue
-            # ファイル名の後半から日時(年月日時分)の情報を取得
-            datetime_str = parts[1]
-            # 文字数が10文字でないまたは数値でない場合はスキップ
-            if len(datetime_str) != 10 or not datetime_str.isdigit():
-              continue
-
-            # 20を補ってYYYYMMDDHHmmとみなし日付・時間形式に変換
-            f_dt = self.parse_datetime(f"20{datetime_str}")
-            if not f_dt:
-              # 日付・時間とみなせなかった場合はスキップ
-              continue
-
-            # 日付が指定期間内かどうか
-            if start_dt <= f_dt <= end_dt:
-              # コピー先のファイル名
-              dest_file = dest_dir / filename
-              with (
-                  zf.open(internal_path) as src,  # Zipファイルに含まれるファイルを開く
-                  open(dest_file, "wb") as dst,  # コピー先のファイルを開く
-              ):
-                # コピー先のファイルにZipファイルから取り出した内容を書き込む
-                dst.write(src.read())
-              # コピーしたファイルをカウント
-              extracted_count += 1
-      except Exception as e:
-        # Zipファイルが開けなかったときはエラー表示して次へ
-        log_message(f"ZIP読み込みエラー ({zip_path.name}): {e}")
-
-    # 該当するWINファイルがひとつもなかったときはエラー終了
+    # 該当するWINファイルがひとつもなかったときはエラー
+    extracted_count = win_pipeline.extract_wins_from_zips(target_zips, start_dt, end_dt, dest_dir)
     if extracted_count == 0:
       if show_dialog:
         messagebox.showwarning(
@@ -855,121 +774,13 @@ class MantenUsuSeismographApp:
     return extracted_count
 
   # WINファイルの結合とSACファイルへの変換処理
+  #   戻り値 ... 成功したら True(拠点ごとの変換エラーはログに出して続行する)
   def convert_wins_to_sacs(self, dest_dir):
-    # win2sac_32(WINファイルをSACファイルに変換するツール)のパス
-    # OS環境に応じて実行ファイル名を切り替える (Windowsなら .exe)
-    win2sac_name = (
-        "win2sac_32.exe" if sys.platform.startswith("win") else "win2sac_32"
-    )
-    win2sac_path = self.tools_dir / win2sac_name
-    # win2sac_32 が使用するパラメータファイルのパス
-    win_prm_path = self.etc_dir / "win.prm"
-    # win2sacが使用するチャンネル定義ファイルのパス
-    # チャンネル定義ファイルは win.prm から参照される
-    manten_tbl_path = self.etc_dir / "manten_ch.tbl"
-
-    # win2sac_32 が見つからないまたは win.prm が見つからない場合はエラー
-    if not win2sac_path.exists() or not win_prm_path.exists():
-      messagebox.showerror(
-          "エラー", "tools または etc 内に必要な実行ファイル/設定が不足しています。"
-      )
+    try:
+      win_pipeline.convert_wins_to_sacs(dest_dir, self.tools_dir, self.etc_dir)
+    except win_pipeline.PipelineError as e:
+      messagebox.showerror("エラー", str(e))
       return False
-
-    # チャンネル定義ファイルを出力先フォルダにコピーする
-    shutil.copy2(manten_tbl_path, dest_dir / manten_tbl_path.name)
-
-    # 出力先フォルダにあるWINファイルを抽出して結合
-    # 空の辞書(中身はリスト)を作成
-    station_files = defaultdict(list)
-    for win_file in dest_dir.glob("*.win"):
-      # 結合後のファイル(「combined_」で始まる)やチャンネル変換後のファイル(「corrected_」で始まる)が見つかった場合はスキップ
-      if win_file.name.startswith("combined_") or win_file.name.startswith("corrected_"):
-        continue
-      # ファイル名の例:
-      #   1070432002_2608260858.win
-      #   拠点ID    _年月日時分.win
-      # ファイル名を「_」で分割
-      parts = win_file.name.split("_")
-      # 2つ以上に分割されたら(「_」を含むファイル)
-      if len(parts) >= 2:
-        # 辞書にファイルを追加
-        # parts[0]は拠点IDなので、拠点IDごとの辞書にファイルを追加していく
-        station_files[parts[0]].append(win_file)
-
-    # 辞書から拠点IDとファイルリストを取り出して繰り返し
-    for station_id, files in station_files.items():
-      # ファイルを名前でソート(ファイル名は日付・時刻で構成されているので古いものから順に並ぶ)
-      sorted_files = sorted(files, key=lambda x: x.name)
-      # 結合後のファイル名(combined_拠点ID.win)
-      combined_win = dest_dir / f"combined_{station_id}.win"
-
-      # 結合後のファイルを開く
-      with open(combined_win, "wb") as window_file_obj:
-        # ソートされたファイルリストをひとつひとつ読み込んで結合後のファイルに書き出す
-        for f in sorted_files:
-          with open(f, "rb") as rfd:
-            window_file_obj.write(rfd.read())
-
-      # ★ 古いファイルなどでチャンネル番号の読み替えが必要な場合の処理
-      #   変換ファイルのフォーマット
-      #   旧IDと新IDをタブで区切って記載
-      #   F010	8D04
-      #   F011	8D05
-      #   F012	8D06
-      conv_tbl_path = self.etc_dir / f"{station_id}_conv.tbl"
-      target_win_for_conv = combined_win  # デフォルトは結合ファイルそのまま
-
-      if conv_tbl_path.exists():
-        # wchch_32 実行ファイルのパス
-        wchch_name = "wchch_32.exe" if sys.platform.startswith("win") else "wchch_32"
-        wchch_path = self.tools_dir / wchch_name
-
-        if wchch_path.exists():
-          corrected_win = dest_dir / f"corrected_{station_id}.win"
-
-          # wchch_32 [-Y] [ch conv table] < [in_file] > [out_file] の実行
-          # 標準入力をWINファイル、標準出力を書き換え後ファイルにする
-          with open(combined_win, "rb") as fin, open(corrected_win, "wb") as fout:
-            wchch_cmd = [str(wchch_path.resolve()), str(conv_tbl_path.resolve())]
-            res_wchch = subprocess.run(
-                wchch_cmd,
-                stdin = fin,              # 標準入力
-                stdout = fout,            # 標準出力
-                stderr = subprocess.PIPE  # 標準エラー出力
-            )
-            if res_wchch.returncode == 0:
-              target_win_for_conv = corrected_win  # 成功したら書き換え後のファイルを後続で使う
-            else:
-              log_message(f"チャンネル変換エラー (Station: {station_id}): {res_wchch.stderr.decode('utf-8', errors='ignore')}")
-
-      # 拠点IDごとのチャンネルIDファイル
-      station_ch_path = self.etc_dir / f"{station_id}.ch"
-      # ファイルが見つからないときは全チャンネルを記載したファイルを使用
-      if not station_ch_path.exists():
-        station_ch_path = self.etc_dir / "manten.ch"
-
-      # 実行する外部コマンド(win2sac_32)のコマンドラインの構成
-      # usage: ../win32tools/win2sac.src/win2sac_32 winfile ch_no sacfile [outdir] [-p(prmfile)]
-      #          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
-      cmd = [
-          str(win2sac_path.resolve()),     # win2sac_32 のフルパス
-          str(target_win_for_conv.name),          # 結合されたWINファイル
-          str(station_ch_path.resolve()),  # チャンネル定義ファイルのフルパス
-          f"{station_id}_sac",             # 出力するSACファイル
-          ".",                             # 出力先フォルダ(カレントディレクトリ)
-          f"-p{win_prm_path.resolve()}",   # prmファイルのフルパス
-      ]
-      # コマンドの実行
-      result = subprocess.run(
-          cmd,                       # 実行するコマンド
-          cwd = dest_dir,            # コマンドを実行するフォルダ
-          stdout = subprocess.PIPE,  # 標準出力をパイプで取得
-          stderr = subprocess.PIPE   # 標準エラー出力をパイプで取得
-      )
-      if result.returncode != 0:
-        # エラー時の処理（ログ出力やメッセージなど）
-        log_message(f"変換エラー (Station: {station_id}): {result.stderr.decode('utf-8', errors='ignore')}")
-
     return True
 
   # SACファイルの波形を描画
@@ -980,7 +791,7 @@ class MantenUsuSeismographApp:
   #   return_to ... このウィンドウを閉じたときに戻るウィンドウ(Tk)。None ならOS任せ
   def plot_waveforms(self, dest_dir, start_str, end_str, title_str, return_to=None):
     # 出力フォルダにあるSACファイルをObspyですべて読み込み
-    st = read(str(dest_dir / "*_sac*"))
+    st = read(str(dest_dir / win_pipeline.SAC_PATTERN))
     # ファイルが存在しない、もしくは読み込めなかった場合はエラー
     if len(st) == 0:
       messagebox.showerror("エラー", "SACファイルを開くことができません。WINファイルからの変換に失敗した可能性があります。")
@@ -1251,69 +1062,29 @@ class MantenUsuSeismographApp:
     finally:
       loading_win.destroy()   # 成功・失敗どちらでも必ずポップアップを閉じる
 
-  # ディレクトリ内のファイル数と総容量を計算するヘルパー
-  def _calc_dir_stats(self, target_dir):
-    if not target_dir.exists():
-      return 0, 0
-    total_files = 0
-    total_size = 0
-    for p in target_dir.glob("**/*"):
-      if p.is_file():
-        total_files += 1
-        total_size += p.stat().st_size
-    return total_files, total_size
-
-  # 容量を読みやすい単位(Bytes, KB, MB, GB)に変換するヘルパー
-  def _format_size(self, size_bytes):
-    for unit in ["B", "KB", "MB", "GB"]:
-      if size_bytes < 1024.0:
-        return f"{size_bytes:.1f} {unit}"
-      size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
-
-  # outputキャッシュの整理
+  # outputキャッシュの整理(履歴ファイルは残す)
   def clean_output_cache(self):
     if not self.output_base.exists():
       messagebox.showinfo("情報", "outputディレクトリが存在しません。")
       return
 
     # history.json を除いたファイル数と総容量を計算
-    file_count = 0
-    total_size = 0
-    for p in self.output_base.glob("**/*"):
-      if p.is_file():
-        # 履歴ファイルは集計から除外
-        if p.resolve() == self.history_file.resolve():
-          continue
-        file_count += 1
-        total_size += p.stat().st_size
-
-    if file_count == 0:
+    files = cache_manager.collect_files(self.output_base, keep={self.history_file})
+    if not files:
       messagebox.showinfo("情報", "削除対象のoutputキャッシュはありません。")
       return
-    size_str = self._format_size(total_size)
     msg = (
         f"outputディレクトリ内のキャッシュを削除します。\n\n"
-        f"・ファイル数: {file_count:,} 件\n"
-        f"・総容量: {size_str}\n\n"
+        f"・ファイル数: {len(files):,} 件\n"
+        f"・総容量: {cache_manager.format_size(cache_manager.total_size(files))}\n\n"
         f"本当によろしいですか？"
     )
 
     if messagebox.askyesno("確認 - outputキャッシュ整理", msg):
       try:
         # outputディレクトリ内のフォルダやファイルをすべて削除し、ディレクトリ自体は残す
-        for child in self.output_base.iterdir():
-          # 履歴ファイル本体の場合は削除せずにスキップ
-          if child.resolve() == self.history_file.resolve():
-            continue
-
-          if child.is_dir():
-            shutil.rmtree(child)
-          else:
-            child.unlink()
-        messagebox.completed = messagebox.showinfo(
-            "完了", "outputキャッシュの整理が完了しました。"
-        )
+        cache_manager.delete_contents(self.output_base, keep={self.history_file})
+        messagebox.showinfo("完了", "outputキャッシュの整理が完了しました。")
       except Exception as e:
         messagebox.showerror("エラー", f"削除中にエラーが発生しました:\n{e}")
 
@@ -1324,26 +1095,21 @@ class MantenUsuSeismographApp:
       return
 
     # zipファイルのみを対象にする
-    zip_files = list(self.zips_root.glob("**/*.zip"))
+    zip_files = cache_manager.collect_files(self.zips_root, "*.zip")
     if not zip_files:
       messagebox.showinfo("情報", "対象のZIPファイルが見つかりません。")
       return
 
-    total_files = len(zip_files)
-    total_size = sum(p.stat().st_size for p in zip_files if p.is_file())
-    size_str = self._format_size(total_size)
-
     msg = (
         f"daily_zipsディレクトリ内のZIPファイルを削除します。\n\n"
-        f"・ZIPファイル数: {total_files:,} 件\n"
-        f"・総容量: {size_str}\n\n"
+        f"・ZIPファイル数: {len(zip_files):,} 件\n"
+        f"・総容量: {cache_manager.format_size(cache_manager.total_size(zip_files))}\n\n"
         f"本当によろしいですか？"
     )
 
     if messagebox.askyesno("確認 - daily_zips整理", msg):
       try:
-        for p in zip_files:
-          p.unlink()
+        cache_manager.delete_files(zip_files)
         messagebox.showinfo("完了", "ZIPファイルの整理が完了しました。")
       except Exception as e:
         messagebox.showerror("エラー", f"削除中にエラーが発生しました:\n{e}")
@@ -1440,7 +1206,7 @@ class MantenUsuSeismographApp:
           continue
 
         try:
-          st = read(str(dest_dir / "*_sac*"))
+          st = read(str(dest_dir / win_pipeline.SAC_PATTERN))
           if len(st) == 0:
             continue
 
