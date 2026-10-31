@@ -45,7 +45,7 @@ def download_file_from_drive(creds_path, folder_id, filename, dest_path, on_prog
   results = service.files().list(
     q=query,
     spaces="drive",
-    fields="files(id, name)",
+    fields="files(id, name, size)",  # size は整合性チェック用
     supportsAllDrives=True,          # マイドライブと共有ドライブをサポート
     includeItemsFromAllDrives=True   # 共有ドライブをレスポンスに含める
   ).execute()
@@ -55,15 +55,31 @@ def download_file_from_drive(creds_path, folder_id, filename, dest_path, on_prog
 
   # 見つかった最初のファイルを対象にする
   file_id = files[0]["id"]
+  expected_size = files[0].get("size")   # Drive上のファイルサイズ(バイト、文字列)
 
-  # 保存先フォルダを作成してダウンロード
+  # 保存先フォルダを作成
   dest_path = Path(dest_path)
   dest_path.parent.mkdir(parents=True, exist_ok=True)
-  request = service.files().get_media(fileId=file_id)
-  with open(dest_path, "wb") as f:
-    downloader = MediaIoBaseDownload(f, request)
-    done = False
-    while not done:
-      status, done = downloader.next_chunk()
-      if status and on_progress:
-        on_progress(int(status.progress() * 100))
+
+  # ダウンロード中は仮の名前(.part)で保存し、成功したら本来の名前に変更する
+  tmp_path = dest_path.with_name(dest_path.name + ".part")
+  try:
+    request = service.files().get_media(fileId=file_id)
+    with open(tmp_path, "wb") as f:
+      downloader = MediaIoBaseDownload(f, request)
+      done = False
+      while not done:
+        status, done = downloader.next_chunk()
+        if status and on_progress:
+          on_progress(int(status.progress() * 100))
+
+    # サイズがDrive上のものと一致するか確認(0バイトや途中切れの検出)
+    if expected_size is not None and tmp_path.stat().st_size != int(expected_size):
+      raise IOError(f"ダウンロードしたファイルのサイズが一致しません: {filename}")
+
+    # 成功したので、本来の名前に変更(既存のファイルがあれば置き換わる)
+    tmp_path.replace(dest_path)
+  except BaseException:
+    # 失敗・中断のときは、仮のファイルを削除してから例外を再送出する
+    tmp_path.unlink(missing_ok=True)
+    raise
