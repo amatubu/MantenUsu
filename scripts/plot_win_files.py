@@ -21,13 +21,10 @@ from matplotlib.widgets import Button
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvasTkAgg
 import numpy as np                        # 数値計算用
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-
 from ps_picker import plot_ps_arrival_time
 from jma_intensity import analyze_jma_scale
 from plot_common import get_component_color, setup_japanese_font
+from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
 # MacのTcl/Tk非推奨警告を抑制
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
@@ -84,14 +81,7 @@ class MantenUsuSeismographApp:
     self.service_account_dir = self.base_dir.parent / "service_account"
     # GoogleドライブのフォルダIDの定義ファイル(JSON)
     self.folder_config_file = self.service_account_dir / "folder_config.json"
-    self.target_folder_id = None
-    try:
-      with open(self.folder_config_file, "r", encoding="utf-8") as f:
-        config = json.load(f)
-        self.target_folder_id = config.get("daily_zips_id")
-    except Exception as e:
-      # ファイル読み込み失敗時のフォールバックやエラーログ
-      print(f"Googleドライブのフォルダ設定ファイルの読み込みに失敗しました: {e}")
+    self.target_folder_id = self.target_folder_id = load_folder_id(self.folder_config_file)
     # 履歴を格納するファイル(JSON)
     self.history_file = self.output_base / "history.json"
 
@@ -1523,70 +1513,28 @@ class MantenUsuSeismographApp:
     # 描画を確実に反映させる
     loading_win.update()
 
+    # 進捗率をポップアップに反映する(モジュールから呼ばれる)
+    def on_progress(pct):
+      progress_var.set(f"Googleドライブからのダウンロード中...\n\n{zip_filename}\n({pct}%)")
+      loading_win.update()
+
     try:
-      # サービスアカウントの認証情報を読み込む
-      SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-      creds = service_account.Credentials.from_service_account_file(
-          str(creds_path), scopes=SCOPES
-      )
-
-      # Drive APIクライアントの構築
-      service = build("drive", "v3", credentials=creds)
-
+      # フォルダIDが未取得なら、設定ファイルから読み直す
       if not self.target_folder_id:
-        try:
-          with open(self.folder_config_file, "r", encoding="utf-8") as f:
-            config = json.load(f)
-            self.target_folder_id = config.get("daily_zips_id")
-        except Exception as e:
-          # ファイル読み込み失敗時のフォールバックやエラーログ
-          print(f"設定ファイルの読み込みに失敗しました: {e}")
+        self.target_folder_id = load_folder_id(self.folder_config_file)
 
-      query = f"'{self.target_folder_id}' in parents and name = '{zip_filename}' and trashed = false"
-
-      files = []
-      results = service.files().list(
-        q=query,
-        spaces="drive",
-        fields="files(id, name)",
-        supportsAllDrives=True,          # マイドライブと共有ドライブをサポート
-        includeItemsFromAllDrives=True   # 共有ドライブをレスポンスに含める
-      ).execute()
-      files = results.get("files", [])
-
-      if not files:
-        self.log_message(f"Googleドライブ上にファイルが見つかりませんでした: {zip_filename}")
-        loading_win.destroy()
-        return False
-
-      # 見つかった最初のファイルを対象にする
-      file_id = files[0]["id"]
-
-      # 保存先のパス (daily_zips / ファイル名)
-      dest_path = self.zips_root / zip_filename
-      dest_path.parent.mkdir(parents=True, exist_ok=True)
-
-      # ダウンロードの実行
-      request = service.files().get_media(fileId=file_id)
-      with open(dest_path, "wb") as f:
-        downloader = MediaIoBaseDownload(f, request)
-        done = False
-        while not done:
-          status, done = downloader.next_chunk()
-          if status:
-            # 進捗率（0.0 〜 1.0）をパーセンテージに変換
-            pct = int(status.progress() * 100)
-            progress_var.set(f"Googleドライブからのダウンロード中...\n\n{zip_filename}\n({pct}%)")
-            loading_win.update()
-
-      # 正常終了したらポップアップを閉じる
-      loading_win.destroy()
+      download_file_from_drive(
+        creds_path, self.target_folder_id, zip_filename,
+        self.zips_root / zip_filename, on_progress)
       return True
-
+    except DriveFileNotFoundError as e:
+      self.log_message(str(e))
+      return False
     except Exception as e:
-      loading_win.destroy()
       self.log_message(f"Googleドライブからのダウンロード中にエラーが発生しました: {e}")
       return False
+    finally:
+      loading_win.destroy()   # 成功・失敗どちらでも必ずポップアップを閉じる
 
   # ディレクトリ内のファイル数と総容量を計算するヘルパー
   def _calc_dir_stats(self, target_dir):
