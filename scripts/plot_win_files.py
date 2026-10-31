@@ -1111,11 +1111,20 @@ class MantenUsuSeismographApp:
     # 【重要】ウィンドウが閉じられたときにMatplotlibのリソースを解放して確実に閉じる
     def on_close():
       plt.close(fig)      # Matplotlibのグラフをメモリから破棄する
-      # 戻り先があれば、閉じる前にそちらを前面に出す(先に閉じるとメインウィンドウが前面になる)
-      if return_to is not None and return_to.winfo_exists():
-        return_to.lift()
-        return_to.focus_force()
       wave_win.destroy()  # ウィンドウを破棄する
+
+      # 戻り先があれば前面に出す。戻り先(Matplotlibのウィンドウ)はメインとは別の Tk なので、
+      # 閉じた直後に Mac がメインウィンドウを前面にする。その後にもう一度前面に出し直す
+      if return_to is not None:
+        def bring_back():
+          try:
+            if return_to.winfo_exists():
+              return_to.lift()
+              return_to.focus_force()
+          except tk.TclError:
+            pass  # 戻り先のウィンドウが既に閉じられている
+        bring_back()
+        self.root.after(100, bring_back)
 
     wave_win.protocol("WM_DELETE_WINDOW", on_close)
 

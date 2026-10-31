@@ -14,7 +14,7 @@ STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
 COMP_ORDER = ["U", "N", "E"]   # 成分の並び順
 
-COMPARE_MINUTES = [1, 2, 5, 10, 15, 20, 30]   # 右クリックメニューで選べる比較表示の長さ(分)
+COMPARE_MINUTES = [1, 2, 3, 4, 5, 10, 15, 20, 30]   # 右クリックメニューで選べる比較表示の長さ(分)
 
 # ボタンの状態ごとの色: (通常の色, マウスが乗ったときの色)
 BTN_COLORS = {
@@ -289,6 +289,10 @@ class StackWindow:
 
     render_stack(self.fig, self.axes, self.max_amp_text, trace,
                  self.dt, self.station, self.comp)
+    # ウィンドウのタイトル(既定の「Figure 1」の代わり。時間・拠点・成分の切り替えに追従)
+    if self.fig.canvas.manager is not None:
+      self.fig.canvas.manager.set_window_title(
+          f"1時間スタック波形 - {self.station}.{self.comp} ({self.dt.strftime('%Y/%m/%d %H:00')})")
     self._refresh_buttons()
     self.log(f"スタック波形プロット完了: {self.station}.{self.comp} "
              f"({self.dt.strftime('%Y/%m/%d %H:00')})")
