@@ -23,7 +23,7 @@ from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvas
 from ps_picker import plot_ps_arrival_time
 from jma_intensity import analyze_jma_scale
 from plot_common import get_component_color, setup_japanese_font
-from stack_plot import create_stack_figure, render_stack, find_trace
+from stack_plot import create_stack_figure, render_stack, find_trace, attach_zoom_pan
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
 # MacのTcl/Tk非推奨警告を抑制
@@ -750,133 +750,13 @@ class MantenUsuSeismographApp:
     btn_prev.on_clicked(on_prev)
     btn_next.on_clicked(on_next)
 
-    # 初期化用の箱を用意しておく
-    initial_xlim = (0, 60)
-    full_width = 60.0
-
-    def on_scroll(event):
-      # 波形プロット領域以外のイベント（ボタンなど）は無視
-      if event.inaxes in [ax_prev, ax_next] or event.inaxes is None:
-        return
-
-      cur_xlim = axes[0].get_xlim()
-      xdata = event.xdata
-      if xdata is None:
-        return
-
-      if event.button == 'down':
-        scale_factor = 1.2
-      elif event.button == 'up':
-        scale_factor = 1 / 1.2
-      else:
-        return
-
-      cur_width = cur_xlim[1] - cur_xlim[0]
-      new_width = cur_width * scale_factor
-
-      if new_width >= full_width * 0.99:
-        new_xmin, new_xmax = initial_xlim
-      else:
-        min_width = full_width * 0.01
-        if new_width < min_width and scale_factor < 1:
-          return
-
-        relx = (cur_xlim[1] - xdata) / cur_width
-        new_xmin = xdata - new_width * (1 - relx)
-        new_xmax = xdata + new_width * relx
-
-        if new_xmin < initial_xlim[0]:
-          new_xmin = initial_xlim[0]
-          new_xmax = initial_xlim[0] + new_width
-        if new_xmax > initial_xlim[1]:
-          new_xmax = initial_xlim[1]
-          new_xmin = initial_xlim[1] - new_width
-
-      # ★ 60行分の波形プロット（axes）のみを一斉更新
-      for ax in axes:
-        ax.set_xlim(new_xmin, new_xmax)
-
-      fig.canvas.draw()
-      fig.canvas.flush_events()
-
-    # ドラッグ操作用の状態管理（開始時の位置をしっかり記憶させる）
-    drag_state = {
-        "dragging": False,
-        "press_xdata": None,
-        "start_xmin": None,
-        "start_xmax": None,
-    }
-
-    # クリック（押下）時の処理
-    def on_press(event):
-      if event.inaxes in [ax_prev, ax_next] or event.inaxes is None:
-        return
-
-      if event.dblclick:
-        for ax in axes_list:
-          ax.set_xlim(initial_xlim)
-        fig.canvas.draw()
-        fig.canvas.flush_events()
-        return
-
-      if event.button == 1:
-        drag_state["dragging"] = True
-        drag_state["press_xdata"] = event.xdata
-        # ★追加：ドラッグ開始した瞬間のX軸の範囲を保存しておく
-        cur_xlim = axes[0].get_xlim()
-        drag_state["start_xmin"] = cur_xlim[0]
-        drag_state["start_xmax"] = cur_xlim[1]
-
-    # ドラッグ中の処理
-    def on_motion(event):
-      if not drag_state["dragging"]:
-        return
-      if event.inaxes is None or event.xdata is None:
-        return
-      if drag_state["press_xdata"] is None:
-        return
-
-      # ドラッグ開始位置からのデータ座標の移動量を計算
-      dx = drag_state["press_xdata"] - event.xdata
-
-      # 保存しておいた開始時の位置に移動量を足し引きする
-      new_xmin = drag_state["start_xmin"] + dx
-      new_xmax = drag_state["start_xmax"] + dx
-
-      # 現在のズーム幅を維持
-      width = drag_state["start_xmax"] - drag_state["start_xmin"]
-
-      # 全体範囲（0〜60秒）の端にぶつかったときのガード
-      if new_xmin < initial_xlim[0]:
-        new_xmin = initial_xlim[0]
-        new_xmax = initial_xlim[0] + width
-      if new_xmax > initial_xlim[1]:
-        new_xmax = initial_xlim[1]
-        new_xmin = initial_xlim[1] - width
-
-      for ax in axes_list:
-        ax.set_xlim(new_xmin, new_xmax)
-
-      fig.canvas.draw()
-      fig.canvas.flush_events()
-
-    def on_release(event):
-      drag_state["dragging"] = False
-      drag_state["press_xdata"] = None
-
-    # イベントをキャンバスに紐付け
-    fig.canvas.mpl_connect('scroll_event', on_scroll)
-    fig.canvas.mpl_connect('button_press_event', on_press)
-    fig.canvas.mpl_connect('motion_notify_event', on_motion)
-    fig.canvas.mpl_connect('button_release_event', on_release)
+    # 横軸のズーム・ドラッグ・リセットを設定
+    attach_zoom_pan(fig, axes)
 
     # 初回描画の実行
     if not update_plot():
       plt.close(fig)
       return
-
-    # 念のため axes を通常のリストにしておく
-    axes_list = list(axes)
 
     plt.show()
 

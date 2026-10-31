@@ -143,3 +143,85 @@ if __name__ == "__main__":
   render_stack(fig, axes, max_amp_text, tr, start, "TEST", "U")
   fig.savefig("stack_test.png", dpi=100)
   print("OK: stack_test.png")
+
+# 横軸(時間)のズーム・ドラッグ移動・リセットを、60段の軸にまとめて設定する
+#   fig  ... 図
+#   axes ... 60段の軸(X軸は共有されている)
+#   xlim ... 全体の表示範囲(この外へは動かさない)
+#   操作 ... ホイール: 拡大縮小 / 左ドラッグ: 横移動 / ダブルクリック: 全体表示に戻す
+def attach_zoom_pan(fig, axes, xlim=(0, 60)):
+  axes_list = list(axes)
+  full_min, full_max = xlim
+  full_width = full_max - full_min
+  drag = {"dragging": False, "press_x": None, "start_xmin": None, "start_xmax": None}
+
+  # 全段のX軸の範囲をまとめて設定して再描画
+  def set_xlim_all(xmin, xmax):
+    for ax in axes_list:
+      ax.set_xlim(xmin, xmax)
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+
+  # 表示幅を保ったまま、全体範囲の内側に収める
+  def clamp(xmin, width):
+    xmin = max(full_min, min(xmin, full_max - width))
+    return xmin, xmin + width
+
+  # ホイール: マウス位置を中心に拡大・縮小
+  def on_scroll(event):
+    # 波形の軸の上でのイベントだけを扱う(ボタンなど他の軸は無視)
+    if event.inaxes not in axes_list or event.xdata is None:
+      return
+    if event.button == "down":
+      scale = 1.2        # 縮小(表示範囲を広げる)
+    elif event.button == "up":
+      scale = 1 / 1.2    # 拡大(表示範囲を狭める)
+    else:
+      return
+
+    cur_min, cur_max = axes_list[0].get_xlim()
+    cur_width = cur_max - cur_min
+    new_width = cur_width * scale
+
+    if new_width >= full_width * 0.99:
+      # ほぼ全体が見える幅になったら、全体表示に戻す
+      new_min, new_max = full_min, full_max
+    else:
+      # 拡大しすぎ防止(全体の1%より狭くしない)
+      if new_width < full_width * 0.01 and scale < 1:
+        return
+      # マウス位置が画面上で動かないように伸縮する
+      ratio = (event.xdata - cur_min) / cur_width   # 左端からマウス位置までの割合
+      new_min, new_max = clamp(event.xdata - new_width * ratio, new_width)
+    set_xlim_all(new_min, new_max)
+
+  # ボタン押下: ダブルクリックで全体表示、左ボタンでドラッグ開始
+  def on_press(event):
+    if event.inaxes not in axes_list:
+      return
+    if event.dblclick:
+      set_xlim_all(full_min, full_max)
+      return
+    if event.button == 1:
+      cur_min, cur_max = axes_list[0].get_xlim()
+      drag.update(dragging=True, press_x=event.x,
+                  start_xmin=cur_min, start_xmax=cur_max)
+
+  # ドラッグ中: 開始時点の表示範囲を基準に、ピクセルの移動量を時間に換算して横移動
+  def on_motion(event):
+    if not drag["dragging"]:
+      return
+    width = drag["start_xmax"] - drag["start_xmin"]
+    px_width = axes_list[0].bbox.width              # 軸の幅(ピクセル)
+    dx = (drag["press_x"] - event.x) * width / px_width
+    new_min, new_max = clamp(drag["start_xmin"] + dx, width)
+    set_xlim_all(new_min, new_max)
+
+  def on_release(event):
+    drag["dragging"] = False
+    drag["press_x"] = None
+
+  fig.canvas.mpl_connect("scroll_event", on_scroll)
+  fig.canvas.mpl_connect("button_press_event", on_press)
+  fig.canvas.mpl_connect("motion_notify_event", on_motion)
+  fig.canvas.mpl_connect("button_release_event", on_release)
