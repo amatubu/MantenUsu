@@ -1,0 +1,4 @@
+# ビルド(build_mac.sh / build_win.bat)に必要なライブラリ
+#   インストール: python3 -m pip install -r requirements-build.txt
+-r requirements.txt
+pyinstaller>=6.0                # 6.22.3 (6.0 以降の、_internal フォルダを使う構成が前提)

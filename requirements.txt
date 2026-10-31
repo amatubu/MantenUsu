@@ -1,0 +1,17 @@
+# 有珠満点地震計 波形ビューワ(UsuMantenViewer)の実行に必要なライブラリ
+#   インストール: python3 -m pip install -r requirements.txt
+#   ビルドもする場合は requirements-build.txt を使う
+#   (Windows の conda 環境では windows.md の手順で conda から入れる)
+#
+# 下限は動作に必要な目安。動作確認したバージョン(Mac, Python 3.14)を右に記す
+obspy>=1.4                      # 1.5.1  SACファイルの読み込み・地震波の処理
+matplotlib>=3.7                 # 3.11.2 波形の描画
+numpy>=1.24                     # 2.5.4
+google-api-python-client>=2.0   # 2.201.0 Googleドライブからのダウンロード
+google-auth>=2.0                # 2.62.0  Googleドライブの認証(サービスアカウント)
+
+# tkinter(画面表示)は pip では入らない。Python 本体に含まれるか、別途入れる
+#   Mac の Homebrew の Python: brew install python-tk@3.14 (Python のバージョンに合わせる)
+
+# 開発用スクリプト scripts/show_statistics.py を使う場合のみ:
+#   python3 -m pip install pandas openpyxl
