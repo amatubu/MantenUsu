@@ -23,7 +23,7 @@ from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvas
 from ps_picker import plot_ps_arrival_time
 from jma_intensity import analyze_jma_scale
 from plot_common import get_component_color, setup_japanese_font
-from stack_plot import create_stack_figure, render_stack, find_trace, attach_zoom_pan
+from stack_plot import StackWindow, find_trace
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
 # MacのTcl/Tk非推奨警告を抑制
@@ -685,80 +685,35 @@ class MantenUsuSeismographApp:
     # 用意できたSACから、1分ごとにスライスしてスタックプロット
     self.plot_stack_waveforms(start_dt, station_name, comp_name)
 
-  # 1時間分のスタック波形を描画するメソッド
+  # 1時間分のスタック波形を表示する
   def plot_stack_waveforms(self, start_dt, station_name, comp_name):
-    # ★追加：ツールバーから「保存」と「ホーム」以外のボタン（ズーム・パン等）を削除する
-    NavigationToolbar2Tk.toolitems = [
-        t
-        for t in NavigationToolbar2Tk.toolitems
-        if t[0] == "Save"
-    ]
-    # ウィンドウごとに完全に独立した状態を保持するコンテナ
-    state = {"current_dt": start_dt}
+    # ツールバーから「保存」以外のボタン(ズーム・パン等)を外す。この窓の作成中だけ有効にする
+    original_items = NavigationToolbar2Tk.toolitems
+    NavigationToolbar2Tk.toolitems = [t for t in original_items if t[0] == "Save"]
+    try:
+      window = StackWindow(start_dt, station_name, comp_name,
+                           load_trace=self.load_stack_trace, log=self.log_message)
+    finally:
+      NavigationToolbar2Tk.toolitems = original_items
+    window.show()
 
-    # 60段のスタック図を作る(画面表示用)
-    fig, axes, max_amp_text = create_stack_figure()
+  # 指定した時間・拠点・成分の1時間分のトレースを読み込んで返す(失敗したら None)
+  def load_stack_trace(self, dt, station, comp):
+    # その時間のSACを用意して読み込む
+    dest_dir = self.stack_dest_dir(dt)
+    if not self.ensure_sacs(dt, dt + timedelta(hours=1), dest_dir):
+      return None
 
-    # 描画メイン
-    def update_plot():
-      # 開始時刻と1時間後の時刻
-      current_dt = state["current_dt"]
-      end_dt = current_dt + timedelta(hours=1)
+    st = read(str(dest_dir / "*_sac*"))
+    if len(st) == 0:
+      messagebox.showerror("エラー", "SACファイルを開けませんでした。")
+      return None
 
-      # その時間のSACを用意して読み込む
-      target_dest_dir = self.stack_dest_dir(current_dt)
-      if not self.ensure_sacs(current_dt, end_dt, target_dest_dir):
-        return False
-
-      st = read(str(target_dest_dir / "*_sac*"))
-      if len(st) == 0:
-        messagebox.showerror("エラー", "SACファイルを開けませんでした。")
-        return False
-
-      # 指定された拠点・成分のトレースを抽出
-      target_trace = find_trace(st, station_name, comp_name)
-      if target_trace is None:
-        messagebox.showerror("エラー", f"指定されたチャンネルのデータが見つかりませんでした: {station_name}.{comp_name}")
-        return False
-
-      render_stack(fig, axes, max_amp_text, target_trace, current_dt, station_name, comp_name)
-
-      fig.canvas.draw_idle()
-
-      self.log_message(f"スタック波形プロット完了: {station_name}.{comp_name} ({current_dt.strftime('%Y/%m/%d %H:00')})")
-      return True
-
-    # --- グラフ上部に「前の1時間」「次の1時間」ボタンを配置 ---
-    ax_prev = fig.add_axes([0.77, 0.91, 0.09, 0.03])  # [left, bottom, width, height]
-    ax_next = fig.add_axes([0.88, 0.91, 0.09, 0.03])
-
-    btn_prev = Button(ax_prev, '◀ -1h', color='#f0f0f0', hovercolor='#e0e0e0')
-    btn_next = Button(ax_next, '+1h ▶', color='#f0f0f0', hovercolor='#e0e0e0')
-
-    # ボタンの文字サイズも小さく調整
-    btn_prev.label.set_fontsize(9)
-    btn_next.label.set_fontsize(9)
-
-    def on_prev(event):
-      state["current_dt"] -= timedelta(hours=1)
-      update_plot()
-
-    def on_next(event):
-      state["current_dt"] += timedelta(hours=1)
-      update_plot()
-
-    btn_prev.on_clicked(on_prev)
-    btn_next.on_clicked(on_next)
-
-    # 横軸のズーム・ドラッグ・リセットを設定
-    attach_zoom_pan(fig, axes)
-
-    # 初回描画の実行
-    if not update_plot():
-      plt.close(fig)
-      return
-
-    plt.show()
+    # 指定された拠点・成分のトレースを抽出
+    trace = find_trace(st, station, comp)
+    if trace is None:
+      messagebox.showerror("エラー", f"指定されたチャンネルのデータが見つかりませんでした: {station}.{comp}")
+    return trace
 
   # 指定期間のWINファイルをZIPから抽出する
   def extract_win_files(self, start_dt, end_dt, dest_dir, show_dialog=True):

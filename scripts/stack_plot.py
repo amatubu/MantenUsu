@@ -3,6 +3,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from obspy import UTCDateTime
+from datetime import timedelta
+from matplotlib.widgets import Button
 
 STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
@@ -121,28 +123,65 @@ def render_stack(fig, axes, max_amp_text, trace, start_dt, station, comp):
   date_title = start_dt.strftime("%Y/%m/%d %H:00")
   fig.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station}.{comp}", fontsize=12)
 
-# 単体テスト(実データ不要、画面も開かない)
-if __name__ == "__main__":
-  import matplotlib
-  matplotlib.use("Agg")   # 画像に保存するだけ
-  from datetime import datetime
-  from obspy import Trace
-  from plot_common import setup_japanese_font
+# 1時間スタック波形の表示ウィンドウ(前後の時間への移動つき)
+#   start_dt      ... 最初に表示する1時間の開始日時(datetime)
+#   station, comp ... 最初に表示する拠点名・成分(U/N/E)
+#   load_trace    ... (日時, 拠点名, 成分) を受け取り、その1時間分のトレースを返す関数。
+#                     失敗したら None を返す(エラー表示は関数側で行う)
+#   log           ... ログを受け取る関数(メッセージ文字列を1つ受け取る)
+class StackWindow:
+  def __init__(self, start_dt, station, comp, load_trace, log=print):
+    # 表示中の状態(時刻・拠点・成分)
+    self.dt = start_dt
+    self.station = station
+    self.comp = comp
+    self.load_trace = load_trace
+    self.log = log
 
-  setup_japanese_font()
-  start = datetime(2026, 8, 23, 22, 0, 0)
-  tr = Trace(data=np.random.default_rng(0).normal(0, 1, 3600 * 100))
-  tr.stats.sampling_rate = 100.0
-  tr.stats.starttime = UTCDateTime(start)
-  tr.stats.station = "TEST"
-  tr.stats.channel = "U"
-  tr.data[100 * 1800: 100 * 1810] *= 20    # 30分ごろに大きな揺れ
+    # 60段の図を作る(画面表示用)
+    self.fig, self.axes, self.max_amp_text = create_stack_figure()
 
-  assert len(slice_into_minutes(tr, start)) == 60
-  fig, axes, max_amp_text = create_stack_figure(for_screen=False)
-  render_stack(fig, axes, max_amp_text, tr, start, "TEST", "U")
-  fig.savefig("stack_test.png", dpi=100)
-  print("OK: stack_test.png")
+    # グラフ上部に「前の1時間」「次の1時間」ボタンを配置
+    ax_prev = self.fig.add_axes([0.77, 0.91, 0.09, 0.03])  # [left, bottom, width, height]
+    ax_next = self.fig.add_axes([0.88, 0.91, 0.09, 0.03])
+    self.btn_prev = Button(ax_prev, "◀ -1h", color="#f0f0f0", hovercolor="#e0e0e0")
+    self.btn_next = Button(ax_next, "+1h ▶", color="#f0f0f0", hovercolor="#e0e0e0")
+    self.btn_prev.label.set_fontsize(9)
+    self.btn_next.label.set_fontsize(9)
+    self.btn_prev.on_clicked(lambda _event: self.move_hour(-1))
+    self.btn_next.on_clicked(lambda _event: self.move_hour(+1))
+
+    # 横軸のズーム・ドラッグ・リセットを設定
+    attach_zoom_pan(self.fig, self.axes)
+
+    # ボタンなどが回収されないよう、図からこのウィンドウを参照しておく
+    self.fig._stack_window = self
+
+  # 現在の状態(時刻・拠点・成分)で描画し直す。成功したら True
+  def update(self):
+    trace = self.load_trace(self.dt, self.station, self.comp)
+    if trace is None:
+      return False
+    render_stack(self.fig, self.axes, self.max_amp_text, trace,
+                 self.dt, self.station, self.comp)
+    self.fig.canvas.draw_idle()
+    self.log(f"スタック波形プロット完了: {self.station}.{self.comp} "
+             f"({self.dt.strftime('%Y/%m/%d %H:00')})")
+    return True
+
+  # 指定した時間数だけ前後に移動する。失敗したら元の時刻に戻す
+  def move_hour(self, hours):
+    old_dt = self.dt
+    self.dt = old_dt + timedelta(hours=hours)
+    if not self.update():
+      self.dt = old_dt   # 表示は元のままなので、状態も元に戻す
+
+  # 初回描画をして画面に表示する(最初の描画に失敗したら閉じる)
+  def show(self):
+    if not self.update():
+      plt.close(self.fig)
+      return
+    plt.show()
 
 # 横軸(時間)のズーム・ドラッグ移動・リセットを、60段の軸にまとめて設定する
 #   fig  ... 図
@@ -225,3 +264,26 @@ def attach_zoom_pan(fig, axes, xlim=(0, 60)):
   fig.canvas.mpl_connect("button_press_event", on_press)
   fig.canvas.mpl_connect("motion_notify_event", on_motion)
   fig.canvas.mpl_connect("button_release_event", on_release)
+
+# 単体テスト(実データ不要、画面も開かない)
+if __name__ == "__main__":
+  import matplotlib
+  matplotlib.use("Agg")   # 画像に保存するだけ
+  from datetime import datetime
+  from obspy import Trace
+  from plot_common import setup_japanese_font
+
+  setup_japanese_font()
+  start = datetime(2026, 8, 23, 22, 0, 0)
+  tr = Trace(data=np.random.default_rng(0).normal(0, 1, 3600 * 100))
+  tr.stats.sampling_rate = 100.0
+  tr.stats.starttime = UTCDateTime(start)
+  tr.stats.station = "TEST"
+  tr.stats.channel = "U"
+  tr.data[100 * 1800: 100 * 1810] *= 20    # 30分ごろに大きな揺れ
+
+  assert len(slice_into_minutes(tr, start)) == 60
+  fig, axes, max_amp_text = create_stack_figure(for_screen=False)
+  render_stack(fig, axes, max_amp_text, tr, start, "TEST", "U")
+  fig.savefig("stack_test.png", dpi=100)
+  print("OK: stack_test.png")
