@@ -21,6 +21,7 @@ from plot_common import NM_TO_CM, get_component_color, setup_japanese_font
 from log_common import log_message, set_console, set_log_widget
 import win_pipeline
 import cache_manager
+from cache_dialog import OutputCacheDialog
 from stack_plot import StackFigure, StackWindow, find_trace
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
@@ -43,7 +44,7 @@ warnings.filterwarnings(
 # [完了]6. 震度の推測
 # 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
 # [完了]8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
-# 9. キャッシュ整理処理で、WINファイルのみ、結合前WINファイルのみなどのオプション追加
+# [完了]9. キャッシュ整理処理で、WINファイルのみ、結合前WINファイルのみなどのオプション追加
 # [実験中]10. P波、S波の到着時刻計算
 # 11. 震源位置、地震発生時刻の推測
 
@@ -607,8 +608,9 @@ class MantenUsuSeismographApp:
       return
 
     # --- Step 1: 抽出 (なければ実行) ---
-    # フォルダ内にWINファイルがあるかどうかを確認
-    existing_wins = win_pipeline.find_wins(dest_dir)
+    # フォルダ内に結合前のWINファイルがあるかどうかを確認
+    # (キャッシュ整理で結合前のWINだけ消した場合などは、ZIPから取り出し直す)
+    existing_wins = win_pipeline.find_raw_wins(dest_dir)
 
     if not existing_wins:
       extracted_count = self.extract_win_files(start_dt, end_dt, dest_dir)
@@ -639,8 +641,8 @@ class MantenUsuSeismographApp:
     # すでにSACがあれば何もしない
     if win_pipeline.find_sacs(dest_dir):
       return True
-    # WINがなければZIPから抽出
-    if not win_pipeline.find_wins(dest_dir):
+    # 結合前のWINがなければZIPから抽出
+    if not win_pipeline.find_raw_wins(dest_dir):
       if self.extract_win_files(start_dt, end_dt, dest_dir, show_dialog) == 0:
         return False
     # SACに変換
@@ -1062,31 +1064,12 @@ class MantenUsuSeismographApp:
     finally:
       loading_win.destroy()   # 成功・失敗どちらでも必ずポップアップを閉じる
 
-  # outputキャッシュの整理(履歴ファイルは残す)
+  # outputキャッシュの整理(削除するファイルの種類を選ぶ画面を開く。履歴ファイルは残す)
   def clean_output_cache(self):
     if not self.output_base.exists():
       messagebox.showinfo("情報", "outputディレクトリが存在しません。")
       return
-
-    # history.json を除いたファイル数と総容量を計算
-    files = cache_manager.collect_files(self.output_base, keep={self.history_file})
-    if not files:
-      messagebox.showinfo("情報", "削除対象のoutputキャッシュはありません。")
-      return
-    msg = (
-        f"outputディレクトリ内のキャッシュを削除します。\n\n"
-        f"・ファイル数: {len(files):,} 件\n"
-        f"・総容量: {cache_manager.format_size(cache_manager.total_size(files))}\n\n"
-        f"本当によろしいですか？"
-    )
-
-    if messagebox.askyesno("確認 - outputキャッシュ整理", msg):
-      try:
-        # outputディレクトリ内のフォルダやファイルをすべて削除し、ディレクトリ自体は残す
-        cache_manager.delete_contents(self.output_base, keep={self.history_file})
-        messagebox.showinfo("完了", "outputキャッシュの整理が完了しました。")
-      except Exception as e:
-        messagebox.showerror("エラー", f"削除中にエラーが発生しました:\n{e}")
+    OutputCacheDialog(self.root, self.output_base)
 
   # daily_zipsの整理
   def clean_daily_zips(self):

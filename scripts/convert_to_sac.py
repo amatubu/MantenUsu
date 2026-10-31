@@ -21,7 +21,7 @@ def main():
     sys.exit(1)
 
   # 変換対象(結合前)のWINファイル
-  raw_wins = [p for p in win_pipeline.find_wins(target_dir) if win_pipeline.is_raw_win(p)]
+  raw_wins = win_pipeline.find_raw_wins(target_dir)
   if not raw_wins:
     print("警告: 変換対象の .win ファイルが見つかりませんでした。")
     return

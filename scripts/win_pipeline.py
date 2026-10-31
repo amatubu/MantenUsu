@@ -32,6 +32,10 @@ def is_raw_win(path):
 def find_wins(dest_dir):
   return list(dest_dir.glob(f"*{WIN_SUFFIX}"))
 
+# フォルダ内の結合前のWINファイル(SACファイルを作り直すのに必要)
+def find_raw_wins(dest_dir):
+  return [p for p in find_wins(dest_dir) if is_raw_win(p)]
+
 # フォルダ内のSACファイル
 def find_sacs(dest_dir):
   return list(dest_dir.glob(SAC_PATTERN))
@@ -112,9 +116,7 @@ def combine_wins(dest_dir):
   # 拠点IDごとに結合前のWINファイルを集める
   #   ファイル名の例: 1070432002_2608260858.win (拠点ID_年月日時分.win)
   station_files = defaultdict(list)
-  for win_file in find_wins(dest_dir):
-    if not is_raw_win(win_file):
-      continue
+  for win_file in find_raw_wins(dest_dir):
     parts = win_file.name.split("_")
     if len(parts) >= 2:
       station_files[parts[0]].append(win_file)
