@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from obspy import UTCDateTime
 from datetime import timedelta
 from matplotlib.widgets import Button
+from matplotlib.transforms import Bbox, TransformedBbox
 from plot_common import NM_TO_CM, get_component_color
 from log_common import log_message
 
@@ -50,94 +51,81 @@ def calc_global_max(minute_traces):
   global_max = np.max(np.abs(np.concatenate(arrays)))
   return global_max if global_max > 0 else 1.0
 
-# 60段のスタック図を作る(画面表示・画像保存で共通)
-#   for_screen   ... True: 画面表示用(上部に前後ボタン用の余白) / False: 画像保存用
-#   戻り値        ... (図, 60段の軸, 最大振幅を表示するテキスト)
-def create_stack_figure(for_screen=True):
-  fig, axes = plt.subplots(
-      STACK_ROWS, 1,
-      sharex=True,
-      figsize=(8.5, 10.0),   # 60本並べるため、ある程度の縦の高さを確保
-      gridspec_kw={"hspace": 0}
-  )
+# 60段のスタック図(画面表示・画像保存で共通)
+# 速く描けるよう、1つの軸に60本の線を並べる。i 分目の段は y = i を中心に描く(上が00分)
+class StackFigure:
+  # for_screen ... True: 画面表示用(上部に前後ボタン用の余白) / False: 画像保存用
+  def __init__(self, for_screen=True):
+    self.fig = plt.figure(figsize=(8.5, 10.0))   # 60本並べるため、ある程度の縦の高さを確保
 
-  if for_screen:
-    # 画面用: 上部に「前後1時間」ボタンを置くので余白を広く取り、その左に最大振幅を表示
-    fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.90)
-    max_amp_text = fig.text(0.75, 0.925, "", fontsize=9, va="center", ha="right", color="#333333")
-  else:
-    # 画像保存用: ボタンが無いので上の余白は小さく、最大振幅は右上に表示
-    fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.94)
-    max_amp_text = fig.text(0.95, 0.95, "", fontsize=9, va="center", ha="right", color="#333333")
+    if for_screen:
+      # 画面用: 上部に「前後1時間」ボタンを置くので余白を広く取り、その左に最大振幅を表示
+      self.fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.90)
+      self.max_amp_text = self.fig.text(0.75, 0.925, "", fontsize=9, va="center", ha="right", color="#333333")
+    else:
+      # 画像保存用: ボタンが無いので上の余白は小さく、最大振幅は右上に表示
+      self.fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.94)
+      self.max_amp_text = self.fig.text(0.95, 0.95, "", fontsize=9, va="center", ha="right", color="#333333")
 
-  # 全サブプロットを包み込む外枠(実線)。図に1回だけ作る
-  ax_box = fig.add_subplot(111, frameon=True)
-  ax_box.set_facecolor("none")
-  ax_box.tick_params(labelcolor="none", top=False, bottom=False, left=False, right=False)
-  ax_box.tick_params(which="both", length=0)
-  for spine in ax_box.spines.values():
-    spine.set_visible(True)
-    spine.set_linewidth(0.8)
-    spine.set_color("#333333")
-  # 外枠を一番奥に下げて、マウスイベントを波形側に通す
-  ax_box.set_zorder(-10)
-
-  return fig, axes, max_amp_text
-
-# 1時間分の波形を、60段の軸に描画する
-#   fig, axes     ... create_stack_figure で作った図と軸
-#   max_amp_text  ... 最大振幅を表示するテキスト(create_stack_figure の戻り値)
-#   trace         ... 1時間分のトレース
-#   start_dt      ... 1時間の開始日時(datetime)
-#   station, comp ... 拠点名・成分(タイトル表示用)
-def render_stack(fig, axes, max_amp_text, trace, start_dt, station, comp):
-  # 1. 1時間データを1分ごとにスライス
-  minute_traces = slice_into_minutes(trace, start_dt)
-
-  # 2. 共通の最大振幅とスケール計算
-  global_max = calc_global_max(minute_traces)
-  ylim_range = global_max / 5.0
-  max_amp_text.set_text(f"最大振幅: {global_max * NM_TO_CM:.3e} cm/s")
-
-  # 3. 60本の波形プロット描画(0分〜59分)。色は成分(U/N/E)ごと
-  col = get_component_color(comp.upper())
-  for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
-    ax.clear()
-    # clip_on=False: 枠外(上下)へのはみ出しも描画する
-    ax.plot(tr.times(), tr.data, color=col, linewidth=0.3, clip_on=False)
-
-    # 全段でY軸の範囲を共通の最大値に固定(大きな揺れが上下にはみ出る)
-    ax.set_ylim(-ylim_range, ylim_range)
-    # X軸の範囲を0〜60秒に固定し、左右の余白を詰める
+    ax = self.fig.add_subplot(111)
+    self.ax = ax
+    # 縦軸: 段の番号(0〜59)。上が00分になるよう反転する
     ax.set_xlim(0, 60)
-    ax.margins(x=0)
-
-    # Y軸のラベルとして「何分目か(例: 00)」を表示
-    ax.set_ylabel(f"{i:02d}", fontsize=6, rotation=0, labelpad=12, va="center", ha="right")
-
+    ax.set_ylim(STACK_ROWS - 0.5, -0.5)
+    # 縦軸の目盛りとして「何分目か(例: 00)」を表示
+    ax.set_yticks(range(STACK_ROWS))
+    ax.set_yticklabels([f"{i:02d}" for i in range(STACK_ROWS)], fontsize=6)
+    ax.tick_params(axis="y", length=0)
+    ax.set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
     # 10秒単位の縦線をグレーの実線で表示
-    ax.grid(False)
     ax.grid(True, axis="x", which="major", linestyle="-", color="#cccccc", alpha=0.5)
-
-    # 目盛りの数字・線を消してスッキリさせる
-    ax.tick_params(axis="y", left=False, labelleft=False)
-    ax.tick_params(labelbottom=False)
-    ax.tick_params(axis="x", which="both", bottom=False, top=False)
-
-    # グラフ間の枠線を消してスダレ状にする
+    # 外枠
     for spine in ax.spines.values():
-      spine.set_visible(False)
-    # 背景を透明にして、はみ出た波形が下の段に重なって見えるようにする
-    ax.set_facecolor("none")
+      spine.set_linewidth(0.8)
+      spine.set_color("#333333")
 
-  # 一番下の軸だけにX軸(秒)の目盛りとラベルを表示
-  axes[-1].tick_params(labelbottom=True)
-  axes[-1].tick_params(axis="x", which="both", bottom=True)
-  axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
+    # 60段分の線。左右は枠で切り、上下は枠の外へのはみ出しも描く(大きな揺れが見えるように)
+    clip = TransformedBbox(Bbox([[0, -1], [1, 2]]), ax.transAxes)
+    self.lines = []
+    for _ in range(STACK_ROWS):
+      line, = ax.plot([], [], linewidth=0.3)
+      line.set_clip_box(clip)
+      self.lines.append(line)
 
-  # 全体タイトル(この図のタイトルとして設定する)
-  date_title = start_dt.strftime("%Y/%m/%d %H:00")
-  fig.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station}.{comp}", fontsize=12)
+  # 縦軸の値(マウス位置など)から、何段目(何分目)かを返す。範囲外は None
+  def row_at(self, ydata):
+    if ydata is None:
+      return None
+    row = int(round(ydata))
+    return row if 0 <= row < STACK_ROWS else None
+
+  # 1時間分の波形を描画する
+  #   trace         ... 1時間分のトレース
+  #   start_dt      ... 1時間の開始日時(datetime)
+  #   station, comp ... 拠点名・成分(タイトル表示用)
+  def render(self, trace, start_dt, station, comp):
+    # 1. 1時間データを1分ごとにスライス
+    minute_traces = slice_into_minutes(trace, start_dt)
+
+    # 2. 共通の最大振幅とスケール計算
+    #    最大振幅の 1/5 が段の半分の高さ(0.5)になる。大きな揺れは上下の段にはみ出る
+    global_max = calc_global_max(minute_traces)
+    half_height = global_max / 5.0
+    self.max_amp_text.set_text(f"最大振幅: {global_max * NM_TO_CM:.3e} cm/s")
+
+    # 3. 60本の波形のデータを差し替える(0分〜59分)。色は成分(U/N/E)ごと
+    #    縦軸は下向きが正なので、符号を反転して上向きを正にする
+    col = get_component_color(comp.upper())
+    for i, (tr, line) in enumerate(zip(minute_traces, self.lines)):
+      line.set_data(tr.times(), i - tr.data / half_height * 0.5)
+      line.set_color(col)
+
+    # ズームしていたら全体表示に戻す
+    self.ax.set_xlim(0, 60)
+
+    # 全体タイトル(この図のタイトルとして設定する)
+    date_title = start_dt.strftime("%Y/%m/%d %H:00")
+    self.fig.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station}.{comp}", fontsize=12)
 
 # 1時間スタック波形の表示ウィンドウ(前後の時間への移動・拠点と成分の切り替えつき)
 #   start_dt      ... 最初に表示する1時間の開始日時(datetime)
@@ -177,7 +165,8 @@ class StackWindow:
     self.available = set()
 
     # 60段の図を作る(画面表示用)
-    self.fig, self.axes, self.max_amp_text = create_stack_figure()
+    self.stack = StackFigure()
+    self.fig = self.stack.fig
 
     # グラフ上部右側に「前の1時間」「次の1時間」ボタンを配置
     ax_prev = self.fig.add_axes([0.77, 0.91, 0.09, 0.03])  # [left, bottom, width, height]
@@ -196,7 +185,7 @@ class StackWindow:
         self.comps, y=0.905, width=0.06, on_click=self.set_comp)
 
     # 横軸のズーム・ドラッグ・リセットを設定
-    attach_zoom_pan(self.fig, self.axes)
+    attach_zoom_pan(self.fig, self.stack.ax)
 
     # 右クリックで、クリックした分からの比較表示メニューを出す
     if on_compare is not None:
@@ -287,8 +276,7 @@ class StackWindow:
     self._stream_dt, self._stream = self.dt, stream
     self.available = {(tr.stats.station.lower(), tr.stats.channel[-1].upper()) for tr in stream}
 
-    render_stack(self.fig, self.axes, self.max_amp_text, trace,
-                 self.dt, self.station, self.comp)
+    self.stack.render(trace, self.dt, self.station, self.comp)
     # ウィンドウのタイトル(既定の「Figure 1」の代わり。時間・拠点・成分の切り替えに追従)
     if self.fig.canvas.manager is not None:
       self.fig.canvas.manager.set_window_title(
@@ -336,9 +324,9 @@ class StackWindow:
       patch.remove()
     self._highlights = []
     if minutes is not None:
-      for ax in list(self.axes)[minute:minute + minutes]:
-        self._highlights.append(
-            ax.axvspan(0, 60, color="#ffd54f", alpha=0.35, zorder=0, lw=0))
+      last = min(minute + minutes, STACK_ROWS)   # この1時間の外は表示しない
+      self._highlights.append(
+          self.stack.ax.axhspan(minute - 0.5, last - 0.5, color="#ffd54f", alpha=0.35, zorder=0, lw=0))
     # メニュー表示中でもすぐ反映されるよう、その場で描画する
     self.fig.canvas.draw()
     self.fig.canvas.get_tk_widget().update_idletasks()
@@ -347,14 +335,16 @@ class StackWindow:
   def _on_right_click(self, event):
     # Mac では Tk と Matplotlib の両方が左右のボタン番号を入れ替えるため、右ボタンが
     # 中ボタン(2)として届くことがある。中ボタンは他で使っていないので、両方で開く
-    if event.button not in (2, 3) or event.inaxes not in list(self.axes):
+    if event.button not in (2, 3) or event.inaxes is not self.stack.ax:
+      return
+    minute = self.stack.row_at(event.ydata)
+    if minute is None:
       return
     # Tk のウィンドウでないとメニューを出せない
     gui = event.guiEvent
     if not hasattr(self.fig.canvas, "get_tk_widget") or gui is None:
       return
 
-    minute = list(self.axes).index(event.inaxes)
     start_dt = self.dt + timedelta(minutes=minute)
     station, comp = self.station, self.comp
     tk_widget = self.fig.canvas.get_tk_widget()
@@ -399,21 +389,19 @@ class StackWindow:
       return
     plt.show()
 
-# 横軸(時間)のズーム・ドラッグ移動・リセットを、60段の軸にまとめて設定する
+# 横軸(時間)のズーム・ドラッグ移動・リセットを設定する
 #   fig  ... 図
-#   axes ... 60段の軸(X軸は共有されている)
+#   ax   ... 波形の軸
 #   xlim ... 全体の表示範囲(この外へは動かさない)
 #   操作 ... ホイール: 拡大縮小 / 左ドラッグ: 横移動 / ダブルクリック: 全体表示に戻す
-def attach_zoom_pan(fig, axes, xlim=(0, 60)):
-  axes_list = list(axes)
+def attach_zoom_pan(fig, ax, xlim=(0, 60)):
   full_min, full_max = xlim
   full_width = full_max - full_min
   drag = {"dragging": False, "press_x": None, "start_xmin": None, "start_xmax": None}
 
-  # 全段のX軸の範囲をまとめて設定して再描画
-  def set_xlim_all(xmin, xmax):
-    for ax in axes_list:
-      ax.set_xlim(xmin, xmax)
+  # X軸の範囲を設定して再描画
+  def set_xlim(xmin, xmax):
+    ax.set_xlim(xmin, xmax)
     fig.canvas.draw()
     fig.canvas.flush_events()
 
@@ -425,7 +413,7 @@ def attach_zoom_pan(fig, axes, xlim=(0, 60)):
   # ホイール: マウス位置を中心に拡大・縮小
   def on_scroll(event):
     # 波形の軸の上でのイベントだけを扱う(ボタンなど他の軸は無視)
-    if event.inaxes not in axes_list or event.xdata is None:
+    if event.inaxes is not ax or event.xdata is None:
       return
     if event.button == "down":
       scale = 1.2        # 縮小(表示範囲を広げる)
@@ -434,7 +422,7 @@ def attach_zoom_pan(fig, axes, xlim=(0, 60)):
     else:
       return
 
-    cur_min, cur_max = axes_list[0].get_xlim()
+    cur_min, cur_max = ax.get_xlim()
     cur_width = cur_max - cur_min
     new_width = cur_width * scale
 
@@ -448,17 +436,17 @@ def attach_zoom_pan(fig, axes, xlim=(0, 60)):
       # マウス位置が画面上で動かないように伸縮する
       ratio = (event.xdata - cur_min) / cur_width   # 左端からマウス位置までの割合
       new_min, new_max = clamp(event.xdata - new_width * ratio, new_width)
-    set_xlim_all(new_min, new_max)
+    set_xlim(new_min, new_max)
 
   # ボタン押下: ダブルクリックで全体表示、左ボタンでドラッグ開始
   def on_press(event):
-    if event.inaxes not in axes_list:
+    if event.inaxes is not ax:
       return
     if event.dblclick:
-      set_xlim_all(full_min, full_max)
+      set_xlim(full_min, full_max)
       return
     if event.button == 1:
-      cur_min, cur_max = axes_list[0].get_xlim()
+      cur_min, cur_max = ax.get_xlim()
       drag.update(dragging=True, press_x=event.x,
                   start_xmin=cur_min, start_xmax=cur_max)
 
@@ -467,10 +455,10 @@ def attach_zoom_pan(fig, axes, xlim=(0, 60)):
     if not drag["dragging"]:
       return
     width = drag["start_xmax"] - drag["start_xmin"]
-    px_width = axes_list[0].bbox.width              # 軸の幅(ピクセル)
+    px_width = ax.bbox.width              # 軸の幅(ピクセル)
     dx = (drag["press_x"] - event.x) * width / px_width
     new_min, new_max = clamp(drag["start_xmin"] + dx, width)
-    set_xlim_all(new_min, new_max)
+    set_xlim(new_min, new_max)
 
   def on_release(event):
     drag["dragging"] = False
@@ -499,7 +487,7 @@ if __name__ == "__main__":
   tr.data[100 * 1800: 100 * 1810] *= 20    # 30分ごろに大きな揺れ
 
   assert len(slice_into_minutes(tr, start)) == 60
-  fig, axes, max_amp_text = create_stack_figure(for_screen=False)
-  render_stack(fig, axes, max_amp_text, tr, start, "TEST", "U")
-  fig.savefig("stack_test.png", dpi=100)
+  stack = StackFigure(for_screen=False)
+  stack.render(tr, start, "TEST", "U")
+  stack.fig.savefig("stack_test.png", dpi=100)
   print("OK: stack_test.png")

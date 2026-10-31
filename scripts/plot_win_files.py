@@ -21,7 +21,7 @@ from plot_common import NM_TO_CM, get_component_color, setup_japanese_font
 from log_common import log_message, set_console, set_log_widget
 import win_pipeline
 import cache_manager
-from stack_plot import StackWindow, find_trace
+from stack_plot import StackFigure, StackWindow, find_trace
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
 # MacのTcl/Tk非推奨警告を抑制
@@ -1218,8 +1218,9 @@ class MantenUsuSeismographApp:
           plt.ioff()
 
           # 波形の描画
-          fig, axes, max_amp_text = create_stack_figure(for_screen=False)
-          render_stack(fig, axes, max_amp_text, target_trace, start_dt, station_name, comp_name)
+          stack = StackFigure(for_screen=False)
+          stack.render(target_trace, start_dt, station_name, comp_name)
+          fig = stack.fig
 
           # 画像を保存(150dpi)
           fig.savefig(out_img_path, dpi=150)
