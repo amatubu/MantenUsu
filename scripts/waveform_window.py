@@ -10,6 +10,7 @@ from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvas
 from jma_intensity import analyze_jma_scale
 from plot_common import NM_TO_CM, get_component_color
 from ps_picker import plot_ps_arrival_time
+from hypocenter_window import plot_hypocenter
 
 # 成分の並び順: U(上下)、N(南北)、E(東西)
 COMP_ORDER = ["U", "N", "E"]
@@ -242,6 +243,10 @@ def open_waveform_window(parent, st, title_str, return_to=None):
              command=lambda: run_for_station(analyze_jma_scale)).pack(side=tk.LEFT, padx=(0, 10))
   ttk.Button(control_frame, text="P波・S波検出",
              command=lambda: run_for_station(plot_ps_arrival_time)).pack(side=tk.LEFT, padx=(0, 10))
+  # 「震源推定」ボタン(4拠点のときだけ。全拠点の波形を使う)
+  if can_grid:
+    ttk.Button(control_frame, text="震源推定",
+               command=lambda: plot_hypocenter(ordered_st)).pack(side=tk.LEFT, padx=(0, 10))
 
   # 「2x2 / 縦に並べる」切り替えボタン(4拠点のときだけ)。押すと同じ図に描き直す
   if can_grid:

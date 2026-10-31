@@ -48,18 +48,18 @@ PRESETS = {
     p_sta=0.5, p_lta=5.0,  p_thr=3.0, s_sta=1.0, s_lta=10.0, s_thr=3.5),
 }
 
-# JSONからパラメータを読み込み
-def load_params():
+# JSONからパラメータを読み込み(震源推定の画面でも、ファイル・スライダー定義・既定値を変えて使う)
+def load_params(settings_file=SETTINGS_FILE, specs=SLIDER_SPECS, defaults=DEFAULT_PARAMS):
   """JSONから前回のパラメータを読み込む。無い・壊れている場合は既定値。"""
-  params = dict(DEFAULT_PARAMS)
+  params = dict(defaults)
   try:
-    with open(SETTINGS_FILE, encoding="utf-8") as f:
+    with open(settings_file, encoding="utf-8") as f:
       saved = json.load(f).get("params", {})
-    for key, _, vmin, vmax, _ in SLIDER_SPECS:
+    for key, _, vmin, vmax, _ in specs:
       val = saved.get(key)
       if isinstance(val, (int, float)) and not isinstance(val, bool):
         params[key] = min(max(float(val), vmin), vmax)  # 範囲外は丸める
-    log_message(f"前回の設定を読み込みました: {SETTINGS_FILE}")
+    log_message(f"前回の設定を読み込みました: {settings_file}")
   except FileNotFoundError:
     log_message("設定ファイルが無いため、既定値を使用します。")
   except (json.JSONDecodeError, OSError, AttributeError) as e:
@@ -67,15 +67,15 @@ def load_params():
   return params
 
 # JSONへパラメータを保存
-def save_params(params):
+def save_params(params, settings_file=SETTINGS_FILE):
   """現在のパラメータをJSONに保存する。"""
   try:
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
     data = {"version": 1,
             "params": {k: round(float(v), 3) for k, v in params.items()}}
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+    with open(settings_file, "w", encoding="utf-8") as f:
       json.dump(data, f, indent=2, ensure_ascii=False)
-    log_message(f"設定を保存しました: {SETTINGS_FILE}")
+    log_message(f"設定を保存しました: {settings_file}")
   except OSError as e:
     log_message(f"設定の保存に失敗しました: {e}")
 

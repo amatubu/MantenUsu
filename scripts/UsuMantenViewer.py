@@ -43,12 +43,12 @@ warnings.filterwarnings(
 # 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
 # [完了]8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
 # [完了]9. キャッシュ整理処理で、WINファイルのみ、結合前WINファイルのみなどのオプション追加
-# [実験中]10. P波、S波の到着時刻計算
-# 11. 震源位置、地震発生時刻の推測
+# [完了]10. P波、S波の到着時刻計算
+# [実験中]11. 震源位置、地震発生時刻の推測(4拠点のP波到着時刻から。遠い地震は到来方向のみ。地図の背景は今後)
 # 12. 変更しないファイルと、使っているうちに作られる・変わるファイルの置き場所を分ける
 #     変更しないもの(動作に必須のものを含む): tools、service_account、etc の設定ファイル(win.prm、*.ch、*.tbl)
 #       → アプリと一緒に置く(今と同じ)
-#     ユーザーの操作で作られる・変わるもの: etc/ps_picker_params.json、output(キャッシュ・history.json)、
+#     ユーザーの操作で作られる・変わるもの: etc/ps_picker_params.json、etc/hypocenter_params.json、output(キャッシュ・history.json)、
 #       daily_zips(ダウンロードしたZIP)、batch_plots(バッチ処理の画像)
 #       → ユーザープロファイル配下に置く(例: Mac は ~/Library/Application Support/UsuMantenViewer、
 #          Windows は %APPDATA%\UsuMantenViewer や %LOCALAPPDATA%\UsuMantenViewer)
