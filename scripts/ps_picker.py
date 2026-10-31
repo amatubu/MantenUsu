@@ -6,7 +6,7 @@ from obspy.signal.trigger import recursive_sta_lta
 import json
 from pathlib import Path
 
-from plot_common import plot_components
+from plot_common import NM_TO_CM, plot_components
 
 # ==========================================
 # 設定ファイル・プリセット
@@ -16,13 +16,13 @@ SETTINGS_FILE = Path(__file__).resolve().parent.parent / "etc" / "ps_picker_para
 
 # スライダー定義: (キー, 表示名, 最小, 最大, 刻み)
 SLIDER_SPECS = [
-    ("p_sta",   "P STA [s]",      0.1,  10.0,  0.1),
-    ("p_lta",   "P LTA [s]",      1.0,  60.0,  0.5),
-    ("p_thr",   "P threshold",    1.0,  8.0,   0.1),
-    ("s_sta",   "S STA [s]",      0.1,  20.0,  0.1),
-    ("s_lta",   "S LTA [s]",      1.0,  100.0, 0.5),
-    ("s_thr",   "S threshold",    1.0,  10.0,  0.1),
-    ("omori_k", "Omori k [km/s]", 1.0,  15.0,  0.1),
+    ("p_sta",   "P波 STA [秒]",      0.1,  10.0,  0.1),
+    ("p_lta",   "P波 LTA [秒]",      1.0,  60.0,  0.5),
+    ("p_thr",   "P波 閾値",          1.0,  8.0,   0.1),
+    ("s_sta",   "S波 STA [秒]",      0.1,  20.0,  0.1),
+    ("s_lta",   "S波 LTA [秒]",      1.0,  100.0, 0.5),
+    ("s_thr",   "S波 閾値",          1.0,  10.0,  0.1),
+    ("omori_k", "大森係数 k [km/s]", 1.0,  15.0,  0.1),
 ]
 
 # パラメータのデフォルト値
@@ -34,13 +34,13 @@ DEFAULT_PARAMS = dict(
 
 # プリセット(大森係数は触らず、現在値を維持する)
 PRESETS = {
-    "Standard":      dict(
+    "標準":          dict(
         p_sta=2.5, p_lta=10.0, p_thr=1.8, s_sta=4.0, s_lta=20.0, s_thr=3.0),
-    "Small quake":   dict(
+    "小さい地震":    dict(
         p_sta=1.0, p_lta=10.0, p_thr=1.5, s_sta=2.0, s_lta=15.0, s_thr=2.0),
-    "Distant quake": dict(
+    "遠い地震":      dict(
         p_sta=5.0, p_lta=30.0, p_thr=2.0, s_sta=8.0, s_lta=60.0, s_thr=2.5),
-    "Near / strong": dict(
+    "近い・強い地震": dict(
         p_sta=0.5, p_lta=5.0,  p_thr=3.0, s_sta=1.0, s_lta=10.0, s_thr=3.5),
 }
 
@@ -140,8 +140,8 @@ def plot_ps_arrival_time(st):
     # 観測点名と記録開始時刻(結果パネルの先頭に表示)
     station = tr_u.stats.station or "-"
     start_str = tr_u.stats.starttime.strftime("%Y-%m-%d %H:%M:%S")
-    header = (f"Station   : {station}\n"
-              f"Start     : {start_str}\n")
+    header = (f"拠点名　: {station}\n"
+              f"開始時刻: {start_str}\n")
 
     # 検出用の水平合成(表示には使わない)
     hor_data = np.sqrt(tr_e.data**2 + tr_n.data**2)
@@ -156,6 +156,10 @@ def plot_ps_arrival_time(st):
     # ==========================================
     # ウィンドウを準備
     fig = plt.figure(figsize=(15, 9))
+    # ウィンドウのタイトル(既定の「Figure 1」の代わり)
+    if fig.canvas.manager is not None:
+        fig.canvas.manager.set_window_title(
+            f"P波・S波検出とS-P時間 - {station} ({start_str})")
     # グラフ領域の左余白と幅(0.0〜1.0の割合で定義)
     left, width = 0.06, 0.64
     # グラフ1つの縦幅、間隔、下余白
@@ -174,15 +178,20 @@ def plot_ps_arrival_time(st):
         plt.setp(ax.get_xticklabels(), visible=False)
 
     # --- 波形(共通ルーチンで色分け) ---
-    plot_components(ax1, obspy.Stream([tr_u]))          # 1段目: 上下動
-    plot_components(ax3, obspy.Stream([tr_e, tr_n]))    # 3段目: 東西・南北を重ねる
+    # 表示用に nm/s -> cm/s へ変換したコピーを作る(検出には元データを使う)
+    def to_cm(tr):
+        tr_cm = tr.copy()
+        tr_cm.data = tr_cm.data * NM_TO_CM
+        return tr_cm
+    plot_components(ax1, obspy.Stream([to_cm(tr_u)]))               # 1段目: 上下動
+    plot_components(ax3, obspy.Stream([to_cm(tr_e), to_cm(tr_n)]))  # 3段目: 東西・南北を重ねる
 
     # --- P波・S波のCFTの描画 ---
     # 初期は y=0 の仮の線。実際の内容は update() の set_ydata で設定
     line_cft_p, = ax2.plot(t_u, np.zeros_like(t_u), "-", color=cft_color,
-                           lw=0.5, label="P-CFT")
+                           lw=0.5, label="P波 CFT")
     line_cft_s, = ax4.plot(t_h, np.zeros_like(t_h), "-", color=cft_color,
-                           lw=0.5, label="S-CFT")
+                           lw=0.5, label="S波 CFT")
 
     # --- 更新される線(閾値・到着線) ---
     # 閾値設定をCFTのグラフに描画
@@ -197,19 +206,19 @@ def plot_ps_arrival_time(st):
     s_lines = [ax.axvline(0, color=s_color, ls="--", visible=False) for ax in (ax3, ax4)]
 
     # Y軸のラベル設定
-    ax1.set_ylabel("Amplitude")
-    ax2.set_ylabel("P-CFT")
-    ax3.set_ylabel("Amplitude")
-    ax4.set_ylabel("S-CFT")
+    ax1.set_ylabel("速度 (cm/s)")
+    ax2.set_ylabel("P波 CFT")
+    ax3.set_ylabel("速度 (cm/s)")
+    ax4.set_ylabel("S波 CFT")
     # X軸のラベル設定
-    ax4.set_xlabel("Time [s]")
+    ax4.set_xlabel("時刻 (s)")
     # グリッドを表示
     for ax in (ax1, ax2, ax3, ax4):
         ax.grid(True)
 
     # 結果のテキスト表示エリアの定義
-    result_text = fig.text(0.76, 0.15, "", fontsize=10, va="top",
-                           family="monospace")
+    # (等幅フォントは日本語が表示できないため、既定のフォントを使う)
+    result_text = fig.text(0.76, 0.28, "", fontsize=10, va="top")
 
     # ==========================================
     # スライダー(右パネル): 前回の設定で初期化
@@ -219,7 +228,7 @@ def plot_ps_arrival_time(st):
     # スライダの定義
     sliders = {}
     # 最初のスライダーの下端Y座標、スライダー間の縦間隔
-    top, step_y = 0.90, 0.07
+    top, step_y = 0.90, 0.05
     # パラメータをループさせてスライダーを描画
     for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
         sax = fig.add_axes([0.82, top - i * step_y, 0.14, 0.03])
@@ -227,7 +236,7 @@ def plot_ps_arrival_time(st):
                               valinit=initial[key], valstep=vstep)
 
     # 右パネルのラベル定義
-    fig.text(0.76, 0.96, "Parameters", fontsize=13, weight="bold")
+    fig.text(0.76, 0.96, "パラメータ", fontsize=13, weight="bold")
 
     # ==========================================
     # 更新処理(パラメータが変更されたときに結果表示を更新)
@@ -241,8 +250,8 @@ def plot_ps_arrival_time(st):
 
         # STA/LTAのウィンドウの長さが不正(LTA ≦ STA)のときは警告を表示して終了
         if res is None:
-            result_text.set_text("LTA must be longer than STA.\n"
-                                 "Adjust the sliders.")
+            result_text.set_text("LTA は STA より長くしてください。\n"
+                                 "スライダーを調整してください。")
             fig.canvas.draw_idle()
             return
 
@@ -257,8 +266,8 @@ def plot_ps_arrival_time(st):
         thr_p_line.set_ydata([params["p_thr"]] * 2)
         thr_s_line.set_ydata([params["s_thr"]] * 2)
         # 閾値のラベル文字列を更新(表示更新は別途)
-        thr_p_line.set_label(f"Threshold ({params['p_thr']:.1f})")
-        thr_s_line.set_label(f"Threshold ({params['s_thr']:.1f})")
+        thr_p_line.set_label(f"閾値 ({params['p_thr']:.1f})")
+        thr_s_line.set_label(f"閾値 ({params['s_thr']:.1f})")
 
         # P波到着時刻の処理
         for ln in p_lines:
@@ -280,10 +289,10 @@ def plot_ps_arrival_time(st):
                 ln.set_visible(False)
 
         # P波・S波到着時刻のラベル文字列を更新(表示更新は別途)
-        p_lines[0].set_label(f"P-arrival ({p_time:.2f} s)" if p_time is not None
-                             else "P-arrival (not found)")
-        s_lines[0].set_label(f"S-arrival ({s_time:.2f} s)" if s_time is not None
-                             else "S-arrival (not found)")
+        p_lines[0].set_label(f"P波到着 ({p_time:.2f} 秒)" if p_time is not None
+                             else "P波到着 (検出なし)")
+        s_lines[0].set_label(f"S波到着 ({s_time:.2f} 秒)" if s_time is not None
+                             else "S波到着 (検出なし)")
 
         # CFTグラフの調整(Y軸の範囲調整)
         for ax in (ax2, ax4):
@@ -304,23 +313,23 @@ def plot_ps_arrival_time(st):
             dist = params["omori_k"] * sp
             # 表示メッセージを構築
             msg = (header +
-                   f"P arrival : {p_time:8.2f} s\n"
-                   f"S arrival : {s_time:8.2f} s\n"
-                   f"S-P time  : {sp:8.2f} s\n"
-                   f"Omori k   : {params['omori_k']:8.1f} km/s\n"
-                   f"Distance  : {dist:8.1f} km")
+                   f"P波到着　: {p_time:.2f} 秒\n"
+                   f"S波到着　: {s_time:.2f} 秒\n"
+                   f"S-P時間　: {sp:.2f} 秒\n"
+                   f"大森係数 : {params['omori_k']:.1f} km/s\n"
+                   f"震源距離 : {dist:.1f} km")
             # グラフタイトルを更新
-            ax1.set_title(f"S-P Time: {sp:.2f}s | Est. Distance: {dist:.1f} km "
+            ax1.set_title(f"S-P時間: {sp:.2f} 秒 | 推定震源距離: {dist:.1f} km "
                           f"(k={params['omori_k']:.1f})", fontsize=11)
         else:
             # P波またはS波が検出できなかった場合
             # 表示メッセージを構築
             msg = (header +
-                   f"P arrival : {'-' if p_time is None else f'{p_time:.2f} s'}\n"
-                   f"S arrival : {'-' if s_time is None else f'{s_time:.2f} s'}\n"
-                   "Distance  : N/A")
+                   f"P波到着　: {'-' if p_time is None else f'{p_time:.2f} 秒'}\n"
+                   f"S波到着　: {'-' if s_time is None else f'{s_time:.2f} 秒'}\n"
+                   "震源距離 : 計算できません")
             # グラフタイトルを更新
-            ax1.set_title("Waveform (P/S arrival not both detected)", fontsize=11)
+            ax1.set_title("波形 (P波・S波の両方は検出できませんでした)", fontsize=11)
         # 結果サマリを表示
         result_text.set_text(msg)
         fig.canvas.draw_idle()
@@ -338,25 +347,25 @@ def plot_ps_arrival_time(st):
         update()
 
     # --- プリセットボタン(2x2) ---
-    fig.text(0.76, 0.44, "Presets", fontsize=11, weight="bold")
+    fig.text(0.76, 0.55, "プリセット", fontsize=11, weight="bold")
     preset_buttons = []
     for i, (name, preset) in enumerate(PRESETS.items()):
         bx = 0.77 + (i % 2) * 0.10
-        by = 0.37 - (i // 2) * 0.07
+        by = 0.48 - (i // 2) * 0.07
         bax = fig.add_axes([bx, by, 0.095, 0.05])
         btn = Button(bax, name)
         btn.label.set_fontsize(8)
         btn.on_clicked(lambda _evt, p=preset: apply_params(p))
         preset_buttons.append(btn)
 
-    # --- Reset(既定値に戻す) ---
-    rax = fig.add_axes([0.82, 0.17, 0.08, 0.04])
-    btn_reset = Button(rax, "Reset")
+    # --- リセット(既定値に戻す) ---
+    rax = fig.add_axes([0.79, 0.31, 0.08, 0.04])
+    btn_reset = Button(rax, "リセット")
     btn_reset.on_clicked(lambda _: apply_params(DEFAULT_PARAMS))
 
-    # --- Print(結果表示)ボタン ---
-    pax = fig.add_axes([0.91, 0.17, 0.06, 0.04])
-    btn_print = Button(pax, "Print")
+    # --- テキスト出力ボタン(結果をコンソールに表示) ---
+    pax = fig.add_axes([0.88, 0.31, 0.09, 0.04])
+    btn_print = Button(pax, "テキスト出力")
 
     # 結果表示(コンソール)
     def print_result(_):
@@ -389,6 +398,8 @@ if __name__ == "__main__":
     # ==========================================
     # ファイル指定と実行
     # ==========================================
+    from plot_common import setup_japanese_font
+    setup_japanese_font()
     ew_sac_file = "./output/202507082130_202507082130/Hokudai.E.0970355243_sac"
     ns_sac_file = "./output/202507082130_202507082130/Hokudai.N.0970355243_sac"
     ud_sac_file = "./output/202507082130_202507082130/Hokudai.U.0970355243_sac"
