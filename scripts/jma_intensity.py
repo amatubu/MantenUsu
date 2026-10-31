@@ -19,8 +19,9 @@ def convert_to_jma_scale( I ):
   else: return "7"
 
 # 気象庁震度計測のためのフィルター
-#   data          ... 波形データ
+#   data          ... 波形データ(加速度)
 #   sampling_rate ... サンプリングレート(Hz)
+#   戻り値         ... フィルタ後の波形データ
 def apply_jma_filter(data, sampling_rate):
   """気象庁定義のフィルターを加速度波形データに適用する関数"""
   n = len( data )
@@ -61,12 +62,14 @@ def apply_jma_filter(data, sampling_rate):
   # 結果は複素数になるため、実部を取り出す
   return np.real( ifft( yf_filtered ) )
 
-# 震度推定画面を表示
-#    stream ... 波形データ(3要素)
+# 波形データから気象庁震度を算出する
+#   stream ... 波形データ(上下(U)、南北(N)、東西(E)の3要素を利用)
+#   戻り値  ... 波形データの変換過程や結果を格納した辞書
 # 参考
 #   https://www.jma.go.jp/jma/kishou/know/jishin/kyoshin/kaisetsu/calc_sindo.html
-def analyze_jma_scale(stream):
-  """すべての解析ステップを1つのグリッド画面にまとめてプロット・計算する関数"""
+def calc_jma_intensity(stream):
+  """描画なしで計算だけ行い、結果を辞書で返す"""
+  # 単位変換 → 微分 → フィルター → 積分 → 合成加速度 → 閾値a → 計測震度
   # 波形データを複写する
   st = stream.copy()
 
@@ -74,32 +77,9 @@ def analyze_jma_scale(stream):
   for tr in st:
     tr.data = tr.data * 1e-9
 
-  # 3行2列のサブプロット（グリッド）を作成
-  fig, axes = plt.subplots(3, 2, figsize=(15, 9))
-  axes = axes.flatten()
-
-  # 共通のプロット処理を行う内部関数（色分け適用）
-  #   ax         ... サブプロット(グリッド)
-  #   stream_obj ... 波形データ
-  #   titie      ... グラフに表示させるタイトル
-  #   ylabel     ... 縦軸のラベル
-  def plot_three_components( ax, stream_obj, title, ylabel ):
-    plot_components(ax, stream_obj)          # 色分けして描画(共通部品)
-
-    # タイトル、X軸、Y軸のラベルを設定
-    ax.set_title( title )
-    ax.set_xlabel( "時刻 (s)" )
-    ax.set_ylabel( ylabel )
-    ax.legend( loc="upper right", fontsize="small" )
-    ax.grid(True)
-
-  # --- 1. 元の速度波形 ---
-  plot_three_components(axes[0], st, "1. 元の速度波形 (Original Velocity)", "速度 (m/s)")
-
   # --- ステップ1: 加速度への変換(微分) (Fig.1 相当) ---
   st_acc = st.copy()
   st_acc.differentiate()  # このst_accは加速度になっている
-  plot_three_components(axes[1], st_acc, "2. 加速度波形 (Acceleration) (JMA Fig.1 相当)", "加速度 (m/s^2)")
 
   # --- ステップ2: フィルター処理（加速度） (Fig.4 相当) ---
   # 気象庁サイトに記載のフィルターを適用
@@ -107,12 +87,10 @@ def analyze_jma_scale(stream):
   # 各要素にフィルターを適用
   for tr in st_filt:
     tr.data = apply_jma_filter(tr.data, tr.stats.sampling_rate)
-  plot_three_components(axes[2], st_filt, "3. フィルター処理済加速度 (Filtered Accel) (JMA Fig.4 相当)", "加速度 (m/s^2)")
 
   # --- フィルター後速度(積分) ---
-  st_vel_fig4 = st_filt.copy()
-  st_vel_fig4.integrate()  # 積分して加速度 -> 速度に戻す
-  plot_three_components(axes[3], st_vel_fig4, "4. フィルター後速度", "速度 (m/s)")
+  st_vel = st_filt.copy()
+  st_vel.integrate()  # 積分して加速度 -> 速度に戻す
 
   # --- ステップ3 & 4: 3成分合成加速度 と 閾値 a の算出 ---
   # 各成分のデータをNumPy配列として取り出す
@@ -139,17 +117,6 @@ def analyze_jma_scale(stream):
   else:
     a = 0.0
 
-  # --- 5. 3成分合成加速度波形 (Fig.5 相当) ---
-  ax = axes[4]
-  ax.plot(tr_e.times(), combined_acc, color='tab:red', alpha=0.8, linewidth=0.5, label='合成加速度')
-  # 閾値の a の横線を描画
-  ax.axhline(y=a, color='blue', linestyle='--', linewidth=1.2, label=f'閾値 a = {a:.4f} m/s^2')
-  ax.set_title("5. 3成分合成加速度波形 (Combined Accel & 閾値 a)  (JMA Fig.5 相当)")
-  ax.set_xlabel("時刻 (s)")
-  ax.set_ylabel("合成加速度 (m/s^2)")
-  ax.legend(loc="upper right", fontsize="small")
-  ax.grid(True)
-
   # --- ステップ5: 計測震度の算出 ---
   # a は cm/s^2 に変換して計算することが多いので、m/s^2 から変換(100倍)
   a_cmss = a * 100  # cm/s^2 (Gal) に変換
@@ -160,7 +127,6 @@ def analyze_jma_scale(stream):
   # 気象庁震度階級に置き換え
   jma_scale = convert_to_jma_scale(instrumental_intensity)
 
-  # --- 6番目の枠：計算結果サマリー ---
   # --- メタデータ（拠点名・開始時刻）の取得 ---
   station_name = st[0].stats.station
   # 区間の開始時刻
@@ -168,26 +134,108 @@ def analyze_jma_scale(stream):
   start_time_jst = st[0].stats.starttime  # UTCからの変換が必要な場合は加える⇒ + 9 * 3600
   time_str = start_time_jst.strftime("%Y-%m-%d %H:%M:%S")
 
+  # 結果を辞書形式で返す
+  return {
+    "st": st,                             # 1. オリジナルの波形データ
+    "st_acc": st_acc,                     # 2. 加速度データ(1を微分したもの)
+    "st_filt": st_filt,                   # 3. 2に気象庁フィルタ適用後の加速度データ
+    "st_vel": st_vel,                     # 4. フィルタ適用後の波形データ(3を積分したもの)
+    "times": tr_e.times(),                # 波形データのX軸(時間軸)の範囲
+    "combined_acc": combined_acc,         # 3要素の合成加速度
+    "a": a,                               # a 値(単位 m/s/s)
+    "a_gal": a_cmss,                      # a 値(単位 Gal = cm/s/s)
+    "intensity": instrumental_intensity,  # 計測震度
+    "scale": jma_scale,                   # 気象庁震度階級
+    "station": station_name,              # 拠点名
+    "start_time": time_str,               # 観測データの開始時刻(文字列形式)
+  }
+
+# 共通のプロット処理を行う内部関数（色分け適用）
+#   ax         ... サブプロット(グリッド)
+#   stream_obj ... 波形データ
+#   title      ... グラフに表示させるタイトル
+#   ylabel     ... 縦軸のラベル
+def plot_three_components( ax, stream_obj, title, ylabel ):
+  plot_components(ax, stream_obj)          # 色分けして描画(共通部品)
+
+  # タイトル、X軸、Y軸のラベルを設定
+  ax.set_title( title )
+  ax.set_xlabel( "時刻 (s)" )
+  ax.set_ylabel( ylabel )
+  ax.legend( loc="upper right", fontsize="small" )
+  ax.grid(True)
+
+# 算出された震度情報、オリジナルの波形データ、加速度データ、フィルタ後の波形データ等を表示する
+#   result ... calc_jma_intensity が返す辞書
+def plot_jma_analysis(result):
+  # 3行2列のサブプロット（グリッド）を作成
+  fig, axes = plt.subplots(3, 2, figsize=(15, 9))
+  axes = axes.flatten()
+
+  # --- 1. 元の速度波形 ---
+  plot_three_components(axes[0], result["st"], "1. 元の速度波形 (Original Velocity)", "速度 (m/s)")
+
+  # --- ステップ1: 加速度への変換(微分) (Fig.1 相当) ---
+  plot_three_components(axes[1], result["st_acc"], "2. 加速度波形 (Acceleration) (JMA Fig.1 相当)", "加速度 (m/s^2)")
+
+  # --- ステップ2: フィルター処理（加速度） (Fig.4 相当) ---
+  plot_three_components(axes[2], result["st_filt"], "3. フィルター処理済加速度 (Filtered Accel) (JMA Fig.4 相当)", "加速度 (m/s^2)")
+
+  # --- フィルター後速度(積分) ---
+  plot_three_components(axes[3], result["st_vel"], "4. フィルター後速度", "速度 (m/s)")
+
+  # --- ステップ3 & 4: 3成分合成加速度 と 閾値 a の算出 ---
+  # --- 5. 3成分合成加速度波形 (Fig.5 相当) ---
+  ax = axes[4]
+  ax.plot(result["times"], result["combined_acc"], color='tab:red', alpha=0.8, linewidth=0.5, label='合成加速度')
+  # 閾値の a の横線を描画
+  ax.axhline(y=result["a"], color='blue', linestyle='--', linewidth=1.2, label=f'閾値 a = {result["a"]:.4f} m/s^2')
+  ax.set_title("5. 3成分合成加速度波形 (Combined Accel & 閾値 a)  (JMA Fig.5 相当)")
+  ax.set_xlabel("時刻 (s)")
+  ax.set_ylabel("合成加速度 (m/s^2)")
+  ax.legend(loc="upper right", fontsize="small")
+  ax.grid(True)
+
+  # --- ステップ5: 計測震度の算出 ---
+  # --- 6番目の枠：計算結果サマリー ---
   ax_text = axes[5]
   ax_text.axis('off')
 
   # サマリーに表示する内容
-  result_text = f"[ 解析結果サマリー ]\n" \
-                f"• 拠点名 (Station): {station_name}\n" \
-                f"• 開始時刻 (JST): {time_str}\n\n" \
-                f"• 揺れの指標 a: {a:.4f} m/s^2\n" \
-                f"  (約 {a_cmss:.2f} cm/s^2 [Gal])\n\n" \
-                f"• 計測震度: {instrumental_intensity:.2f}\n" \
-                f"• 推定震度階級: 震度 {jma_scale}"
+  result_text = (
+    f"[ 解析結果サマリー ]\n"
+    f"• 拠点名 (Station): {result['station']}\n"
+    f"• 開始時刻 (JST): {result['start_time']}\n\n"
+    f"• 揺れの指標 a: {result['a']:.4f} m/s^2\n"
+    f"  (約 {result['a_gal']:.2f} cm/s^2 [Gal])\n\n"
+    f"• 計測震度: {result['intensity']:.2f}\n"
+    f"• 推定震度階級: 震度 {result['scale']}"
+  )
 
   # テキストを描画
   ax_text.text(0.05, 0.5, result_text, fontsize=10.5,
               bbox=dict(boxstyle='round,pad=1', facecolor='lightyellow', edgecolor='orange', alpha=0.8),
               verticalalignment='center')
 
-  # レイアウト調整と保存
+  # レイアウト調整
   plt.tight_layout()
 
   plt.show()
 
-  return instrumental_intensity, jma_scale
+# 震度推定画面を表示
+#   stream ... 波形データ(3要素)
+#   戻り値  ... 計測震度と気象庁震度階級の組(タプル)
+def analyze_jma_scale(stream):
+  result = calc_jma_intensity(stream)
+  plot_jma_analysis(result)
+  return result["intensity"], result["scale"]
+
+# 単体テスト
+if __name__ == "__main__":
+  # convert_to_jma_scale の境界値チェック(画面は開かない)
+  assert convert_to_jma_scale(0.49) == "0"
+  assert convert_to_jma_scale(0.5)  == "1"
+  assert convert_to_jma_scale(4.99) == "5弱"
+  assert convert_to_jma_scale(5.0)  == "5強"
+  assert convert_to_jma_scale(6.5)  == "7"
+  print("OK")
