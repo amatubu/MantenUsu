@@ -74,7 +74,7 @@ cmd /k
 ```text
 📦 プロジェクトルート/
  ┣ 📁 scripts/
-     ┣ 📜 main.py          # 開発スクリプト
+     ┣ 📜 UsuMantenViewer.py  # メインのスクリプト
  ┣ 📁 etc/                 # 設定ファイル等
  ┣ 📁 daily_zips/          # 入力データ等
  ┣ 📁 tools/               # ツール類
@@ -88,8 +88,8 @@ cmd /k
 
 ```bash
 cd scripts
-pyinstaller --onedir --collect-all obspy --collect-all matplotlib main.py
+pyinstaller --onedir --collect-all obspy --collect-all matplotlib UsuMantenViewer.py
 ```
 
-3. ビルド完了後、`scripts/dist/main/` フォルダ内に `main.exe` および依存ファイル群が生成されます。
+3. ビルド完了後、`scripts/dist/UsuMantenViewer/` フォルダ内に `UsuMantenViewer.exe` および依存ファイル群が生成されます。
 4. 配布時は `--onedir` の成果物フォルダ内に `etc` や `daily_zips` などの関連フォルダを同階層に配置して配布します。
