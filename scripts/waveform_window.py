@@ -244,7 +244,9 @@ def open_waveform_window(parent, st, title_str, return_to=None):
   ttk.Button(control_frame, text="P波・S波検出",
              command=lambda: run_for_station(plot_ps_arrival_time)).pack(side=tk.LEFT, padx=(0, 10))
   # 「震源推定」ボタン(4拠点のときだけ。全拠点の波形を使う)
+  # 上の2つは選んだ拠点についての処理なので、縦の区切り線で分ける
   if can_grid:
+    ttk.Separator(control_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=(10, 20))
     ttk.Button(control_frame, text="震源推定",
                command=lambda: plot_hypocenter(ordered_st)).pack(side=tk.LEFT, padx=(0, 10))
 

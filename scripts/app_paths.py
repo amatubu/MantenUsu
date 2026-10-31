@@ -35,19 +35,27 @@ SERVICE_ACCOUNT_DIR = PROJECT_DIR / "service_account"  # Googleドライブの�
 BATCH_PLOTS_DIR = PROJECT_DIR / "batch_plots"          # バッチ処理で保存する画像
 
 
-# ビルドしたアプリで、Matplotlib のフォント一覧のキャッシュを残る場所に置く
-# PyInstaller は Matplotlib の設定フォルダを、終了時に消える一時フォルダにする。そのため毎回
-# フォント一覧を作り直すことになり、Mac では system_profiler でのフォント検索に約20秒かかって
-# 起動が遅くなる。ユーザーのキャッシュフォルダに置けば、作るのは最初の1回だけで済む
-# (matplotlib を読み込む前に設定する必要があるので、このモジュールの読み込み時に行う)
-def _use_persistent_matplotlib_cache():
+# ユーザーのキャッシュフォルダ(消えても作り直せるもの: フォント一覧、地図のタイルなど)
+def _user_cache_dir():
   if sys.platform == "darwin":
     base = Path.home() / "Library" / "Caches"
   elif sys.platform.startswith("win"):
     base = Path(os.environ.get("LOCALAPPDATA", Path.home()))
   else:
     base = Path.home() / ".cache"
-  cache_dir = base / "UsuMantenViewer" / "matplotlib"
+  return base / "UsuMantenViewer"
+
+USER_CACHE_DIR = _user_cache_dir()
+MAP_TILES_DIR = USER_CACHE_DIR / "map_tiles"           # 地理院タイル(震源推定の地図の背景)
+
+
+# ビルドしたアプリで、Matplotlib のフォント一覧のキャッシュを残る場所に置く
+# PyInstaller は Matplotlib の設定フォルダを、終了時に消える一時フォルダにする。そのため毎回
+# フォント一覧を作り直すことになり、Mac では system_profiler でのフォント検索に約20秒かかって
+# 起動が遅くなる。ユーザーのキャッシュフォルダに置けば、作るのは最初の1回だけで済む
+# (matplotlib を読み込む前に設定する必要があるので、このモジュールの読み込み時に行う)
+def _use_persistent_matplotlib_cache():
+  cache_dir = USER_CACHE_DIR / "matplotlib"
   try:
     cache_dir.mkdir(parents=True, exist_ok=True)
   except OSError:

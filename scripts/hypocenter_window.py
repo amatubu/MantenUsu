@@ -7,6 +7,7 @@ from matplotlib.widgets import Slider, Button
 from hypocenter import (load_stations, LocalProjection, pick_p_arrivals,
                         fit_plane_wave, locate_grid, HORIZONTAL_RANGE)
 from plot_common import NM_TO_CM, get_component_color
+import gsi_tiles
 from ps_picker import load_params, save_params
 from log_common import log_message
 import app_paths
@@ -31,6 +32,12 @@ PICK_KEYS = ("p_sta", "p_lta", "p_thr", "window")
 
 # 波形の表示に使う帯域通過フィルター [Hz](小さな地震を見やすくする。検出には使わない)
 DISPLAY_BAND = (2.0, 20.0)
+
+# 配置図の横:縦の比(拠点が東西に並んでいるので横長にする)
+MAP_ASPECT = 1.5
+
+# 配置図の背景の切り替え順(None は背景なし)
+MAP_LAYERS = ["std", "relief", None]
 
 # 16方位の名前(北から時計回り)
 DIRECTIONS = ["北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東",
@@ -126,7 +133,7 @@ def plot_hypocenter(st):
     thr_lines[name] = cft_axes[name].axhline(0, color=cft_color, ls=":", lw=0.8)
 
   # --- 拠点の配置図 ---
-  map_ax = fig.add_axes([0.66, 0.64, 0.28, 0.29])
+  map_ax = fig.add_axes([0.60, 0.615, 0.38, 0.335])
 
   # --- 結果のテキスト ---
   result_text = fig.text(0.62, 0.235, "", fontsize=9, va="top")
@@ -142,7 +149,7 @@ def plot_hypocenter(st):
     sliders[key] = Slider(sax, label, vmin, vmax, valinit=initial[key], valstep=vstep)
 
   # --- 状態: 自動検出の結果、手で指定した時刻、計算から外した拠点 ---
-  state = {"auto": {}, "pick_params": None, "result": None, "filtered": True,
+  state = {"auto": {}, "pick_params": None, "result": None, "filtered": True, "layer": MAP_LAYERS[0],
            "p_thr": None}
   manual = {}
   excluded = set()
@@ -175,6 +182,23 @@ def plot_hypocenter(st):
     if times:
       first_ax.set_xlim(min(times) - 5, max(times) + 10)
 
+  # 配置図の背景に地理院タイルを敷く(中心から東西 ±half_x km、南北 ±half_y km の範囲)
+  # タイルはWebメルカトルだが、狭い範囲なので四隅の位置だけ合わせて平面に貼る
+  def draw_background(half_x, half_y):
+    layer = state["layer"]
+    if layer is None:
+      return
+    lat_s, lon_w = proj.to_latlon(-half_x, -half_y)
+    lat_n, lon_e = proj.to_latlon(half_x, half_y)
+    for img, (west, east, south, north) in gsi_tiles.tiles_for_bounds(
+        layer, lat_s, lat_n, lon_w, lon_e):
+      x0, y0 = proj.to_xy(south, west)
+      x1, y1 = proj.to_xy(north, east)
+      map_ax.imshow(img, extent=(x0, x1, y0, y1), zorder=0, interpolation="bilinear")
+    map_ax.grid(False)
+    map_ax.text(0.01, 0.01, gsi_tiles.ATTRIBUTION, transform=map_ax.transAxes, fontsize=6,
+                va="bottom", zorder=5, bbox=dict(facecolor="white", edgecolor="none", alpha=0.7))
+
   # 配置図を描き直す
   def draw_map(res):
     map_ax.clear()
@@ -185,30 +209,34 @@ def plot_hypocenter(st):
     map_ax.set_aspect("equal", adjustable="box")
     for nm in names:
       x, y = xy[nm]
-      color = "lightgray" if nm in excluded or current_picks()[nm] is None else "black"
-      map_ax.plot(x, y, "^", color=color, ms=9)
+      color = "gray" if nm in excluded or current_picks()[nm] is None else "black"
+      map_ax.plot(x, y, "^", color=color, ms=9, markeredgecolor="white", zorder=3)
       map_ax.annotate(nm, (x, y), textcoords="offset points", xytext=(5, 5),
-                      fontsize=8, color=color)
+                      fontsize=8, color=color, zorder=3,
+                      bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1))
     radius = max(np.hypot(*xy[nm]) for nm in names)
-    extent = radius * 1.6
+    # 南北の半分の幅 [km](東西はその MAP_ASPECT 倍)。拠点が東西に収まるように決める
+    half_y = radius * 1.6 / MAP_ASPECT
     loc = res.get("grid")
     if loc is not None and not loc["at_edge"]:
       # 近い地震: 震央を星で示す
       # 拠点の間にあると拠点名と重なるため、説明の文字は凡例に出す
-      map_ax.plot(loc["x"], loc["y"], "*", color=p_color, ms=16,
-                  label=f"震央 (深さ {loc['depth']:.1f} km)")
-      extent = max(extent, abs(loc["x"]) * 1.2, abs(loc["y"]) * 1.2)
+      map_ax.plot(loc["x"], loc["y"], "*", color=p_color, ms=16, markeredgecolor="white",
+                  zorder=4, label=f"震央 (深さ {loc['depth']:.1f} km)")
+      half_y = max(half_y, abs(loc["x"]) * 1.2 / MAP_ASPECT, abs(loc["y"]) * 1.2)
     elif res.get("azimuth") is not None:
       # 遠い地震: 到来方向(震源のある方向)を矢印で示す
       az = np.radians(res["azimuth"])
-      length = radius * 1.4
+      length = half_y * 0.9
       map_ax.annotate("", xy=(length * np.sin(az), length * np.cos(az)), xytext=(0, 0),
-                      arrowprops=dict(arrowstyle="->", color=p_color, lw=2))
+                      arrowprops=dict(arrowstyle="->", color=p_color, lw=2), zorder=4)
       # 凡例用の見えない線(矢印そのものは凡例に出せないため)
       map_ax.plot([], [], "-", color=p_color, lw=2,
                   label=f"到来方向 {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})")
-    map_ax.set_xlim(-extent, extent)
-    map_ax.set_ylim(-extent, extent)
+    half_x = half_y * MAP_ASPECT
+    draw_background(half_x, half_y)
+    map_ax.set_xlim(-half_x, half_x)
+    map_ax.set_ylim(-half_y, half_y)
     if map_ax.get_legend_handles_labels()[0]:
       map_ax.legend(loc="lower right", fontsize=8)
 
@@ -353,6 +381,20 @@ def plot_hypocenter(st):
 
   fig.text(0.62, 0.53, "パラメータ", fontsize=12, weight="bold")
 
+  # --- 配置図の背景の切り替え(標準地図 → 色別標高図 → なし) ---
+  lax = fig.add_axes([0.69, 0.52, 0.10, 0.035])
+  def layer_label():
+    layer = state["layer"]
+    return f"地図: {gsi_tiles.LAYERS[layer][0] if layer else 'なし'}"
+  btn_layer = Button(lax, layer_label())
+  btn_layer.label.set_fontsize(9)
+  def toggle_layer(_):
+    state["layer"] = MAP_LAYERS[(MAP_LAYERS.index(state["layer"]) + 1) % len(MAP_LAYERS)]
+    btn_layer.label.set_text(layer_label())
+    draw_map(state["result"] or {})
+    fig.canvas.draw_idle()
+  btn_layer.on_clicked(toggle_layer)
+
   # --- 波形のフィルター切り替え(表示だけ。P波の検出は元の波形で行う) ---
   fax = fig.add_axes([0.80, 0.52, 0.14, 0.035])
   def filter_label():
@@ -375,7 +417,7 @@ def plot_hypocenter(st):
   fig.canvas.mpl_connect("close_event", on_close)
 
   update()
-  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_filter)
+  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_filter, btn_layer)
   plt.show()
 
 if __name__ == "__main__":
