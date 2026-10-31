@@ -4,16 +4,16 @@ from matplotlib.widgets import Slider, Button
 import obspy
 from obspy.signal.trigger import recursive_sta_lta
 import json
-from pathlib import Path
 
 from plot_common import NM_TO_CM, plot_components
 from log_common import log_message
+import app_paths
 
 # ==========================================
 # 設定ファイル・プリセット
 # ==========================================
 # カレントディレクトリ基準(./output と同じ扱い)
-SETTINGS_FILE = Path(__file__).resolve().parent.parent / "etc" / "ps_picker_params.json"
+SETTINGS_FILE = app_paths.ETC_DIR / "ps_picker_params.json"
 
 # スライダー定義: (キー, 表示名, 最小, 最大, 刻み)
 SLIDER_SPECS = [

@@ -4,10 +4,9 @@ from datetime import datetime
 from pathlib import Path
 import sys
 
+import app_paths
 import win_pipeline
 
-# プロジェクトのフォルダ(このスクリプトの親の親)。どこから実行しても同じ場所を使う
-PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 
 def main():
@@ -22,7 +21,7 @@ def main():
   start_str = sys.argv[1]
   end_str = sys.argv[2]
   # 出力先の親フォルダ（指定がない場合はプロジェクトの 'output'）
-  dest_base = Path(sys.argv[3]) if len(sys.argv) > 3 else PROJECT_DIR / "output"
+  dest_base = Path(sys.argv[3]) if len(sys.argv) > 3 else app_paths.OUTPUT_DIR
 
   try:
     start_dt = datetime.strptime(start_str, "%Y%m%d%H%M")
@@ -41,7 +40,7 @@ def main():
   dest_dir = dest_base / start_str
 
   # ZIPファイルが格納されている親フォルダ
-  zips_root = PROJECT_DIR / "daily_zips"
+  zips_root = app_paths.ZIPS_DIR
   if not zips_root.exists():
     print(f"エラー: 'daily_zips' フォルダが見つかりません: {zips_root}")
     return

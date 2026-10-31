@@ -3,13 +3,13 @@ import argparse                           # 入力引数の処理
 from datetime import datetime, timedelta  # 日付・時刻の処理
 import json
 import os
-from pathlib import Path
 import tkinter as tk                      # GUIツール
 from tkinter import messagebox, ttk       # GUIの拡張ツール(ttk = Themed Tkinter)
 import warnings
 import traceback
 import re
 
+import app_paths                       # matplotlib より先に読み込む(ビルドしたアプリ向けの設定のため)
 from obspy import read                 # SACファイルの読み込み
 import matplotlib.pyplot as plt        # グラフ表示ツール
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
@@ -62,23 +62,22 @@ class MantenUsuSeismographApp:
     # リサイズを許可しない
     self.root.resizable(False, False)
 
-    # パス設定
-    # スクリプトの親ディレクトリの絶対パス
-    self.base_dir = Path(__file__).parent.resolve()
-    
+    # パス設定(場所は app_paths で決める。開発中とビルドしたアプリで共通)
     # WINファイル・SACファイルなどの出力先
-    self.output_base = self.base_dir.parent / "output"
+    self.output_base = app_paths.OUTPUT_DIR
     # 日ごとのZipファイルの格納場所
-    self.zips_root = self.base_dir.parent / "daily_zips"
+    self.zips_root = app_paths.ZIPS_DIR
     # win2sac_32の格納場所
-    self.tools_dir = self.base_dir.parent / "tools"
+    self.tools_dir = app_paths.TOOLS_DIR
     # win2sac_32が使用するチャンネル定義ファイル等の格納場所
-    self.etc_dir = self.base_dir.parent / "etc"
+    self.etc_dir = app_paths.ETC_DIR
     # Googleドライブのサービスアカウントファイルの格納場所
-    self.service_account_dir = self.base_dir.parent / "service_account"
+    self.service_account_dir = app_paths.SERVICE_ACCOUNT_DIR
+    # バッチ処理で保存する画像の格納場所
+    self.batch_output_dir = app_paths.BATCH_PLOTS_DIR
     # GoogleドライブのフォルダIDの定義ファイル(JSON)
     self.folder_config_file = self.service_account_dir / "folder_config.json"
-    self.target_folder_id = self.target_folder_id = load_folder_id(self.folder_config_file)
+    self.target_folder_id = load_folder_id(self.folder_config_file)
     # 履歴を格納するファイル(JSON)
     self.history_file = self.output_base / "history.json"
 
@@ -967,7 +966,7 @@ class MantenUsuSeismographApp:
       log_message("[警告] 指定された条件に一致するZIPファイルがありません。")
       return
 
-    batch_output_dir = self.base_dir.parent / "batch_plots"
+    batch_output_dir = self.batch_output_dir
     batch_output_dir.mkdir(parents=True, exist_ok=True)
 
     for date_str, zpath in target_zips:

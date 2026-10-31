@@ -3,10 +3,9 @@
 from pathlib import Path
 import sys
 
+import app_paths
 import win_pipeline
 
-# プロジェクトのフォルダ(このスクリプトの親の親)。どこから実行しても同じ場所を使う
-PROJECT_DIR = Path(__file__).resolve().parent.parent
 
 
 def main():
@@ -30,7 +29,7 @@ def main():
 
   # 結合・チャンネル読み替え・SAC変換(拠点ごとのエラーは表示して続行)
   try:
-    win_pipeline.convert_wins_to_sacs(target_dir, PROJECT_DIR / "tools", PROJECT_DIR / "etc")
+    win_pipeline.convert_wins_to_sacs(target_dir, app_paths.TOOLS_DIR, app_paths.ETC_DIR)
   except win_pipeline.PipelineError as e:
     print(f"エラー: {e}")
     sys.exit(1)
