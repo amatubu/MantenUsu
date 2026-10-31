@@ -8,3 +8,7 @@ test_scripts/*
 .DS_Store
 diff.txt
 etc/ps_picker_params.json
+scripts/build/
+scripts/dist/
+scripts/*.spec
+UsuMantenViewer*.zip
