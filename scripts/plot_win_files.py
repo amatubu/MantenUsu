@@ -558,7 +558,8 @@ class MantenUsuSeismographApp:
         self.update_history_ui()
 
   # WINファイルの取得から波形プロットまでのメイン処理
-  def execute_pipeline(self, is_history_reload=False):
+  #   return_to ... 波形表示のウィンドウを閉じたときに戻るウィンドウ(Tk)。None ならOS任せ
+  def execute_pipeline(self, is_history_reload=False, return_to=None):
     # 設定されているタイトル、開始・終了日時の取得(前後の空白は除去)
     title_str = self.entry_title.get().strip()
     start_str = self.entry_start.get().strip()
@@ -602,7 +603,7 @@ class MantenUsuSeismographApp:
 
     if existing_sacs:
       # 既存のSACファイルがある場合はそれを利用して波形を描画
-      self.plot_waveforms(dest_dir, start_str, end_str, title_str)
+      self.plot_waveforms(dest_dir, start_str, end_str, title_str, return_to)
       if not is_history_reload:
         # 履歴からの再表示でないときは履歴に追加
         self.add_history(start_str, end_str, title_str)
@@ -624,7 +625,7 @@ class MantenUsuSeismographApp:
 
     # --- 履歴に追加してプロット ---
     self.add_history(start_str, end_str, title_str)
-    self.plot_waveforms(dest_dir, start_str, end_str, title_str)
+    self.plot_waveforms(dest_dir, start_str, end_str, title_str, return_to)
 
   # スタック表示用の出力ディレクトリ(1時間ごと)
   #   dt ... その時間の開始日時(datetime)
@@ -698,10 +699,29 @@ class MantenUsuSeismographApp:
                            load_stream=self.load_stack_stream,
                            channels=self.load_channel_options(),
                            log=log_message,
-                           show_error=lambda msg: messagebox.showerror("エラー", msg))
+                           show_error=lambda msg: messagebox.showerror("エラー", msg),
+                           on_compare=self.compare_from_stack)
     finally:
       NavigationToolbar2Tk.toolitems = original_items
     window.show()
+
+  # 1時間スタック画面の右クリックメニューから、指定期間の波形表示(全拠点)を開く
+  #   start_dt      ... 開始日時(クリックした段の分)
+  #   minutes       ... 表示する長さ(分)
+  #   station, comp ... スタック画面で表示中の拠点名・成分(タイトル用)
+  #   window        ... スタック画面のウィンドウ(波形表示を閉じたらここに戻る)
+  def compare_from_stack(self, start_dt, minutes, station, comp, window):
+    # 終了日時はその分も含むので、N分間なら開始 + (N-1)分
+    end_dt = start_dt + timedelta(minutes=minutes - 1)
+    # 入力欄に設定してから、通常の「波形表示」と同じ処理を実行する(履歴にも残る)
+    for entry, value in ((self.entry_title, f"1時間スタックから ({station}.{comp})"),
+                         (self.entry_start, start_dt.strftime("%Y%m%d%H%M")),
+                         (self.entry_end, end_dt.strftime("%Y%m%d%H%M"))):
+      entry.delete(0, tk.END)
+      entry.insert(0, value)
+    self.update_duration_display()
+    log_message(f"スタック画面から比較表示: {start_dt.strftime('%Y/%m/%d %H:%M')} から {minutes}分間")
+    self.execute_pipeline(return_to=window)
 
   # 指定した時間のSACを用意して、全チャンネルをまとめて読み込んで返す(失敗したら None)
   def load_stack_stream(self, dt):
@@ -957,7 +977,8 @@ class MantenUsuSeismographApp:
   #   start_str  ... 開始日時(YYYYMMDDHHmm)
   #   end_str    ... 終了日時(YYYYMMDDHHmm)
   #   title_str  ... 波形上部に表示するタイトル(日本語表示可)
-  def plot_waveforms(self, dest_dir, start_str, end_str, title_str):
+  #   return_to ... このウィンドウを閉じたときに戻るウィンドウ(Tk)。None ならOS任せ
+  def plot_waveforms(self, dest_dir, start_str, end_str, title_str, return_to=None):
     # 出力フォルダにあるSACファイルをObspyですべて読み込み
     st = read(str(dest_dir / "*_sac*"))
     # ファイルが存在しない、もしくは読み込めなかった場合はエラー
@@ -1090,6 +1111,10 @@ class MantenUsuSeismographApp:
     # 【重要】ウィンドウが閉じられたときにMatplotlibのリソースを解放して確実に閉じる
     def on_close():
       plt.close(fig)      # Matplotlibのグラフをメモリから破棄する
+      # 戻り先があれば、閉じる前にそちらを前面に出す(先に閉じるとメインウィンドウが前面になる)
+      if return_to is not None and return_to.winfo_exists():
+        return_to.lift()
+        return_to.focus_force()
       wave_win.destroy()  # ウィンドウを破棄する
 
     wave_win.protocol("WM_DELETE_WINDOW", on_close)

@@ -1,5 +1,7 @@
 # stack_plot.py
 # 1時間スタック波形(1分ごとに60段に並べた図)の計算と描画
+import sys
+import tkinter as tk
 import numpy as np
 import matplotlib.pyplot as plt
 from obspy import UTCDateTime
@@ -11,6 +13,8 @@ from log_common import log_message
 STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
 COMP_ORDER = ["U", "N", "E"]   # 成分の並び順
+
+COMPARE_MINUTES = [1, 2, 5, 10, 15, 20, 30]   # 右クリックメニューで選べる比較表示の長さ(分)
 
 # ボタンの状態ごとの色: (通常の色, マウスが乗ったときの色)
 BTN_COLORS = {
@@ -143,9 +147,12 @@ def render_stack(fig, axes, max_amp_text, trace, start_dt, station, comp):
 #   channels      ... "拠点名.成分" のリスト(例: ["Hokudai.U", ...])。ボタンの一覧に使う
 #   log           ... ログを受け取る関数(メッセージ文字列を1つ受け取る)
 #   show_error    ... エラーメッセージを受け取って表示する関数
+#   on_compare    ... 右クリックメニューで期間を選んだときに呼ぶ関数。
+#                     (開始日時, 分数, 拠点名, 成分, このウィンドウ(Tk)) を受け取る。
+#                     None なら右クリックメニューを出さない
 class StackWindow:
   def __init__(self, start_dt, station, comp, load_stream, channels,
-               log=log_message, show_error=log_message):
+               log=log_message, show_error=log_message, on_compare=None):
     # 表示中の状態(時刻・拠点・成分)
     self.dt = start_dt
     self.station = station
@@ -153,6 +160,9 @@ class StackWindow:
     self.load_stream = load_stream
     self.log = log
     self.show_error = show_error
+    self.on_compare = on_compare
+    # 右クリックメニューで選択中の範囲を示すハイライト(軸に追加した図形のリスト)
+    self._highlights = []
 
     # 直近に表示した1時間分のStream(同じ時間内の切り替えで読み直さないため)
     self._stream_dt = None
@@ -187,6 +197,10 @@ class StackWindow:
 
     # 横軸のズーム・ドラッグ・リセットを設定
     attach_zoom_pan(self.fig, self.axes)
+
+    # 右クリックで、クリックした分からの比較表示メニューを出す
+    if on_compare is not None:
+      self.fig.canvas.mpl_connect("button_press_event", self._on_right_click)
 
     # ボタンなどが回収されないよう、図からこのウィンドウを参照しておく
     self.fig._stack_window = self
@@ -309,6 +323,70 @@ class StackWindow:
     if not comps_here:
       return
     self._change(station=station, comp=self.comp if self.comp in comps_here else comps_here[0])
+
+  # 指定した段(分)の範囲をハイライトする。minutes が None ならハイライトを消す
+  #   minute  ... 開始の段(0〜59)
+  #   minutes ... 長さ(分)。この1時間の外にはみ出す分は表示しない
+  def _set_highlight(self, minute, minutes=None):
+    for patch in self._highlights:
+      patch.remove()
+    self._highlights = []
+    if minutes is not None:
+      for ax in list(self.axes)[minute:minute + minutes]:
+        self._highlights.append(
+            ax.axvspan(0, 60, color="#ffd54f", alpha=0.35, zorder=0, lw=0))
+    # メニュー表示中でもすぐ反映されるよう、その場で描画する
+    self.fig.canvas.draw()
+    self.fig.canvas.get_tk_widget().update_idletasks()
+
+  # 右クリック: クリックした段(分)を開始時刻として、比較表示する長さを選ぶメニューを出す
+  def _on_right_click(self, event):
+    # Mac では Tk と Matplotlib の両方が左右のボタン番号を入れ替えるため、右ボタンが
+    # 中ボタン(2)として届くことがある。中ボタンは他で使っていないので、両方で開く
+    if event.button not in (2, 3) or event.inaxes not in list(self.axes):
+      return
+    # Tk のウィンドウでないとメニューを出せない
+    gui = event.guiEvent
+    if not hasattr(self.fig.canvas, "get_tk_widget") or gui is None:
+      return
+
+    minute = list(self.axes).index(event.inaxes)
+    start_dt = self.dt + timedelta(minutes=minute)
+    station, comp = self.station, self.comp
+    tk_widget = self.fig.canvas.get_tk_widget()
+    window = tk_widget.winfo_toplevel()
+
+    # メニューを選んだとき: ハイライトを消してから比較表示を呼ぶ
+    def choose(minutes):
+      self._set_highlight(minute)
+      self.on_compare(start_dt, minutes, station, comp, window)
+
+    menu = tk.Menu(tk_widget, tearoff=0)
+    menu.add_command(label=f"{start_dt.strftime('%H:%M')} から全拠点を比較表示",
+                     state=tk.DISABLED)
+    menu.add_separator()
+    first_item = menu.index(tk.END) + 1   # 期間の項目の先頭の位置
+    for minutes in COMPARE_MINUTES:
+      menu.add_command(label=f"{minutes}分間", command=lambda m=minutes: choose(m))
+
+    # カーソルが乗っている項目に合わせて、その範囲をハイライトする
+    def on_select(_event):
+      active = menu.index("active")
+      if active is None or active < first_item:
+        self._set_highlight(minute)
+      else:
+        self._set_highlight(minute, COMPARE_MINUTES[active - first_item])
+    menu.bind("<<MenuSelect>>", on_select)
+    # メニューが閉じたらハイライトを消す(Windows / Linux)
+    menu.bind("<Unmap>", lambda _event: self._set_highlight(minute))
+
+    try:
+      menu.tk_popup(gui.x_root, gui.y_root)
+    finally:
+      menu.grab_release()
+    # Mac ではメニューが閉じるまで tk_popup から戻らないので、ここでハイライトを消す
+    if sys.platform == "darwin":
+      self._set_highlight(minute)
 
   # 初回描画をして画面に表示する(最初の描画に失敗したら閉じる)
   def show(self):
