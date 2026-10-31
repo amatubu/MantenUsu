@@ -165,6 +165,10 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 - S-P時間と到来方向を組み合わせた震源推定
 - 外部ツール（`win2sac_32`・`wchch_32`）のビルド方法の記載（Mac は gcc（Xcode のコマンドラインツール）、Windows は MinGW の gcc で、それぞれの Makefile を使ってビルドする。どちらもそのままではビルドできないため、当てているパッチをリポジトリに追加する）
 
+### アプリ以外の予定
+
+- 防災科研への成果の報告: 観測成果報告をプロジェクト内で発表したあと、防災科研の[お問い合わせフォーム](https://hinetwww11.bosai.go.jp/nied/contact_us/?LANG=ja)から、プログラム（`win2sac_32`・`wchch_32`）を利用して得た成果として報告する（「[データ利用に際して](https://www.vnet.bosai.go.jp/about_data/?page=2)」の【成果の報告について】による）
+
 ---
 
 ## 謝辞
