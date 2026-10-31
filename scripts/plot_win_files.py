@@ -22,7 +22,7 @@ from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvas
 
 from ps_picker import plot_ps_arrival_time
 from jma_intensity import analyze_jma_scale
-from plot_common import get_component_color, setup_japanese_font
+from plot_common import NM_TO_CM, get_component_color, setup_japanese_font
 from stack_plot import StackWindow, find_trace
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
@@ -1012,8 +1012,8 @@ class MantenUsuSeismographApp:
     for tr, ax in zip(ordered_st, axes):
       # 時間軸データ(横軸)の取得
       times = tr.times()
-      # 波形の実データ
-      data = tr.data
+      # 波形の実データ(nm/s -> cm/s に変換)
+      data = tr.data * NM_TO_CM
       # チャンネル名
       ch = tr.stats.channel
       # チャンネル名を元に色を決定(U、N、E以外はデフォルト色)
@@ -1031,7 +1031,7 @@ class MantenUsuSeismographApp:
 
       # Y(振幅)軸のラベルを定義
       ax.set_ylabel(
-          f"{station_name}\n({ch})",  # ラベルの内容
+          f"{station_name}\n({ch})\n[cm/s]",  # ラベルの内容
           fontsize = 8,               # 文字サイズ
           rotation = 90,              # 90度回転(反時計周り)
           ha = "center",              # 水平方向中揃え(horizontal alignment)

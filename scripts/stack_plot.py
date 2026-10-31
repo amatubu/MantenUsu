@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from obspy import UTCDateTime
 from datetime import timedelta
 from matplotlib.widgets import Button
+from plot_common import NM_TO_CM, get_component_color
 
 STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
@@ -91,13 +92,14 @@ def render_stack(fig, axes, max_amp_text, trace, start_dt, station, comp):
   # 2. 共通の最大振幅とスケール計算
   global_max = calc_global_max(minute_traces)
   ylim_range = global_max / 5.0
-  max_amp_text.set_text(f"最大振幅: {global_max:,.2f}")
+  max_amp_text.set_text(f"最大振幅: {global_max * NM_TO_CM:.3e} cm/s")
 
-  # 3. 60本の波形プロット描画(0分〜59分)
+  # 3. 60本の波形プロット描画(0分〜59分)。色は成分(U/N/E)ごと
+  col = get_component_color(comp.upper())
   for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
     ax.clear()
     # clip_on=False: 枠外(上下)へのはみ出しも描画する
-    ax.plot(tr.times(), tr.data, color="#1f77b4", linewidth=0.3, clip_on=False)
+    ax.plot(tr.times(), tr.data, color=col, linewidth=0.3, clip_on=False)
 
     # 全段でY軸の範囲を共通の最大値に固定(大きな揺れが上下にはみ出る)
     ax.set_ylim(-ylim_range, ylim_range)

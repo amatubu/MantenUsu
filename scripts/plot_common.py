@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 # 波形の色分け(U:青 / N:オレンジ / E:緑)
 COMPONENT_COLORS = {"U": "#1f77b4", "N": "#ff7f0e", "E": "#2ca02c"}
 
+# 速度の単位変換係数(nm/s -> cm/s)。SACの波形データは nm/s で入っている
+NM_TO_CM = 1e-7
+
 def get_component_color(channel, default="gray"):
     """チャンネル名の末尾1文字(U/N/E)から色を返す。該当なしは default"""
     return COMPONENT_COLORS.get(channel, default)
