@@ -7,3 +7,4 @@ scripts/__pycache__/*
 test_scripts/*
 .DS_Store
 diff.txt
+etc/ps_picker_params.json
