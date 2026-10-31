@@ -15,15 +15,15 @@ import warnings
 import traceback
 import re
 
-from obspy import Stream, read, UTCDateTime  # SACファイルの波形表示
-import matplotlib.pyplot as plt              # グラフ表示ツール
+from obspy import Stream, read         # SACファイルの波形表示
+import matplotlib.pyplot as plt        # グラフ表示ツール
 from matplotlib.widgets import Button
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvasTkAgg
-import numpy as np                        # 数値計算用
 
 from ps_picker import plot_ps_arrival_time
 from jma_intensity import analyze_jma_scale
 from plot_common import get_component_color, setup_japanese_font
+from stack_plot import create_stack_figure, render_stack, find_trace
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
 # MacのTcl/Tk非推奨警告を抑制
@@ -696,23 +696,12 @@ class MantenUsuSeismographApp:
     # ウィンドウごとに完全に独立した状態を保持するコンテナ
     state = {"current_dt": start_dt}
 
-    # グラフのレイアウト設定 (縦60行)
-    fig_width = 8.5
-    fig_height = 10.0  # 60本並べるため、ある程度の縦の高さを確保
-    fig, axes = plt.subplots(
-        60, 1,
-        sharex=True,
-        figsize=(fig_width, fig_height),
-        gridspec_kw={"hspace": 0}
-    )
-
-    fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.90)
+    # 60段のスタック図を作る(画面表示用)
+    fig, axes, max_amp_text = create_stack_figure()
 
     # 描画メイン
     def update_plot():
-      nonlocal axes  # 変数を共有できるようにする
-
-      # ★ 1. end_dt を正しく定義（current_dt の1時間後）
+      # 開始時刻と1時間後の時刻
       current_dt = state["current_dt"]
       end_dt = current_dt + timedelta(hours=1)
 
@@ -732,37 +721,12 @@ class MantenUsuSeismographApp:
         messagebox.showerror("エラー", f"指定されたチャンネルのデータが見つかりませんでした: {station_name}.{comp_name}")
         return False
 
-      # ★ ここで共通描画ルーチンを呼び出す！
-      self._render_stack_plot_on_axes(
-          fig=fig,
-          axes=axes,
-          target_trace=target_trace,
-          current_dt=current_dt,
-          station_name=station_name,
-          comp_name=comp_name,
-          max_amp_text=max_amp_text
-      )
+      render_stack(fig, axes, max_amp_text, target_trace, current_dt, station_name, comp_name)
 
       fig.canvas.draw_idle()
 
       self.log_message(f"スタック波形プロット完了: {station_name}.{comp_name} ({current_dt.strftime('%Y/%m/%d %H:00')})")
       return True
-
-    # ★ 【追加】全サブプロットを包み込む「全体の外枠（実線）」を配置
-    ax_box = fig.add_subplot(111, frameon=True)
-    ax_box.set_facecolor('none')
-    ax_box.tick_params(labelcolor='none', top=False, bottom=False, left=False, right=False)
-    ax_box.tick_params(which='both', length=0)
-    for spine in ax_box.spines.values():
-      spine.set_visible(True)
-      spine.set_linewidth(0.8)
-      spine.set_color("#333333")
-
-    # ★ここを追加：外枠を一番奥（下層）に下げて、マウスイベントを波形側に通す
-    ax_box.set_zorder(-10)
-
-    # ★【追加】「-1h」ボタンの左側に最大振幅を表示するテキストを配置
-    max_amp_text = fig.text(0.75, 0.925, "", fontsize=9, va="center", ha="right", color="#333333")
 
     # --- グラフ上部に「前の1時間」「次の1時間」ボタンを配置 ---
     ax_prev = fig.add_axes([0.77, 0.91, 0.09, 0.03])  # [left, bottom, width, height]
@@ -915,105 +879,6 @@ class MantenUsuSeismographApp:
     axes_list = list(axes)
 
     plt.show()
-
-  # 1時間分の波形を描画するヘルパー
-  def _render_stack_plot_on_axes(self, fig, axes, target_trace, current_dt, station_name, comp_name, max_amp_text=None):
-    # 1. 1時間データを1分ごとにスライス
-    minute_traces = []
-
-    for i in range(60):
-      # 標準 datetime に秒数を足す
-      dt_start = current_dt + timedelta(seconds=i * 60)
-      dt_end = dt_start + timedelta(seconds=60)
-
-      # ObsPyの trim() が受け取れるよう UTCDateTime に変換する
-      t_start = UTCDateTime(dt_start)
-      t_end = UTCDateTime(dt_end)
-
-      sliced_tr = target_trace.copy().trim(starttime=t_start, endtime=t_end, pad=True, fill_value=0)
-      minute_traces.append(sliced_tr)
-
-    # 2. 共通の最大振幅とスケール計算
-    all_data = np.concatenate([tr.data for tr in minute_traces if len(tr.data) > 0])
-    global_max = np.max(np.abs(all_data)) if len(all_data) > 0 else 1.0
-    if global_max == 0:
-      global_max = 1.0
-
-    scale_factor = 5.0
-    ylim_range = global_max / scale_factor
-
-    amp_str = f"最大振幅: {global_max:,.2f}"
-
-    # 3. 最大振幅テキストの表示処理（GUIなら更新、なければ新規描画）
-    if max_amp_text is not None:
-      max_amp_text.set_text(amp_str)
-    else:
-      # バッチ保存時など、テキストオブジェクトがない場合は直接図に配置する
-      fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.94)
-      fig.text(0.95, 0.95, amp_str, fontsize=9, va="center", ha="right", color="#333333")
-
-    # 3. 60本の波形プロット描画
-    # 描画ループ (0分〜59分)
-    for i, (tr, ax) in enumerate(zip(minute_traces, axes)):
-      ax.clear()
-      times = tr.times()  # 0 〜 60秒
-      data = tr.data
-
-      # ★ 【変更】clip_on=False を指定して、枠外（上下）へのはみ出しを描画できるようにする
-      ax.plot(times, data, color="#1f77b4", linewidth=0.3, clip_on=False)
-
-      # ★ 全てのサブプロットでY軸の範囲を共通の最大値に固定（これにより大きな揺れが上下にはみ出る）
-      ax.set_ylim(-ylim_range, ylim_range)
-
-      # ★ 【追加】X軸の範囲を0〜60秒に固定し、左右の余白を完全に詰める
-      ax.set_xlim(0, 60)
-      ax.margins(x=0)
-
-      # Y軸のラベルとして「何分目か（例: 00）」を表示
-      minute_label = f"{i:02d}"
-      ax.set_ylabel(minute_label, fontsize=6, rotation=0, labelpad=12, va="center", ha="right")
-
-      # ★ 10秒単位の縦線を「グレーの実線」に変更して表示
-      ax.grid(False)
-      ax.grid(True, axis='x', which='major', linestyle='-', color='#cccccc', alpha=0.5)
-
-      # ★ グリッド線や不要な線を削除してスッキリさせる
-      ax.tick_params(axis="y", left=False, labelleft=False)
-      ax.tick_params(labelbottom=False)
-      # X軸の目盛り線（ティック）を非表示にする
-      ax.tick_params(
-          axis='x',
-          which='both',
-          bottom=False, # 下側の目盛り線
-          top=False     # 上側の目盛り線
-      )
-
-      # ★ 【変更】グラフ間の線（枠線）を完全に非表示にしてスダレ状にする
-      for spine in ax.spines.values():
-        spine.set_visible(False)
-
-      # ★ 【追加】背景を透明にして、上下からはみ出た波形が下のレイヤーに重なって見えるようにする
-      ax.set_facecolor('none')
-
-    # 一番下の軸だけにX軸（秒）のラベルを表示
-    axes[-1].tick_params(labelbottom=True)
-    axes[-1].tick_params(axis='x', which='both', bottom=True)
-    axes[-1].set_xlabel("Time [s (0-60s per trace)]", fontsize=10)
-
-    # 全体タイトル
-    date_title = current_dt.strftime("%Y/%m/%d %H:00")
-    plt.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_name}.{comp_name}", fontsize=12)
-
-    # 4. 全体を包み込む外枠（ax_box）も共通でここで配置してしまう
-    ax_box = fig.add_subplot(111, frameon=True)
-    ax_box.set_facecolor('none')
-    ax_box.tick_params(labelcolor='none', top=False, bottom=False, left=False, right=False)
-    ax_box.tick_params(which='both', length=0)
-    for spine in ax_box.spines.values():
-      spine.set_visible(True)
-      spine.set_linewidth(0.8)
-      spine.set_color("#333333")
-    ax_box.set_zorder(-10)
 
   # 指定期間のWINファイルをZIPから抽出する
   def extract_win_files(self, start_dt, end_dt, dest_dir, show_dialog=True):
@@ -1726,19 +1591,14 @@ class MantenUsuSeismographApp:
             continue
 
           plt.ioff()
-          fig_width = 8.5
-          fig_height = 10.0
-          fig, axes = plt.subplots(
-              60, 1,
-              sharex=True,
-              figsize=(fig_width, fig_height),
-              gridspec_kw={"hspace": 0}
-          )
 
-          # ★共通描画メソッドを呼び出して見た目を完全一致させる
-          self._render_stack_plot_on_axes(fig, axes, target_trace, start_dt, station_name, comp_name)
+          # 波形の描画
+          fig, axes, max_amp_text = create_stack_figure(for_screen=False)
+          render_stack(fig, axes, max_amp_text, target_trace, start_dt, station_name, comp_name)
 
+          # 画像を保存(150dpi)
           fig.savefig(out_img_path, dpi=150)
+
           plt.close(fig)
           print(f"     [保存完了] {out_img_path.name}")
 
@@ -1779,13 +1639,6 @@ def main():
     root.destroy()
   else:
     root.mainloop()  # イベントループ処理
-
-# 拠点名と成分(U/N/E)に一致する最初のトレースを返す。無ければ None
-def find_trace(stream, station, comp):
-  for tr in stream:
-    if tr.stats.station.lower() == station.lower() and tr.stats.channel[-1].upper() == comp.upper():
-      return tr
-  return None
 
 # コマンドを実行されたときは main() を呼び出す
 if __name__ == "__main__":
