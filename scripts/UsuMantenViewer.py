@@ -54,6 +54,10 @@ warnings.filterwarnings(
 #          Windows は %APPDATA%\UsuMantenViewer や %LOCALAPPDATA%\UsuMantenViewer)
 #     場所は app_paths.py でまとめて決める。アプリを .app の中や Program Files など、
 #     書き込めない場所に置けるようになり、アプリを入れ替えても設定やキャッシュが残る
+# 13. 地震らしい波形の自動検出
+#     記録全体から地震の候補を探す(今は目で見つけた期間を screen_events.py で絞り込んでいる)
+# 14. S-P時間と到来方向を組み合わせた震源推定
+#     遠い地震は P波だけでは距離が決まらないため、S-P時間(大森公式)の距離と到来方向から震央を求める
 
 # クラス定義
 class MantenUsuSeismographApp:

@@ -145,3 +145,5 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 
 - WINファイル・SACファイルのキャッシュ処理の最適化
 - 変更しないファイル（`tools`・`service_account`・`etc` の設定ファイル）はアプリと一緒に置き、ユーザーの操作で作られる・変わるファイル（`output`・`daily_zips`・`batch_plots`・`etc/ps_picker_params.json`・`etc/hypocenter_params.json`）はユーザープロファイル配下に置く
+- 地震らしい波形の自動検出
+- S-P時間と到来方向を組み合わせた震源推定
