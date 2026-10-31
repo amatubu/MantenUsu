@@ -29,6 +29,9 @@ DEFAULT_PARAMS = dict(p_sta=2.5, p_lta=10.0, p_thr=2.6, window=3.0, vp=5.5)
 # P波の検出に関わるパラメータ(これが変わったときだけ検出をやり直す)
 PICK_KEYS = ("p_sta", "p_lta", "p_thr", "window")
 
+# 波形の表示に使う帯域通過フィルター [Hz](小さな地震を見やすくする。検出には使わない)
+DISPLAY_BAND = (2.0, 20.0)
+
 # 16方位の名前(北から時計回り)
 DIRECTIONS = ["北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東",
               "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西"]
@@ -78,15 +81,25 @@ def plot_hypocenter(st):
   n = len(names)
   h = (0.84 - gap * (n - 1)) / n
 
-  wave_axes, cft_axes, pick_lines = {}, {}, {}
+  # 拠点ごとの時刻と、表示する波形(フィルターなし・あり) [cm/s]
+  times, raw_data, filtered_data = {}, {}, {}
+  for name in names:
+    tr = traces[name]
+    times[name] = tr.times() + (tr.stats.starttime - ref_time)
+    raw_data[name] = tr.data * NM_TO_CM
+    tr_f = tr.copy()
+    tr_f.detrend("demean")
+    tr_f.filter("bandpass", freqmin=DISPLAY_BAND[0], freqmax=DISPLAY_BAND[1], zerophase=True)
+    filtered_data[name] = tr_f.data * NM_TO_CM
+
+  wave_axes, cft_axes, pick_lines, wave_lines = {}, {}, {}, {}
   first_ax = None
   for i, name in enumerate(names):
     y0 = bottom + (n - 1 - i) * (h + gap)
     ax = fig.add_axes([left, y0, width, h], sharex=first_ax)
     first_ax = first_ax or ax
-    tr = traces[name]
-    t = tr.times() + (tr.stats.starttime - ref_time)
-    ax.plot(t, tr.data * NM_TO_CM, lw=0.5, color=get_component_color("U"))
+    wave_lines[name], = ax.plot(times[name], filtered_data[name], lw=0.5,
+                                color=get_component_color("U"))
     ax.set_ylabel("速度 (cm/s)")
     # 拠点名はグラフの左上に表示する
     ax.text(0.01, 0.95, name, transform=ax.transAxes, va="top", fontsize=10, weight="bold",
@@ -100,16 +113,15 @@ def plot_hypocenter(st):
     cax.tick_params(axis="y", colors=cft_color)
     wave_axes[name], cft_axes[name] = ax, cax
     pick_lines[name] = ax.axvline(0, color=p_color, ls="--", lw=1.2, visible=False)
-  first_ax.set_title("左クリック: P波到着時刻を手で指定 / 右クリック: 拠点を計算から外す・戻す",
+  first_ax.set_title("左クリック: P波到着時刻を手で指定 / Shift+左クリック: その拠点だけ自動検出に戻す / "
+                     "右クリック: 拠点を計算から外す・戻す",
                      fontsize=10)
   wave_axes[names[-1]].set_xlabel("時刻 (s)")
 
   # CFT の線と閾値の線(内容は update() で設定)
   cft_lines, thr_lines = {}, {}
   for name in names:
-    tr = traces[name]
-    t = tr.times() + (tr.stats.starttime - ref_time)
-    cft_lines[name], = cft_axes[name].plot(t, np.zeros_like(t), lw=0.5,
+    cft_lines[name], = cft_axes[name].plot(times[name], np.zeros_like(times[name]), lw=0.5,
                                            color=cft_color, alpha=0.6)
     thr_lines[name] = cft_axes[name].axhline(0, color=cft_color, ls=":", lw=0.8)
 
@@ -117,26 +129,45 @@ def plot_hypocenter(st):
   map_ax = fig.add_axes([0.66, 0.64, 0.28, 0.29])
 
   # --- 結果のテキスト ---
-  result_text = fig.text(0.62, 0.27, "", fontsize=9, va="top")
+  result_text = fig.text(0.62, 0.235, "", fontsize=9, va="top")
 
   # ==========================================
   # スライダー(前回の設定で初期化)
   # ==========================================
   initial = load_params(SETTINGS_FILE, SLIDER_SPECS, DEFAULT_PARAMS)
   sliders = {}
-  top, step_y = 0.52, 0.04
+  top, step_y = 0.485, 0.04
   for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
     sax = fig.add_axes([0.73, top - i * step_y, 0.20, 0.025])
     sliders[key] = Slider(sax, label, vmin, vmax, valinit=initial[key], valstep=vstep)
 
   # --- 状態: 自動検出の結果、手で指定した時刻、計算から外した拠点 ---
-  state = {"auto": {}, "pick_params": None, "result": None}
+  state = {"auto": {}, "pick_params": None, "result": None, "filtered": True,
+           "p_thr": None}
   manual = {}
   excluded = set()
 
   # 計算に使う到着時刻(手で指定したものを優先)
   def current_picks():
     return {nm: manual.get(nm, state["auto"].get(nm)) for nm in names}
+
+  # 縦軸を、表示している時間の範囲の波形・CFT に合わせる
+  # (範囲の外の大きな揺れに引きずられて、小さな地震が見えなくならないように)
+  def fit_ylim(_ax=None):
+    x0, x1 = first_ax.get_xlim()
+    for nm in names:
+      visible = (times[nm] >= x0) & (times[nm] <= x1)
+      if not visible.any():
+        continue
+      data = wave_lines[nm].get_ydata()[visible]
+      lo, hi = float(data.min()), float(data.max())
+      margin = (hi - lo) * 0.05 or 1e-9
+      wave_axes[nm].set_ylim(lo - margin, hi + margin)
+      cft_top = max(float(cft_lines[nm].get_ydata()[visible].max()), state["p_thr"] or 0.0)
+      cft_axes[nm].set_ylim(0, cft_top * 1.1 or 1.0)
+  # ズーム・横移動・「ホーム」などで横軸が変わったとき
+  for ax in wave_axes.values():
+    ax.callbacks.connect("xlim_changed", fit_ylim)
 
   # 到着時刻のまわりに横軸を合わせる
   def fit_xlim(picks):
@@ -163,9 +194,9 @@ def plot_hypocenter(st):
     loc = res.get("grid")
     if loc is not None and not loc["at_edge"]:
       # 近い地震: 震央を星で示す
-      map_ax.plot(loc["x"], loc["y"], "*", color=p_color, ms=16)
-      map_ax.annotate(f"震央 (深さ {loc['depth']:.1f} km)", (loc["x"], loc["y"]),
-                      textcoords="offset points", xytext=(8, -12), fontsize=8, color=p_color)
+      # 拠点の間にあると拠点名と重なるため、説明の文字は凡例に出す
+      map_ax.plot(loc["x"], loc["y"], "*", color=p_color, ms=16,
+                  label=f"震央 (深さ {loc['depth']:.1f} km)")
       extent = max(extent, abs(loc["x"]) * 1.2, abs(loc["y"]) * 1.2)
     elif res.get("azimuth") is not None:
       # 遠い地震: 到来方向(震源のある方向)を矢印で示す
@@ -173,10 +204,13 @@ def plot_hypocenter(st):
       length = radius * 1.4
       map_ax.annotate("", xy=(length * np.sin(az), length * np.cos(az)), xytext=(0, 0),
                       arrowprops=dict(arrowstyle="->", color=p_color, lw=2))
-      map_ax.annotate(f"到来方向 {res['azimuth']:.0f}°", (length * np.sin(az), length * np.cos(az)),
-                      textcoords="offset points", xytext=(5, -10), fontsize=8, color=p_color)
+      # 凡例用の見えない線(矢印そのものは凡例に出せないため)
+      map_ax.plot([], [], "-", color=p_color, lw=2,
+                  label=f"到来方向 {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})")
     map_ax.set_xlim(-extent, extent)
     map_ax.set_ylim(-extent, extent)
+    if map_ax.get_legend_handles_labels()[0]:
+      map_ax.legend(loc="lower right", fontsize=8)
 
   # 結果の文字列を作る
   def result_message(picks, res):
@@ -224,11 +258,10 @@ def plot_hypocenter(st):
       auto, cfts = pick_p_arrivals(traces, ref_time, params["p_sta"], params["p_lta"],
                                    params["p_thr"], params["window"])
       state["auto"], state["pick_params"] = auto, pick_params
+      state["p_thr"] = params["p_thr"]
       for nm in names:
         cft_lines[nm].set_ydata(cfts[nm])
         thr_lines[nm].set_ydata([params["p_thr"]] * 2)
-        cft_axes[nm].relim()
-        cft_axes[nm].autoscale_view(scalex=False)
       refit = True
 
     picks = current_picks()
@@ -244,6 +277,7 @@ def plot_hypocenter(st):
       wave_axes[nm].set_facecolor("#eeeeee" if nm in excluded else "white")
     if refit:
       fit_xlim(picks)
+      fit_ylim()
 
     # --- 震源の計算 ---
     used = [nm for nm in names if picks[nm] is not None and nm not in excluded]
@@ -263,7 +297,8 @@ def plot_hypocenter(st):
   for s in sliders.values():
     s.on_changed(update)
 
-  # --- 波形のクリック: 左=到着時刻を手で指定、右=拠点を計算から外す・戻す ---
+  # --- 波形のクリック: 左=到着時刻を手で指定、Shift+左=その拠点だけ自動検出に戻す、
+  #     右=拠点を計算から外す・戻す ---
   def on_click(event):
     # ズーム・移動のツールを使っているときは何もしない
     toolbar = fig.canvas.toolbar
@@ -273,7 +308,9 @@ def plot_hypocenter(st):
                  if event.inaxes in (wave_axes[nm], cft_axes[nm])), None)
     if name is None or event.xdata is None:
       return
-    if event.button == 1:
+    if event.button == 1 and event.key == "shift":
+      manual.pop(name, None)
+    elif event.button == 1:
       manual[name] = float(event.xdata)
     elif event.button in (2, 3):   # Mac では右クリックが 2 になることがある
       excluded.symmetric_difference_update({name})
@@ -283,7 +320,7 @@ def plot_hypocenter(st):
   fig.canvas.mpl_connect("button_press_event", on_click)
 
   # --- ボタン: 自動検出に戻す・リセット・テキスト出力 ---
-  aax = fig.add_axes([0.62, 0.29, 0.11, 0.04])
+  aax = fig.add_axes([0.62, 0.255, 0.11, 0.04])
   btn_auto = Button(aax, "自動検出に戻す")
   def back_to_auto(_):
     manual.clear()
@@ -293,7 +330,7 @@ def plot_hypocenter(st):
     fig.canvas.draw_idle()
   btn_auto.on_clicked(back_to_auto)
 
-  rax = fig.add_axes([0.745, 0.29, 0.08, 0.04])
+  rax = fig.add_axes([0.745, 0.255, 0.08, 0.04])
   btn_reset = Button(rax, "リセット")
   def reset(_):
     for key, val in DEFAULT_PARAMS.items():
@@ -304,7 +341,7 @@ def plot_hypocenter(st):
     update()
   btn_reset.on_clicked(reset)
 
-  pax = fig.add_axes([0.84, 0.29, 0.10, 0.04])
+  pax = fig.add_axes([0.84, 0.255, 0.10, 0.04])
   btn_print = Button(pax, "テキスト出力")
   def print_result(_):
     log_message("--- 震源推定 ---")
@@ -314,7 +351,23 @@ def plot_hypocenter(st):
       log_message(line)
   btn_print.on_clicked(print_result)
 
-  fig.text(0.62, 0.565, "パラメータ", fontsize=12, weight="bold")
+  fig.text(0.62, 0.53, "パラメータ", fontsize=12, weight="bold")
+
+  # --- 波形のフィルター切り替え(表示だけ。P波の検出は元の波形で行う) ---
+  fax = fig.add_axes([0.80, 0.52, 0.14, 0.035])
+  def filter_label():
+    return (f"表示: {DISPLAY_BAND[0]:g}-{DISPLAY_BAND[1]:g}Hz" if state["filtered"]
+            else "表示: フィルターなし")
+  btn_filter = Button(fax, filter_label())
+  btn_filter.label.set_fontsize(9)
+  def toggle_filter(_):
+    state["filtered"] = not state["filtered"]
+    for nm in names:
+      wave_lines[nm].set_ydata(filtered_data[nm] if state["filtered"] else raw_data[nm])
+    btn_filter.label.set_text(filter_label())
+    fit_ylim()
+    fig.canvas.draw_idle()
+  btn_filter.on_clicked(toggle_filter)
 
   # --- ウィンドウを閉じるとき、最後のパラメータを保存 ---
   def on_close(_event):
@@ -322,7 +375,7 @@ def plot_hypocenter(st):
   fig.canvas.mpl_connect("close_event", on_close)
 
   update()
-  fig._widgets = (sliders, btn_auto, btn_reset, btn_print)
+  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_filter)
   plt.show()
 
 if __name__ == "__main__":

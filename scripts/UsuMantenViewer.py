@@ -58,7 +58,7 @@ warnings.filterwarnings(
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "2.3.0"
+  APP_VERSION = "2.4.0"
 
   # クラスの初期化
   def __init__(self, root):
