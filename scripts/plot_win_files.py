@@ -623,7 +623,29 @@ class MantenUsuSeismographApp:
     self.add_history(start_str, end_str, title_str)
     self.plot_waveforms(dest_dir, start_str, end_str, title_str)
 
-# 1時間スタック波形表示の実行
+  # スタック表示用の出力ディレクトリ(1時間ごと)
+  #   dt ... その時間の開始日時(datetime)
+  def stack_dest_dir(self, dt):
+    return self.output_base / f"stack_{dt.strftime('%Y%m%d_%H')}"
+
+  # 指定期間のSACファイルを用意する(キャッシュがあればそれを使う)
+  #   start_dt, end_dt ... 期間
+  #   dest_dir         ... WIN/SACの保存先
+  #   show_dialog      ... 警告ダイアログを出すか(バッチ処理ではFalse)
+  #   戻り値            ... 用意できたら True、失敗したら False
+  def ensure_sacs(self, start_dt, end_dt, dest_dir, show_dialog=True):
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    # すでにSACがあれば何もしない
+    if list(dest_dir.glob("*_sac*")):
+      return True
+    # WINがなければZIPから抽出
+    if not list(dest_dir.glob("*.win")):
+      if self.extract_win_files(start_dt, end_dt, dest_dir, show_dialog) == 0:
+        return False
+    # SACに変換
+    return self.convert_wins_to_sacs(dest_dir)
+
+  # 1時間スタック波形表示の実行
   def execute_stack_pipeline(self):
     date_str = self.entry_stack_date.get().strip()
     hour_str = self.entry_stack_hour.get().strip()
@@ -653,27 +675,14 @@ class MantenUsuSeismographApp:
       messagebox.showerror("エラー", "日時の解釈に失敗しました。")
       return
     end_dt = start_dt + timedelta(hours=1)
-    end_dt_str = end_dt.strftime("%Y%m%d%H%M")
 
     self.log_message(f"スタック表示処理を開始します: {date_str} {hour_str}時台 ({channel_sel})")
 
-    # スタック専用の出力ディレクトリ
-    dest_dir = self.output_base / f"stack_{date_str}_{hour_str.zfill(2)}"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1. 既存の抽出ロジックを利用して1時間分のWINファイルを用意
-    existing_wins = list(dest_dir.glob("*.win"))
-    if not existing_wins:
-      extracted_count = self.extract_win_files(start_dt, end_dt, dest_dir)
-      if extracted_count == 0:
-        return
-
-    # 2. 既存の変換ロジックを利用してSACに変換
-    success = self.convert_wins_to_sacs(dest_dir)
-    if not success:
+    # 1時間分のSACファイルを用意(抽出・変換)
+    if not self.ensure_sacs(start_dt, end_dt, self.stack_dest_dir(start_dt)):
       return
 
-    # 3. 変換されたSACから該当チャンネルを読み込み、1分ごとにスライスしてスタックプロット
+    # 用意できたSACから、1分ごとにスライスしてスタックプロット
     self.plot_stack_waveforms(start_dt, station_name, comp_name)
 
   # 1時間分のスタック波形を描画するメソッド
@@ -707,51 +716,21 @@ class MantenUsuSeismographApp:
       current_dt = state["current_dt"]
       end_dt = current_dt + timedelta(hours=1)
 
-      # ここで current_dt に応じたディレクトリからデータを読み込み
-      # (※ date_str や hour_str は current_dt から動的に生成するようにします)
-      date_str = current_dt.strftime("%Y%m%d")
-      hour_str = current_dt.strftime("%H")
-      target_dest_dir = self.output_base / f"stack_{date_str}_{hour_str}"
+      # その時間のSACを用意して読み込む
+      target_dest_dir = self.stack_dest_dir(current_dt)
+      if not self.ensure_sacs(current_dt, end_dt, target_dest_dir):
+        return False
 
-      # その時間の専用ディレクトリを動的に決定
-      target_dest_dir.mkdir(parents=True, exist_ok=True)
-
-      # もしファイルがなければその場で抽出・変換を実行
-      existing_sacs = list(target_dest_dir.glob("*_sac*"))
-      if not existing_sacs:
-        extracted_count = self.extract_win_files(current_dt, end_dt, target_dest_dir)
-        if extracted_count == 0:
-          return False
-        success = self.convert_wins_to_sacs(target_dest_dir)
-        if not success:
-          return False
-
-      # すべてのSACファイルを読み込み
       st = read(str(target_dest_dir / "*_sac*"))
       if len(st) == 0:
         messagebox.showerror("エラー", "SACファイルを開けませんでした。")
-        return
-  
-      # 指定されたステーション名とコンポーネントに一致するトレースを抽出
-      target_trace = None
-      for tr in st:
-        # サポートされているステーション名やチャンネル名のマッチング
-        if tr.stats.station.lower() == station_name.lower() and tr.stats.channel[-1].upper() == comp_name.upper():
-          target_trace = tr
-          break
-  
-      if not target_trace:
+        return False
+
+      # 指定された拠点・成分のトレースを抽出
+      target_trace = find_trace(st, station_name, comp_name)
+      if target_trace is None:
         messagebox.showerror("エラー", f"指定されたチャンネルのデータが見つかりませんでした: {station_name}.{comp_name}")
-        return
-  
-      # 1時間（60分）分のデータを1分（60秒）ごとにスライスしてリストに格納
-      minute_traces = []
-      for i in range(60):
-        t_start = target_trace.stats.starttime + i * 60
-        t_end = t_start + 60
-        # 指定範囲を切り出し
-        sliced_tr = target_trace.copy().trim(starttime=t_start, endtime=t_end)
-        minute_traces.append(sliced_tr)
+        return False
 
       # ★ ここで共通描画ルーチンを呼び出す！
       self._render_stack_plot_on_axes(
@@ -1731,29 +1710,18 @@ class MantenUsuSeismographApp:
           print(f"     [スキップ] 既に画像が存在します: {out_img_path.name}")
           continue
 
-        existing_sacs = list(dest_dir.glob("*_sac*"))
-        if not existing_sacs:
-          extracted_count = self.extract_win_files(start_dt, end_dt, dest_dir, show_dialog=False)
-          if extracted_count == 0:
-            print("     [スキップ] WINファイルが抽出できませんでした。")
-            continue
-          success = self.convert_wins_to_sacs(dest_dir)
-          if not success:
-            print("     [スキップ] SAC変換に失敗しました。")
-            continue
+        # SACを用意(バッチ処理なのでダイアログは出さない)
+        if not self.ensure_sacs(start_dt, end_dt, dest_dir, show_dialog=False):
+          print("     [スキップ] WINファイルの抽出またはSAC変換に失敗しました。")
+          continue
 
         try:
           st = read(str(dest_dir / "*_sac*"))
           if len(st) == 0:
             continue
 
-          target_trace = None
-          for tr in st:
-            if tr.stats.station.lower() == station_name.lower() and tr.stats.channel[-1].upper() == comp_name.upper():
-              target_trace = tr
-              break
-
-          if not target_trace:
+          target_trace = find_trace(st, station_name, comp_name)
+          if target_trace is None:
             print(f"     [スキップ] チャンネル {channel} が見つかりませんでした。")
             continue
 
@@ -1811,6 +1779,13 @@ def main():
     root.destroy()
   else:
     root.mainloop()  # イベントループ処理
+
+# 拠点名と成分(U/N/E)に一致する最初のトレースを返す。無ければ None
+def find_trace(stream, station, comp):
+  for tr in stream:
+    if tr.stats.station.lower() == station.lower() and tr.stats.channel[-1].upper() == comp.upper():
+      return tr
+  return None
 
 # コマンドを実行されたときは main() を呼び出す
 if __name__ == "__main__":
