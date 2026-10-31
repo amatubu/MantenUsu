@@ -23,6 +23,7 @@ from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvas
 from ps_picker import plot_ps_arrival_time
 from jma_intensity import analyze_jma_scale
 from plot_common import NM_TO_CM, get_component_color, setup_japanese_font
+from log_common import log_message, set_console, set_log_widget
 from stack_plot import StackWindow, find_trace
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
 
@@ -41,7 +42,7 @@ warnings.filterwarnings(
 # [完了]1. 1時間ごとの波形表示をバッチ処理化(UIは作らず、daily_zipsにあるZipファイルについて一括処理。パラメータとして、チャンネル名または番号を指定)
 # 2. 4拠点のグラフ表示を2x2のグリッド表示させる
 # 4. Googleドライブからのダウンロード中に中止処理を追加
-# 5. log_messageのprintへの出力用にデバッグオプション(コマンドラインオプション)を追加する
+# [完了]5. log_messageのprintへの出力用にデバッグオプション(コマンドラインオプション)を追加する
 # [完了]6. 震度の推測
 # 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
 # [完了]8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
@@ -346,6 +347,8 @@ class MantenUsuSeismographApp:
         state=tk.DISABLED  # 初期状態は書き込み禁止（プログラムからのみ追加）
     )
     self.log_text.pack(fill=tk.X, pady=(0, 5))
+    # log_message の出力先として登録
+    set_log_widget(self.log_text)
 
     # 履歴データの読み込みと初期の時間間隔計算
     self.update_history_ui()
@@ -368,7 +371,7 @@ class MantenUsuSeismographApp:
               comp = parts[4]
               channels.append(f"{station}.{comp}")
       except Exception as e:
-        self.log_message(f"チャンネル定義ファイルの読み込みエラー: {e}")
+        log_message(f"チャンネル定義ファイルの読み込みエラー: {e}")
 
     # 万が一読み込めなかった場合のフォールバック
     if not channels:
@@ -460,7 +463,7 @@ class MantenUsuSeismographApp:
         )
     except Exception as e:
       # エラーが発生した際はその旨を表示
-      self.log_message(f"履歴保存エラー: {e}")
+      log_message(f"履歴保存エラー: {e}")
 
   # 履歴のプルダウンを更新
   def update_history_ui(self):
@@ -676,7 +679,7 @@ class MantenUsuSeismographApp:
       return
     end_dt = start_dt + timedelta(hours=1)
 
-    self.log_message(f"スタック表示処理を開始します: {date_str} {hour_str}時台 ({channel_sel})")
+    log_message(f"スタック表示処理を開始します: {date_str} {hour_str}時台 ({channel_sel})")
 
     # 1時間分のSACファイルを用意(抽出・変換)
     if not self.ensure_sacs(start_dt, end_dt, self.stack_dest_dir(start_dt)):
@@ -694,7 +697,7 @@ class MantenUsuSeismographApp:
       window = StackWindow(start_dt, station_name, comp_name,
                            load_stream=self.load_stack_stream,
                            channels=self.load_channel_options(),
-                           log=self.log_message,
+                           log=log_message,
                            show_error=lambda msg: messagebox.showerror("エラー", msg))
     finally:
       NavigationToolbar2Tk.toolitems = original_items
@@ -743,13 +746,13 @@ class MantenUsuSeismographApp:
         # ローカルにない場合はドライブからダウンロードを試みる
         # （※ ドライブ上のファイル名が 「260826.zip」 のような形式である場合）
         zip_filename = f"{d_str}.zip"
-        self.log_message(f"ローカルに存在しないため、Googleドライブから取得を試みます: {zip_filename}")
+        log_message(f"ローカルに存在しないため、Googleドライブから取得を試みます: {zip_filename}")
 
         success = self.download_zip_from_drive(zip_filename)
         if success:
-          self.log_message(f"ダウンロード完了: {zip_filename}")
+          log_message(f"ダウンロード完了: {zip_filename}")
         else:
-          self.log_message(f"ドライブからの取得に失敗したか、ファイルが存在しませんでした: {zip_filename}")
+          log_message(f"ドライブからの取得に失敗したか、ファイルが存在しませんでした: {zip_filename}")
 
     # 期間に該当するZipファイルのリストを作成
     # 空のリストを作成
@@ -818,7 +821,7 @@ class MantenUsuSeismographApp:
               extracted_count += 1
       except Exception as e:
         # Zipファイルが開けなかったときはエラー表示して次へ
-        self.log_message(f"ZIP読み込みエラー ({zip_path.name}): {e}")
+        log_message(f"ZIP読み込みエラー ({zip_path.name}): {e}")
 
     # 該当するWINファイルがひとつもなかったときはエラー終了
     if extracted_count == 0:
@@ -917,7 +920,7 @@ class MantenUsuSeismographApp:
             if res_wchch.returncode == 0:
               target_win_for_conv = corrected_win  # 成功したら書き換え後のファイルを後続で使う
             else:
-              self.log_message(f"チャンネル変換エラー (Station: {station_id}): {res_wchch.stderr.decode('utf-8', errors='ignore')}")
+              log_message(f"チャンネル変換エラー (Station: {station_id}): {res_wchch.stderr.decode('utf-8', errors='ignore')}")
 
       # 拠点IDごとのチャンネルIDファイル
       station_ch_path = self.etc_dir / f"{station_id}.ch"
@@ -945,7 +948,7 @@ class MantenUsuSeismographApp:
       )
       if result.returncode != 0:
         # エラー時の処理（ログ出力やメッセージなど）
-        self.log_message(f"変換エラー (Station: {station_id}): {result.stderr.decode('utf-8', errors='ignore')}")
+        log_message(f"変換エラー (Station: {station_id}): {result.stderr.decode('utf-8', errors='ignore')}")
 
     return True
 
@@ -1164,7 +1167,7 @@ class MantenUsuSeismographApp:
     creds_path = self.service_account_dir / "manten_usu_downloader.json"
 
     if not creds_path.exists():
-      self.log_message(f"サービスアカウントのキーファイルが見つかりません: {creds_path}")
+      log_message(f"サービスアカウントのキーファイルが見つかりません: {creds_path}")
       return False
 
     # 進捗表示用の変数
@@ -1204,10 +1207,10 @@ class MantenUsuSeismographApp:
         self.zips_root / zip_filename, on_progress)
       return True
     except DriveFileNotFoundError as e:
-      self.log_message(str(e))
+      log_message(str(e))
       return False
     except Exception as e:
-      self.log_message(f"Googleドライブからのダウンロード中にエラーが発生しました: {e}")
+      log_message(f"Googleドライブからのダウンロード中にエラーが発生しました: {e}")
       return False
     finally:
       loading_win.destroy()   # 成功・失敗どちらでも必ずポップアップを閉じる
@@ -1325,24 +1328,12 @@ class MantenUsuSeismographApp:
     except (ValueError, TypeError):
       return None
 
-  # 画面のログエリアにメッセージを追加するメソッド
-  def log_message(self, message):
-
-    print( message )
-
-    # 画面のログテキストボックスに追記
-    if hasattr(self, "log_text"):
-      self.log_text.config(state=tk.NORMAL)  # 一時的に書き込み許可
-      self.log_text.insert(tk.END, message + "\n")
-      self.log_text.see(tk.END)              # 自動で一番下にスクロール
-      self.log_text.config(state=tk.DISABLED) # 再び書き込み禁止に戻す
-
   # --- 【新機能】バッチ処理実行メソッド（UIなしでの一括処理） ---
   def run_batch_processing(self, channel, start_date=None, end_date=None, overwrite=False):
-    print(f"=== 1時間スタック波形バッチ処理を開始します ===")
-    print(f"  - チャンネル: {channel}")
-    print(f"  - 開始日: {start_date or '指定なし (全対象)'}")
-    print(f"  - 終了日: {end_date or '指定なし (全対象)'}")
+    log_message(f"=== 1時間スタック波形バッチ処理を開始します ===")
+    log_message(f"  - チャンネル: {channel}")
+    log_message(f"  - 開始日: {start_date or '指定なし (全対象)'}")
+    log_message(f"  - 終了日: {end_date or '指定なし (全対象)'}")
 
     if "." in channel:
       station_name, comp_name = channel.split(".", 1)
@@ -1354,7 +1345,7 @@ class MantenUsuSeismographApp:
     zip_files = sorted(list(self.zips_root.glob("**/*.zip")))
 
     if not zip_files:
-      print("[エラー] daily_zips内にZIPファイルが見つかりません。")
+      log_message("[エラー] daily_zips内にZIPファイルが見つかりません。")
       return
 
     target_zips = []
@@ -1379,14 +1370,14 @@ class MantenUsuSeismographApp:
       target_zips.append((full_date_str, zpath))
 
     if not target_zips:
-      print("[警告] 指定された条件に一致するZIPファイルがありません。")
+      log_message("[警告] 指定された条件に一致するZIPファイルがありません。")
       return
 
     batch_output_dir = self.base_dir.parent / "batch_plots"
     batch_output_dir.mkdir(parents=True, exist_ok=True)
 
     for date_str, zpath in target_zips:
-      print(f"\n[処理中] 日付: {date_str} (ZIP: {zpath.name})")
+      log_message(f"\n[処理中] 日付: {date_str} (ZIP: {zpath.name})")
       for hour in range(24):
         hour_str = f"{hour:02d}"
         start_dt_str = f"{date_str}{hour_str}00"
@@ -1395,7 +1386,7 @@ class MantenUsuSeismographApp:
           continue
         end_dt = start_dt + timedelta(hours=1)
 
-        print(f"  -> {date_str} {hour_str}:00 枠を処理中...")
+        log_message(f"  -> {date_str} {hour_str}:00 枠を処理中...")
         dest_dir = self.output_base / f"stack_{date_str}_{hour_str}"
         dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1404,12 +1395,12 @@ class MantenUsuSeismographApp:
 
         # ★【追加】画像が既に存在し、かつ上書きモードでない（＝デフォルトのスキップ）場合はここで丸ごとスキップ
         if out_img_path.exists() and not overwrite:
-          print(f"     [スキップ] 既に画像が存在します: {out_img_path.name}")
+          log_message(f"     [スキップ] 既に画像が存在します: {out_img_path.name}")
           continue
 
         # SACを用意(バッチ処理なのでダイアログは出さない)
         if not self.ensure_sacs(start_dt, end_dt, dest_dir, show_dialog=False):
-          print("     [スキップ] WINファイルの抽出またはSAC変換に失敗しました。")
+          log_message("     [スキップ] WINファイルの抽出またはSAC変換に失敗しました。")
           continue
 
         try:
@@ -1419,7 +1410,7 @@ class MantenUsuSeismographApp:
 
           target_trace = find_trace(st, station_name, comp_name)
           if target_trace is None:
-            print(f"     [スキップ] チャンネル {channel} が見つかりませんでした。")
+            log_message(f"     [スキップ] チャンネル {channel} が見つかりませんでした。")
             continue
 
           plt.ioff()
@@ -1432,13 +1423,13 @@ class MantenUsuSeismographApp:
           fig.savefig(out_img_path, dpi=150)
 
           plt.close(fig)
-          print(f"     [保存完了] {out_img_path.name}")
+          log_message(f"     [保存完了] {out_img_path.name}")
 
         except Exception as e:
-          print(f"     [エラー] プロット生成中にエラー: {e}")
+          log_message(f"     [エラー] プロット生成中にエラー: {e}")
           traceback.print_exc()
 
-    print("\n=== バッチ処理がすべて完了しました ===")
+    log_message("\n=== バッチ処理がすべて完了しました ===")
 
 # メインルーチン
 def main():
@@ -1452,8 +1443,12 @@ def main():
   parser.add_argument("--start-date", "-s", type=str, help="テスト用開始日 (YYYYMMDD形式)")
   parser.add_argument("--end-date", "-e", type=str, help="テスト用終了日 (YYYYMMDD形式)")
   parser.add_argument("--overwrite", action="store_true", help="既存の画像を上書きする (デフォルトはスキップ)")
+  parser.add_argument("--verbose", "-v", action="store_true", help="画面のログをコンソールにも表示する (バッチ処理モードでは常に表示)")
 
   args = parser.parse_args()
+
+  # コンソールへのログ表示(バッチ処理モードは画面が無いので常に表示)
+  set_console(args.verbose or args.batch)
 
   # GUIのウィンドウを生成
   root = tk.Tk()

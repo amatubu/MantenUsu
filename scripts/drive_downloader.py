@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from log_common import log_message
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -21,7 +23,7 @@ def load_folder_id(config_file, key="daily_zips_id"):
     with open(config_file, "r", encoding="utf-8") as f:
       return json.load(f).get(key)
   except Exception as e:
-    print(f"Googleドライブのフォルダ設定ファイルの読み込みに失敗しました: {e}")
+    log_message(f"Googleドライブのフォルダ設定ファイルの読み込みに失敗しました: {e}")
     return None
 
 # Googleドライブの指定フォルダからファイルをダウンロードする

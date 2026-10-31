@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from plot_common import NM_TO_CM, plot_components
+from log_common import log_message
 
 # ==========================================
 # 設定ファイル・プリセット
@@ -55,11 +56,11 @@ def load_params():
             val = saved.get(key)
             if isinstance(val, (int, float)) and not isinstance(val, bool):
                 params[key] = min(max(float(val), vmin), vmax)  # 範囲外は丸める
-        print(f"前回の設定を読み込みました: {SETTINGS_FILE}")
+        log_message(f"前回の設定を読み込みました: {SETTINGS_FILE}")
     except FileNotFoundError:
-        print("設定ファイルが無いため、既定値を使用します。")
+        log_message("設定ファイルが無いため、既定値を使用します。")
     except (json.JSONDecodeError, OSError, AttributeError) as e:
-        print(f"設定ファイルを読めなかったため、既定値を使用します: {e}")
+        log_message(f"設定ファイルを読めなかったため、既定値を使用します: {e}")
     return params
 
 # JSONへパラメータを保存
@@ -71,9 +72,9 @@ def save_params(params):
                 "params": {k: round(float(v), 3) for k, v in params.items()}}
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        print(f"設定を保存しました: {SETTINGS_FILE}")
+        log_message(f"設定を保存しました: {SETTINGS_FILE}")
     except OSError as e:
-        print(f"設定の保存に失敗しました: {e}")
+        log_message(f"設定の保存に失敗しました: {e}")
 
 # 波形データをファイルから読み込む
 def read_waveform_data(ew_file, ns_file, ud_file):
@@ -82,10 +83,10 @@ def read_waveform_data(ew_file, ns_file, ud_file):
         st = obspy.read(ew_file)
         st += obspy.read(ns_file)
         st += obspy.read(ud_file)
-        print("波形データを読み込みました。")
+        log_message("波形データを読み込みました。")
         return st
     except Exception as e:
-        print(f"ファイルの読み込みに失敗しました: {e}")
+        log_message(f"ファイルの読み込みに失敗しました: {e}")
         return None
 
 # P波・S波の到着時刻を推定し、結果を辞書で返す
@@ -371,18 +372,18 @@ def plot_ps_arrival_time(st):
     def print_result(_):
         params = {k: s.val for k, s in sliders.items()}
         res = detect_arrivals(tr_u, hor_data, df, params)
-        print("--- パラメータ ---")
+        log_message("--- パラメータ ---")
         for k, v in params.items():
-            print(f"{k}: {v}")
+            log_message(f"{k}: {v}")
         if res and res["p_time"] is not None and res["s_time"] is not None:
             sp = res["s_time"] - res["p_time"]
-            print("--- 震源距離の推定 ---")
-            print(f"P波到着: {res['p_time']:.2f} s / S波到着: {res['s_time']:.2f} s")
-            print(f"S-P時間: {sp:.2f} s")
-            print(f"推定震源距離: {params['omori_k'] * sp:.1f} km "
+            log_message("--- 震源距離の推定 ---")
+            log_message(f"P波到着: {res['p_time']:.2f} s / S波到着: {res['s_time']:.2f} s")
+            log_message(f"S-P時間: {sp:.2f} s")
+            log_message(f"推定震源距離: {params['omori_k'] * sp:.1f} km "
                   f"(大森係数 k={params['omori_k']})")
         else:
-            print("P波またはS波が検出されなかったため、距離を計算できませんでした。")
+            log_message("P波またはS波が検出されなかったため、距離を計算できませんでした。")
     btn_print.on_clicked(print_result)
 
     # --- ウィンドウを閉じるとき、最後のパラメータを保存 ---

@@ -6,6 +6,7 @@ from obspy import UTCDateTime
 from datetime import timedelta
 from matplotlib.widgets import Button
 from plot_common import NM_TO_CM, get_component_color
+from log_common import log_message
 
 STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
@@ -144,7 +145,7 @@ def render_stack(fig, axes, max_amp_text, trace, start_dt, station, comp):
 #   show_error    ... エラーメッセージを受け取って表示する関数
 class StackWindow:
   def __init__(self, start_dt, station, comp, load_stream, channels,
-               log=print, show_error=print):
+               log=log_message, show_error=log_message):
     # 表示中の状態(時刻・拠点・成分)
     self.dt = start_dt
     self.station = station
