@@ -44,9 +44,9 @@ warnings.filterwarnings(
 # 5. log_messageのprintへの出力用にデバッグオプション(コマンドラインオプション)を追加する
 # [完了]6. 震度の推測
 # 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
-# 8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
+# [完了]8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
 # 9. キャッシュ整理処理で、WINファイルのみ、結合前WINファイルのみなどのオプション追加
-# [実装中]10. P波、S波の到着時刻計算
+# [実験中]10. P波、S波の到着時刻計算
 # 11. 震源位置、地震発生時刻の推測
 
 # クラス定義
@@ -692,14 +692,16 @@ class MantenUsuSeismographApp:
     NavigationToolbar2Tk.toolitems = [t for t in original_items if t[0] == "Save"]
     try:
       window = StackWindow(start_dt, station_name, comp_name,
-                           load_trace=self.load_stack_trace, log=self.log_message)
+                           load_stream=self.load_stack_stream,
+                           channels=self.load_channel_options(),
+                           log=self.log_message,
+                           show_error=lambda msg: messagebox.showerror("エラー", msg))
     finally:
       NavigationToolbar2Tk.toolitems = original_items
     window.show()
 
-  # 指定した時間・拠点・成分の1時間分のトレースを読み込んで返す(失敗したら None)
-  def load_stack_trace(self, dt, station, comp):
-    # その時間のSACを用意して読み込む
+  # 指定した時間のSACを用意して、全チャンネルをまとめて読み込んで返す(失敗したら None)
+  def load_stack_stream(self, dt):
     dest_dir = self.stack_dest_dir(dt)
     if not self.ensure_sacs(dt, dt + timedelta(hours=1), dest_dir):
       return None
@@ -708,12 +710,7 @@ class MantenUsuSeismographApp:
     if len(st) == 0:
       messagebox.showerror("エラー", "SACファイルを開けませんでした。")
       return None
-
-    # 指定された拠点・成分のトレースを抽出
-    trace = find_trace(st, station, comp)
-    if trace is None:
-      messagebox.showerror("エラー", f"指定されたチャンネルのデータが見つかりませんでした: {station}.{comp}")
-    return trace
+    return st
 
   # 指定期間のWINファイルをZIPから抽出する
   def extract_win_files(self, start_dt, end_dt, dest_dir, show_dialog=True):

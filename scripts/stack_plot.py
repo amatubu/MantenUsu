@@ -8,6 +8,15 @@ from matplotlib.widgets import Button
 
 STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
+COMP_ORDER = ["U", "N", "E"]   # 成分の並び順
+
+# ボタンの状態ごとの色: (通常の色, マウスが乗ったときの色)
+BTN_COLORS = {
+  "selected": ("#9ec5f0", "#9ec5f0"),
+  "normal":   ("#f0f0f0", "#e0e0e0"),
+  "disabled": ("#d8d8d8", "#d8d8d8"),
+}
+
 # 拠点名と成分(U/N/E)に一致する最初のトレースを返す。無ければ None
 def find_trace(stream, station, comp):
   for tr in stream:
@@ -123,25 +132,41 @@ def render_stack(fig, axes, max_amp_text, trace, start_dt, station, comp):
   date_title = start_dt.strftime("%Y/%m/%d %H:00")
   fig.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station}.{comp}", fontsize=12)
 
-# 1時間スタック波形の表示ウィンドウ(前後の時間への移動つき)
+# 1時間スタック波形の表示ウィンドウ(前後の時間への移動・拠点と成分の切り替えつき)
 #   start_dt      ... 最初に表示する1時間の開始日時(datetime)
 #   station, comp ... 最初に表示する拠点名・成分(U/N/E)
-#   load_trace    ... (日時, 拠点名, 成分) を受け取り、その1時間分のトレースを返す関数。
+#   load_stream   ... 日時を受け取り、その1時間分の全チャンネルのStreamを返す関数。
 #                     失敗したら None を返す(エラー表示は関数側で行う)
+#   channels      ... "拠点名.成分" のリスト(例: ["Hokudai.U", ...])。ボタンの一覧に使う
 #   log           ... ログを受け取る関数(メッセージ文字列を1つ受け取る)
+#   show_error    ... エラーメッセージを受け取って表示する関数
 class StackWindow:
-  def __init__(self, start_dt, station, comp, load_trace, log=print):
+  def __init__(self, start_dt, station, comp, load_stream, channels,
+               log=print, show_error=print):
     # 表示中の状態(時刻・拠点・成分)
     self.dt = start_dt
     self.station = station
     self.comp = comp
-    self.load_trace = load_trace
+    self.load_stream = load_stream
     self.log = log
+    self.show_error = show_error
+
+    # 直近に表示した1時間分のStream(同じ時間内の切り替えで読み直さないため)
+    self._stream_dt = None
+    self._stream = None
+
+    # 拠点・成分の一覧(定義ファイル順。成分は U, N, E の順に並べる)
+    self.stations = list(dict.fromkeys(ch.split(".", 1)[0] for ch in channels))
+    comps = {ch.split(".", 1)[1] for ch in channels}
+    self.comps = sorted(comps, key=lambda c: COMP_ORDER.index(c) if c in COMP_ORDER else 99)
+
+    # 表示中の1時間にデータがある (拠点名(小文字), 成分(大文字)) の集合
+    self.available = set()
 
     # 60段の図を作る(画面表示用)
     self.fig, self.axes, self.max_amp_text = create_stack_figure()
 
-    # グラフ上部に「前の1時間」「次の1時間」ボタンを配置
+    # グラフ上部右側に「前の1時間」「次の1時間」ボタンを配置
     ax_prev = self.fig.add_axes([0.77, 0.91, 0.09, 0.03])  # [left, bottom, width, height]
     ax_next = self.fig.add_axes([0.88, 0.91, 0.09, 0.03])
     self.btn_prev = Button(ax_prev, "◀ -1h", color="#f0f0f0", hovercolor="#e0e0e0")
@@ -151,30 +176,136 @@ class StackWindow:
     self.btn_prev.on_clicked(lambda _event: self.move_hour(-1))
     self.btn_next.on_clicked(lambda _event: self.move_hour(+1))
 
+    # グラフ上部左側に、拠点ボタン(上段)と成分ボタン(下段)を配置
+    self.station_buttons = self._make_button_row(
+        self.stations, y=0.930, width=0.085, on_click=self.set_station)
+    self.comp_buttons = self._make_button_row(
+        self.comps, y=0.905, width=0.06, on_click=self.set_comp)
+
     # 横軸のズーム・ドラッグ・リセットを設定
     attach_zoom_pan(self.fig, self.axes)
 
     # ボタンなどが回収されないよう、図からこのウィンドウを参照しておく
     self.fig._stack_window = self
 
+  # 横一列のボタンを作って、{名前: Button} を返す
+  def _make_button_row(self, names, y, width, on_click, height=0.02):
+    buttons = {}
+    for i, name in enumerate(names):
+      ax = self.fig.add_axes([0.07 + i * (width + 0.005), y, width, height])
+      btn = Button(ax, name)
+      btn.label.set_fontsize(8)
+      btn.on_clicked(lambda _event, n=name: on_click(n))
+      buttons[name] = btn
+    return buttons
+
+  # ボタンの見た目と、押せるかどうかを状態("selected"/"normal"/"disabled")に合わせる
+  def _style_button(self, btn, state):
+    color, hover = BTN_COLORS[state]
+    btn.color = color
+    btn.hovercolor = hover
+    btn.ax.set_facecolor(color)
+    btn.label.set_color("#999999" if state == "disabled" else "black")
+    btn.set_active(state != "disabled")
+
+  # その拠点・成分のデータが、表示中の1時間にあるか
+  def _has(self, station, comp):
+    return (station.lower(), comp.upper()) in self.available
+
+  # 拠点・成分ボタンの状態を、選択中のチャンネルとデータの有無に合わせる
+  def _refresh_buttons(self):
+    # 拠点ボタン: その拠点のデータが1つでもあれば選べる
+    for st, btn in self.station_buttons.items():
+      if st == self.station:
+        state = "selected"
+      elif any(self._has(st, c) for c in self.comps):
+        state = "normal"
+      else:
+        state = "disabled"
+      self._style_button(btn, state)
+    # 成分ボタン: 選択中の拠点に、その成分のデータがあれば選べる
+    for c, btn in self.comp_buttons.items():
+      if c == self.comp:
+        state = "selected"
+      elif self._has(self.station, c):
+        state = "normal"
+      else:
+        state = "disabled"
+      self._style_button(btn, state)
+    self.fig.canvas.draw_idle()
+
+  # 選択中のチャンネルがこの時間に無いとき、代わりに表示する (拠点, 成分) を選ぶ。無ければ None
+  def _pick_fallback(self, stream):
+    avail = {(tr.stats.station.lower(), tr.stats.channel[-1].upper()) for tr in stream}
+    # 今の拠点を優先し、定義ファイル順に探す
+    for st in [self.station] + [s for s in self.stations if s != self.station]:
+      for c in self.comps:
+        if (st.lower(), c.upper()) in avail:
+          return st, c
+    return None
+
   # 現在の状態(時刻・拠点・成分)で描画し直す。成功したら True
   def update(self):
-    trace = self.load_trace(self.dt, self.station, self.comp)
+    # 1時間分のStreamを取得(同じ時間ならキャッシュを使う)
+    if self._stream_dt == self.dt:
+      stream = self._stream
+    else:
+      stream = self.load_stream(self.dt)
+      if stream is None:
+        return False
+
+    trace = find_trace(stream, self.station, self.comp)
     if trace is None:
-      return False
+      # 選択中のチャンネルがこの時間に無いので、データのある別のチャンネルに切り替える
+      fallback = self._pick_fallback(stream)
+      if fallback is None:
+        self.show_error(f"この時間には表示できるデータがありません: {self.dt.strftime('%Y/%m/%d %H:00')}")
+        return False
+      old_ch = f"{self.station}.{self.comp}"
+      self.station, self.comp = fallback
+      trace = find_trace(stream, self.station, self.comp)
+      self.log(f"{old_ch} のデータが無いため、{self.station}.{self.comp} に切り替えました")
+
+    # 成功したので、キャッシュと「データがあるチャンネル」の情報を更新
+    self._stream_dt, self._stream = self.dt, stream
+    self.available = {(tr.stats.station.lower(), tr.stats.channel[-1].upper()) for tr in stream}
+
     render_stack(self.fig, self.axes, self.max_amp_text, trace,
                  self.dt, self.station, self.comp)
-    self.fig.canvas.draw_idle()
+    self._refresh_buttons()
     self.log(f"スタック波形プロット完了: {self.station}.{self.comp} "
              f"({self.dt.strftime('%Y/%m/%d %H:00')})")
     return True
 
-  # 指定した時間数だけ前後に移動する。失敗したら元の時刻に戻す
-  def move_hour(self, hours):
-    old_dt = self.dt
-    self.dt = old_dt + timedelta(hours=hours)
+  # 状態(時刻・拠点・成分)を変更して描画し直す。失敗したら元に戻す
+  def _change(self, dt=None, station=None, comp=None):
+    old = (self.dt, self.station, self.comp)
+    if dt is not None:
+      self.dt = dt
+    if station is not None:
+      self.station = station
+    if comp is not None:
+      self.comp = comp
     if not self.update():
-      self.dt = old_dt   # 表示は元のままなので、状態も元に戻す
+      self.dt, self.station, self.comp = old   # 表示は元のままなので、状態も戻す
+
+  # 指定した時間数だけ前後に移動する
+  def move_hour(self, hours):
+    self._change(dt=self.dt + timedelta(hours=hours))
+
+  # 成分を切り替える(拠点は今のまま)
+  def set_comp(self, comp):
+    if comp != self.comp and self._has(self.station, comp):
+      self._change(comp=comp)
+
+  # 拠点を切り替える。成分は今のものを優先し、その拠点に無ければ最初に見つかる成分にする
+  def set_station(self, station):
+    if station == self.station:
+      return
+    comps_here = [c for c in self.comps if self._has(station, c)]
+    if not comps_here:
+      return
+    self._change(station=station, comp=self.comp if self.comp in comps_here else comps_here[0])
 
   # 初回描画をして画面に表示する(最初の描画に失敗したら閉じる)
   def show(self):
