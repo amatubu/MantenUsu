@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
+from matplotlib.patches import Rectangle
 import obspy
 from obspy.signal.trigger import recursive_sta_lta
 import json
@@ -23,6 +24,7 @@ SLIDER_SPECS = [
   ("s_sta",   "S波 STA [秒]",      0.1,  20.0,  0.1),
   ("s_lta",   "S波 LTA [秒]",      1.0,  100.0, 0.5),
   ("s_thr",   "S波 閾値",          1.0,  10.0,  0.1),
+  ("s_gap",   "S波探索の待ち [秒]", 0.0,  60.0,  0.5),
   ("omori_k", "大森係数 k [km/s]", 1.0,  15.0,  0.1),
 ]
 
@@ -30,10 +32,11 @@ SLIDER_SPECS = [
 DEFAULT_PARAMS = dict(
   p_sta=2.5, p_lta=10.0, p_thr=1.8,
   s_sta=4.0, s_lta=20.0, s_thr=3.0,
+  s_gap=0.0,
   omori_k=8.0,
 )
 
-# プリセット(大森係数は触らず、現在値を維持する)
+# プリセット(S波探索の待ちと大森係数は触らず、現在値を維持する)
 PRESETS = {
   "標準":          dict(
     p_sta=2.5, p_lta=10.0, p_thr=1.8, s_sta=4.0, s_lta=20.0, s_thr=3.0),
@@ -99,6 +102,8 @@ def detect_arrivals(tr_u, hor_data, df, params):
   # パラメータ設定を読み取る
   p_sta, p_lta, p_thr = params["p_sta"], params["p_lta"], params["p_thr"]
   s_sta, s_lta, s_thr = params["s_sta"], params["s_lta"], params["s_thr"]
+  # P波到着からS波を探し始めるまでの待ち時間(秒)。古い設定ファイルに無くても動くよう既定値を使う
+  s_gap = params.get("s_gap", 0.0)
 
   # LTA > STA でないと recursive_sta_lta が意味を持たないためチェック
   if p_lta <= p_sta or s_lta <= s_sta:
@@ -113,22 +118,24 @@ def detect_arrivals(tr_u, hor_data, df, params):
   # インデックスを秒に変換（記録開始からの相対時間）
   p_time = p_idx[0] / df if len(p_idx) > 0 else None
 
-  # --- S波(P波到着以降で探索) ---
+  # --- S波(P波到着から s_gap 秒たった以降で探索) ---
   # 水平方向(EとNの合成)の波形からCFTを計算
   cft_s = recursive_sta_lta(
     hor_data, max(1, int(s_sta * df)), max(2, int(s_lta * df)))
   s_time = None
   if p_time is not None:
     # P波が観測できたときだけ計算
-    # P波到着時刻のインデックス
-    p_i = int(p_time * df)
-    # P波到着後のデータだけを抽出し、以降で閾値を超えた最初のインデックスを取得
-    s_idx = np.where(cft_s[p_i:] > s_thr)[0]
+    # S波の探索を始めるインデックス(P波到着時刻 + 待ち時間)
+    # 遠い地震ではP波の途中でCFTが閾値を超えることがあるため、その区間を飛ばす
+    s_start_i = int((p_time + s_gap) * df)
+    # 探索開始以降のデータだけを抽出し、閾値を超えた最初のインデックスを取得
+    s_idx = np.where(cft_s[s_start_i:] > s_thr)[0]
     if len(s_idx) > 0:
       # 該当があればS波到着時間を計算
-      s_time = (p_i + s_idx[0]) / df
+      s_time = (s_start_i + s_idx[0]) / df
 
-  return {"cft_p": cft_p, "cft_s": cft_s, "p_time": p_time, "s_time": s_time}
+  return {"cft_p": cft_p, "cft_s": cft_s, "p_time": p_time, "s_time": s_time,
+          "s_gap": s_gap}
 
 # 波形・CFT・推定結果を、スライダー付きのウィンドウで表示する
 def plot_ps_arrival_time(st):
@@ -205,6 +212,14 @@ def plot_ps_arrival_time(st):
   # 初期は非表示とする( visible=False )
   p_lines = [ax.axvline(0, color=p_color, ls="--", visible=False) for ax in (ax1, ax2)]
   s_lines = [ax.axvline(0, color=s_color, ls="--", visible=False) for ax in (ax3, ax4)]
+  # S波を探さない区間(P波到着 〜 P波到着 + 待ち時間)を水平成分・S波CFTのグラフに薄く塗る
+  # X はデータ座標、Y はグラフの下端〜上端(0〜1)で指定する
+  gap_spans = []
+  for ax in (ax3, ax4):
+    span = Rectangle((0, 0), 0, 1, transform=ax.get_xaxis_transform(),
+                     color=s_color, alpha=0.1, lw=0, visible=False)
+    ax.add_patch(span)
+    gap_spans.append(span)
 
   # Y軸のラベル設定
   ax1.set_ylabel("速度 (cm/s)")
@@ -229,7 +244,7 @@ def plot_ps_arrival_time(st):
   # スライダの定義
   sliders = {}
   # 最初のスライダーの下端Y座標、スライダー間の縦間隔
-  top, step_y = 0.90, 0.05
+  top, step_y = 0.90, 0.045
   # パラメータをループさせてスライダーを描画
   for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
     sax = fig.add_axes([0.82, top - i * step_y, 0.14, 0.03])
@@ -288,6 +303,16 @@ def plot_ps_arrival_time(st):
       else:
         # 検出されなかったときは非表示
         ln.set_visible(False)
+    # S波を探さない区間の処理(P波が検出でき、待ち時間が0より大きいときだけ表示)
+    for span in gap_spans:
+      if p_time is not None and res["s_gap"] > 0:
+        span.set_x(p_time)
+        span.set_width(res["s_gap"])
+        span.set_visible(True)
+      else:
+        span.set_visible(False)
+    gap_spans[0].set_label(f"S波を探さない区間 ({res['s_gap']:.1f} 秒)"
+                           if gap_spans[0].get_visible() else None)
 
     # P波・S波到着時刻のラベル文字列を更新(表示更新は別途)
     p_lines[0].set_label(f"P波到着 ({p_time:.2f} 秒)" if p_time is not None
