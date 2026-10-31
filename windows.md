@@ -9,6 +9,7 @@
 - **ターゲット OS**: Windows 10 / 11 (x86_64 および win-arm64)
 - **補足 (ARM機での運用について)**:  
   `win-arm64` ネイティブ版では C/Fortran 依存ライブラリのバイナリが不足し `PackagesNotFoundInChannelsError` が発生するため、本手順では **x86_64版（64-bit / Intel/AMD用）Miniconda** のエミュレーション実行を採用しています。
+- **外部ツール**: `tools` フォルダに、防災科学技術研究所の `win2sac_32.exe`（WINファイルをSACファイルに変換）と `wchch_32.exe`（WINファイル内のチャンネル番号の読み替え）が必要です。リポジトリには含まれていないため、防災科研の「[連続波形ダウンロード](https://www.vnet.bosai.go.jp/)」でユーザ登録を行い、ソースコードをダウンロードして Windows 用にビルドしたものを置きます（README の「外部ツール」を参照）。
 
 ---
 
@@ -154,7 +155,7 @@ python scripts\UsuMantenViewer.py --batch -c Hokudai.U -s 20260826 -e 20260826
  ┃   ┗ 📜 UsuMantenViewer.py  # メインのスクリプト
  ┣ 📁 etc/                    # 設定ファイル等
  ┣ 📁 daily_zips/             # 入力データ(日ごとのZIPファイル)
- ┣ 📁 tools/                  # win2sac_32 などの外部ツール
+ ┣ 📁 tools/                  # win2sac_32.exe・wchch_32.exe(防災科研のソースからビルド。Git の管理外)
  ┣ 📁 service_account/        # Googleドライブの設定(4. を参照)
  ┣ 📁 output/                 # 出力先(キャッシュ・履歴)
  ┣ 📜 start_env.bat

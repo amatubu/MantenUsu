@@ -13,3 +13,6 @@ scripts/dist/
 scripts/*.spec
 UsuMantenViewer*.zip
 etc/hypocenter_params.json
+UsuMantenViewer.app
+*.pdf
+*.pptx

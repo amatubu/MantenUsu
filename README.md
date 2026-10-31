@@ -75,6 +75,22 @@
 
 Googleドライブからダウンロードする場合は、`service_account` フォルダに鍵と設定ファイルが必要です（[windows.md の「4. Googleドライブの設定」](windows.md#4-googleドライブの設定service_account-フォルダ)）。
 
+### 外部ツール（`tools` フォルダ）
+
+WINファイルの処理には、防災科学技術研究所（防災科研）が公開している次の2つのツールが必要です。リポジトリには含まれていない（Git の管理外）ため、各自で用意して `tools` フォルダに置きます。
+
+| ツール | 内容 |
+|---|---|
+| `win2sac_32` | WINファイルをSACファイルに変換する |
+| `wchch_32` | WINファイル内のチャンネル番号を読み替える |
+
+1. 防災科研の「[連続波形ダウンロード](https://www.vnet.bosai.go.jp/)」でユーザ登録を行います。
+2. 同サイトからツールのソースコードをダウンロードします。
+3. 使う OS でソースコードをビルドし、できた `win2sac_32`・`wchch_32` を `tools` フォルダに置きます（Windows では `win2sac_32.exe`・`wchch_32.exe`）。
+
+- ソースコードには `catwin32`・`wck_32` など他のツールも含まれますが、このアプリで使うのは上の2つだけです。
+- OS ごとの注意は [windows.md](windows.md) / [mac.md](mac.md) を参照してください。
+
 ---
 
 ## 起動
@@ -147,3 +163,10 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 - 変更しないファイル（`tools`・`service_account`・`etc` の設定ファイル）はアプリと一緒に置き、ユーザーの操作で作られる・変わるファイル（`output`・`daily_zips`・`batch_plots`・`etc/ps_picker_params.json`・`etc/hypocenter_params.json`）はユーザープロファイル配下に置く
 - 地震らしい波形の自動検出
 - S-P時間と到来方向を組み合わせた震源推定
+- 外部ツール（`win2sac_32`・`wchch_32`）のビルド方法の記載（Mac は gcc（Xcode のコマンドラインツール）、Windows は MinGW の gcc で、それぞれの Makefile を使ってビルドする。どちらもそのままではビルドできないため、当てているパッチをリポジトリに追加する）
+
+---
+
+## 謝辞
+
+WINファイルの処理には、国立研究開発法人 防災科学技術研究所が「[連続波形ダウンロード](https://www.vnet.bosai.go.jp/)」で公開しているプログラム（`win2sac_32`・`wchch_32`）を利用させていただいています。また、震源推定の配置図の背景には、国土地理院の[地理院タイル](https://maps.gsi.go.jp/development/ichiran.html)を利用しています。ここに記して感謝いたします。

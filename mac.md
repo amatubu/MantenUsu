@@ -8,7 +8,8 @@
 
 - **ターゲット**: Apple Silicon（M1 以降、arm64）の Mac
 - **Python**: Homebrew の Python（動作確認: Python 3.14 / Tk 9.1）と、その venv（仮想環境）
-- **補足**: `tools` フォルダの `win2sac_32` などは arm64 用にビルドしたものを使っているため、Intel の Mac では動きません。
+- **外部ツール**: `tools` フォルダに、防災科学技術研究所の `win2sac_32`（WINファイルをSACファイルに変換）と `wchch_32`（WINファイル内のチャンネル番号の読み替え）が必要です。リポジトリには含まれていないため、防災科研の「[連続波形ダウンロード](https://www.vnet.bosai.go.jp/)」でユーザ登録を行い、ソースコードをダウンロードしてビルドしたものを置きます（README の「外部ツール」を参照）。
+- **補足**: `tools` フォルダの `win2sac_32` などは arm64 用にビルドしたものを使っているため、Intel の Mac では動きません（Intel の Mac で使う場合は、その Mac でビルドし直してください）。
 
 ---
 
@@ -64,6 +65,7 @@ python3 -c "import tkinter, obspy, matplotlib, googleapiclient, google.oauth2; p
  ┗ 📜 build_mac.sh
 ```
 
+- `tools` には、防災科研の「連続波形ダウンロード」から入手したソースコードをビルドしてできた `win2sac_32`・`wchch_32` を置きます（ソースに含まれる `catwin32`・`wck_32` などは使いません）。
 - `tools` の中のファイルには実行権限が必要です。動かない場合は `chmod +x tools/*` を実行してください。
 - `service_account` の中身（鍵と `folder_config.json`）は Windows と同じです。`windows.md` の「4. Googleドライブの設定」を参照してください。
 
