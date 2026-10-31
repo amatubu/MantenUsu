@@ -149,7 +149,7 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 | `convert_to_sac.py` | フォルダ内のWINファイルを結合してSACファイルに変換する |
 | `repackage_to_daily_zip.py` | 元のZIPファイル群を日ごとのZIPファイルにまとめ直す |
 | `check_zips.py` | 元のZIPファイルの中身の構成（日付フォルダ・ファイル名の形式）を確認する |
-| `show_statistics.py` | `daily_zips` のデータの有無を集計する（pandas・openpyxl が必要） |
+| `show_statistics.py` | `daily_zips` の拠点ごとの記録期間と記録日数を集計し、グラフにする（`--save` で画像に保存。pandas・openpyxl が必要） |
 | `simulate_size.py` | 日ごと・月ごとのデータ量を集計する |
 | `screen_events.py` | 地震らしい期間の一覧から、近い地震の候補を絞り込む（一覧のCSVと確認用の画像を出力） |
 
