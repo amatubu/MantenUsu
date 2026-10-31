@@ -167,6 +167,10 @@ def plot_three_components( ax, stream_obj, title, ylabel ):
 def plot_jma_analysis(result):
   # 3行2列のサブプロット（グリッド）を作成
   fig, axes = plt.subplots(3, 2, figsize=(15, 9))
+  # ウィンドウのタイトル(既定の「Figure 1」の代わり)
+  if fig.canvas.manager is not None:
+    fig.canvas.manager.set_window_title(
+        f"震度推定 - {result['station']} ({result['start_time']})")
   axes = axes.flatten()
 
   # --- 1. 元の速度波形 ---

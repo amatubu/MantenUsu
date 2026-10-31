@@ -1079,8 +1079,10 @@ class MantenUsuSeismographApp:
     )
 
     # --- 描画用ウィンドウの作成 ---
-    wave_win = tk.Toplevel(self.root) 
-    wave_win.title("波形表示と震度測定")
+    wave_win = tk.Toplevel(self.root)
+    # ウィンドウのタイトル(拠点名と期間)
+    title_stations = ", ".join(dict.fromkeys(tr.stats.station for tr in ordered_st))
+    wave_win.title(f"波形表示 - {title_stations} ({start_time} - {end_time})")
 
     # Pyplotのグローバル管理からこのfigを外す（他のplt.show()に巻き込まれなくする）
     plt.close(fig)
