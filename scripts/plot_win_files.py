@@ -21,7 +21,7 @@ import cache_manager
 from cache_dialog import OutputCacheDialog
 from stack_plot import StackFigure, StackWindow, find_trace
 from waveform_window import open_waveform_window
-from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError
+from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError, DownloadCancelled
 
 # MacのTcl/Tk非推奨警告を抑制
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
@@ -37,7 +37,7 @@ warnings.filterwarnings(
 # TODO
 # [完了]1. 1時間ごとの波形表示をバッチ処理化(UIは作らず、daily_zipsにあるZipファイルについて一括処理。パラメータとして、チャンネル名または番号を指定)
 # 2. 4拠点のグラフ表示を2x2のグリッド表示させる
-# 4. Googleドライブからのダウンロード中に中止処理を追加
+# [完了]4. Googleドライブからのダウンロード中に中止処理を追加
 # [完了]5. log_messageのprintへの出力用にデバッグオプション(コマンドラインオプション)を追加する
 # [完了]6. 震度の推測
 # 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
@@ -741,13 +741,18 @@ class MantenUsuSeismographApp:
     # 期間に含まれる日付(YYMMDD)
     dates = win_pipeline.target_dates(start_dt, end_dt)
 
-    # 期間内の各日付について、ローカルになければGoogleドライブからダウンロードを試みる
-    for d_str in dates:
+    # 期間内の各日付について(古い日から順に)、ローカルになければGoogleドライブからダウンロードを試みる
+    for d_str in sorted(dates):
       if not list(self.zips_root.glob(f"*{d_str}*.zip")):
         # （※ ドライブ上のファイル名が 「260826.zip」 のような形式である場合）
         zip_filename = f"{d_str}.zip"
         log_message(f"ローカルに存在しないため、Googleドライブから取得を試みます: {zip_filename}")
-        if self.download_zip_from_drive(zip_filename):
+        try:
+          downloaded = self.download_zip_from_drive(zip_filename)
+        except DownloadCancelled:
+          # 中止されたら、残りの日のダウンロードや抽出もやめる
+          return 0
+        if downloaded:
           log_message(f"ダウンロード完了: {zip_filename}")
         else:
           log_message(f"ドライブからの取得に失敗したか、ファイルが存在しませんでした: {zip_filename}")
@@ -799,6 +804,8 @@ class MantenUsuSeismographApp:
     open_waveform_window(self.root, st, title_str, return_to)
 
   # Googleドライブから指定されたZIPファイルをダウンロードする
+  #   戻り値 ... 成功したら True、失敗したら False
+  #   中止ボタンで中止したときは DownloadCancelled を送出する(呼び出し側で残りの処理もやめる)
   def download_zip_from_drive(self, zip_filename):
     # キーファイルのパス
     creds_path = self.service_account_dir / "manten_usu_downloader.json"
@@ -809,11 +816,13 @@ class MantenUsuSeismographApp:
 
     # 進捗表示用の変数
     progress_var = tk.StringVar(value=f"Googleドライブからダウンロード中...\n\n{zip_filename}\n(0%)")
+    # 中止ボタン(またはウィンドウを閉じる)で True にする
+    cancel = {"requested": False}
 
     # --- 処理中ポップアップの表示 ---
     loading_win = tk.Toplevel(self.root)
     loading_win.title("通信中")
-    loading_win.geometry("300x120")
+    loading_win.geometry("300x150")
     loading_win.resizable(False, False)
     # 親ウインドウの前面に固定し、操作を一時的にロックする
     loading_win.transient(self.root)
@@ -824,12 +833,20 @@ class MantenUsuSeismographApp:
         textvariable=progress_var,
         font=("sans-serif", 10),
         justify=tk.CENTER
-    ).pack(expand=True, padx=10, pady=10)
+    ).pack(expand=True, padx=10, pady=(10, 0))
+
+    # 中止ボタン。押されたら次の区切り(CHUNK_SIZE ごと)でダウンロードを止める
+    def request_cancel():
+      cancel["requested"] = True
+      btn_cancel.config(text="中止しています...", state=tk.DISABLED)
+    btn_cancel = ttk.Button(loading_win, text="中止", command=request_cancel)
+    btn_cancel.pack(pady=(0, 10))
+    loading_win.protocol("WM_DELETE_WINDOW", request_cancel)
 
     # 描画を確実に反映させる
     loading_win.update()
 
-    # 進捗率をポップアップに反映する(モジュールから呼ばれる)
+    # 進捗率をポップアップに反映する(モジュールから呼ばれる)。中止ボタンの操作もここで受け付ける
     def on_progress(pct):
       progress_var.set(f"Googleドライブからのダウンロード中...\n\n{zip_filename}\n({pct}%)")
       loading_win.update()
@@ -841,8 +858,12 @@ class MantenUsuSeismographApp:
 
       download_file_from_drive(
         creds_path, self.target_folder_id, zip_filename,
-        self.zips_root / zip_filename, on_progress)
+        self.zips_root / zip_filename, on_progress,
+        cancelled=lambda: cancel["requested"])
       return True
+    except DownloadCancelled as e:
+      log_message(str(e))
+      raise
     except DriveFileNotFoundError as e:
       log_message(str(e))
       return False
@@ -850,7 +871,7 @@ class MantenUsuSeismographApp:
       log_message(f"Googleドライブからのダウンロード中にエラーが発生しました: {e}")
       return False
     finally:
-      loading_win.destroy()   # 成功・失敗どちらでも必ずポップアップを閉じる
+      loading_win.destroy()   # 成功・失敗・中止どれでも必ずポップアップを閉じる
 
   # outputキャッシュの整理(削除するファイルの種類を選ぶ画面を開く。履歴ファイルは残す)
   def clean_output_cache(self):

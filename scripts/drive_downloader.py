@@ -10,8 +10,18 @@ from googleapiclient.http import MediaIoBaseDownload
 # 読み取り専用のスコープ
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
+# 1回の通信でダウンロードする大きさ。この単位で進捗の表示と中止の確認を行う
+# 小さくすると進捗・中止の反応は早くなるが、通信の回数が増えてダウンロード全体が遅くなるため、
+# ライブラリの既定と同じ100MBにしている。中止は主に、長い期間を指定してしまったときに
+# 残りの日のダウンロードをやめるためのもの(1ファイルの途中では、最大100MB分待つことになる)
+CHUNK_SIZE = 100 * 1024 * 1024
+
 # Googleドライブ上に対象ファイルが無かったときの例外
 class DriveFileNotFoundError(Exception):
+  pass
+
+# ダウンロードを中止したときの例外
+class DownloadCancelled(Exception):
   pass
 
 # フォルダ設定ファイル(JSON)から、GoogleドライブのフォルダIDを読み込む
@@ -32,8 +42,11 @@ def load_folder_id(config_file, key="daily_zips_id"):
 #   filename    ... ダウンロードするファイル名
 #   dest_path   ... 保存先のパス
 #   on_progress ... 進捗率(0〜100の整数)を受け取る関数。省略可
-#   例外         ... 対象が無いと DriveFileNotFoundError、その他の失敗はそのまま送出
-def download_file_from_drive(creds_path, folder_id, filename, dest_path, on_progress=None):
+#   cancelled   ... 中止するときに True を返す関数。省略可(CHUNK_SIZE ごとに確認する)
+#   例外         ... 対象が無いと DriveFileNotFoundError、中止すると DownloadCancelled、
+#                   その他の失敗はそのまま送出
+def download_file_from_drive(creds_path, folder_id, filename, dest_path, on_progress=None,
+                             cancelled=lambda: False):
   if not folder_id:
     raise ValueError("GoogleドライブのフォルダIDが設定されていません")
 
@@ -68,12 +81,14 @@ def download_file_from_drive(creds_path, folder_id, filename, dest_path, on_prog
   try:
     request = service.files().get_media(fileId=file_id)
     with open(tmp_path, "wb") as f:
-      downloader = MediaIoBaseDownload(f, request)
+      downloader = MediaIoBaseDownload(f, request, chunksize=CHUNK_SIZE)
       done = False
       while not done:
         status, done = downloader.next_chunk()
         if status and on_progress:
           on_progress(int(status.progress() * 100))
+        if not done and cancelled():
+          raise DownloadCancelled(f"ダウンロードを中止しました: {filename}")
 
     # サイズがDrive上のものと一致するか確認(0バイトや途中切れの検出)
     if expected_size is not None and tmp_path.stat().st_size != int(expected_size):
