@@ -29,6 +29,7 @@ from matplotlib.patches import Rectangle
 from matplotlib.backends.backend_pdf import PdfPages
 
 from screen_events import load_period
+from quake_detect import QUAKE_BAND, QUAKE_RATIO, QUAKE_MIN_STATIONS, QUAKE_MARGIN
 from stack_plot import StackFigure, STACK_ROWS
 from plot_common import NM_TO_CM, setup_japanese_font
 from log_common import set_console, log_message
@@ -80,15 +81,7 @@ FREIGHT_MIN_RATIO = 20.0
 #   雑音の QUAKE_RATIO 倍以上揺れていたら地震とする(データのある拠点がそれより少ない時間は、
 #   データのある全拠点(2拠点以上)で超えていること)
 #   地震は列車より周波数が低く、列車用の 8〜25 Hz では Bamba で小さく出るため、帯域を分けている
-#   多少外しても広く候補を拾うため、基準は低めにしている
-#   (2026/8/20〜24 の2〜20 Hz では、気象庁の震源リストにある地震5件(8/20 00:50 浦河沖 M4.0、
-#    00:55 浦河沖 M3.5、8/23 02:00 茨城県南部 M5.9、22:45 浦河沖、8/24 01:36)は3〜4拠点で20倍以上。
-#    列車や日中の揺れで20倍を超えたのは、同時には多くて2拠点だった)
-QUAKE_BAND = (2.0, 20.0)
-QUAKE_RATIO = 20.0
-QUAKE_MIN_STATIONS = 3
-# 拠点ごとに、この秒数のずれは同じころとみなす(地震の揺れが拠点に届く時間の差など)
-QUAKE_MARGIN = 30.0
+#   基準は記録全体から地震の候補を探す処理(quake_detect.py)と共通で、決めた経緯もそちらに書いている
 # 地震の揺れがいちばん大きい時刻からこの秒数以内に最大がある揺れを、地震とみなす
 #   地震の揺れは数分続くので、そのあいだに通った列車まで地震にしないため
 #   (2026/8/23 22:40 の普通 函館方面は、22:45:45 の地震の最中の 22:47:35 に通っていた)

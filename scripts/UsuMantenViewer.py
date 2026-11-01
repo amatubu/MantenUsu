@@ -10,7 +10,8 @@ import traceback
 import re
 
 import app_paths                       # matplotlib より先に読み込む(ビルドしたアプリ向けの設定のため)
-from obspy import read                 # SACファイルの読み込み
+import numpy as np
+from obspy import read, Stream         # SACファイルの読み込み
 import matplotlib.pyplot as plt        # グラフ表示ツール
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
@@ -22,6 +23,11 @@ from cache_dialog import OutputCacheDialog
 from stack_plot import StackFigure, StackWindow, find_trace
 from waveform_window import open_waveform_window
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError, DownloadCancelled
+from hypocenter import load_stations
+import quake_detect
+import quake_features
+import jma_match
+import jma_hypocenter
 
 # MacのTcl/Tk非推奨警告を抑制
 os.environ["TK_SILENCE_DEPRECATION"] = "1"
@@ -54,24 +60,27 @@ warnings.filterwarnings(
 #          Windows は %APPDATA%\UsuMantenViewer や %LOCALAPPDATA%\UsuMantenViewer)
 #     場所は app_paths.py でまとめて決める。アプリを .app の中や Program Files など、
 #     書き込めない場所に置けるようになり、アプリを入れ替えても設定やキャッシュが残る
-# 13. 地震らしい波形の自動検出
-#     記録全体から地震の候補を探す(今は目で見つけた期間を screen_events.py で絞り込んでいる)
-#     train_day_plot.py で、1日分から地震の候補を拾えるようになった(2〜20 Hz で3拠点以上が同時に大きく揺れたもの)
-#     これを記録全体に広げ、アプリから使えるようにする
+# [完了]13. 地震らしい波形の自動検出(--detect-quakes。2〜20 Hz で3拠点以上が同時に大きく揺れたものを、
+#     指定した期間から地震の候補として一覧にする。履歴への追加・確認用の画像はオプション)
 # 14. S-P時間と到来方向を組み合わせた震源推定
 #     遠い地震は P波だけでは距離が決まらないため、S-P時間(大森公式)の距離と到来方向から震央を求める
 # 15. 外部ツール(win2sac_32、wchch_32)のビルド方法をドキュメントに書く
 #     防災科研「連続波形ダウンロード」のソースコードを、Mac は gcc(Xcode のコマンドラインツール)、
 #     Windows は MinGW の gcc で、それぞれの Makefile を使ってビルドしている
 #     どちらもそのままではビルドできないため、当てているパッチをリポジトリに追加する
-# 16. 気象庁の震源リストとの自動照合
-#     震源リスト(時刻・緯度経度・深さ・マグニチュード)を読み、拠点までの距離から P波・S波の到達時刻を計算して、
-#     見つけた地震の候補と照合する(どの地震の揺れか、見逃した地震はないか)
+# [完了]16. 気象庁の震源リストとの自動照合(--detect-quakes で、震源から拠点への P波・S波の到達見込みを
+#     計算して候補と照合する。見込みの振幅が大きいのに候補が無い地震も「見逃し?」として一覧にする)
+# 17. 地震の候補の震源推定
+#     震源リストと対応した候補: 14 の方法(P波の到着時刻から到来方向、S-P時間から距離)で震源を推定し、
+#       震源リストの震源と比べる(自動で計算したあと、手作業で補正する想定)
+#     対応しなかった候補: 有珠山周辺の小さな地震とみて、P波の到着時刻から震源を推定する
 
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "2.5.0"
+  APP_VERSION = "2.6.0"
+  # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
+  MAX_HISTORY = 1000
 
   # クラスの初期化
   def __init__(self, root):
@@ -512,12 +521,30 @@ class MantenUsuSeismographApp:
     # 既存の履歴と重複しなければリストの先頭に追加
     # 重複していれば過去の履歴を削除して今回の内容を先頭に追加(=先頭に移動)
     history.insert(0, new_entry)
-    # 履歴が50件以上になったら古いものから削除
-    history = history[:50]
+    # 履歴が上限を超えたら古いものから削除
+    history = history[:self.MAX_HISTORY]
     # 履歴ファイルへ保存
     self.save_history_data(history)
     # 履歴のプルダウンを更新
     self.update_history_ui()
+
+  # 履歴をまとめて追加する(地震の候補のバッチ処理から)
+  #   entries ... [{"start", "end", "title"}, ...]。後ろのものほど上(新しい履歴)になる
+  #   以前のバッチ処理で追加した同じ期間の履歴(タイトルが TITLE_PREFIX で始まるもの)は、置き換えて上に移す
+  #   同じ期間を自分で表示した履歴があれば、そちらのタイトルを残して追加しない
+  #   戻り値 ... (追加した履歴の数, 上限を超えて削除した履歴の数)
+  def add_history_entries(self, entries, title_prefix):
+    period = lambda h: (h.get("start"), h.get("end"))
+    history = self.load_history_data()
+    manual = {period(h) for h in history if not h.get("title", "").startswith(title_prefix)}
+    entries = [e for e in entries if period(e) not in manual]
+    periods = {period(e) for e in entries}
+    history = [h for h in history if period(h) not in periods]
+    history = list(reversed(entries)) + history
+    dropped = max(0, len(history) - self.MAX_HISTORY)
+    self.save_history_data(history[:self.MAX_HISTORY])
+    self.update_history_ui()
+    return len(entries), dropped
 
   # 履歴の内容を取得して波形表示
   def load_from_history(self):
@@ -665,7 +692,7 @@ class MantenUsuSeismographApp:
       if self.extract_win_files(start_dt, end_dt, dest_dir, show_dialog) == 0:
         return False
     # SACに変換
-    return self.convert_wins_to_sacs(dest_dir)
+    return self.convert_wins_to_sacs(dest_dir, show_dialog)
 
   # 1時間スタック波形表示の実行
   def execute_stack_pipeline(self):
@@ -801,11 +828,15 @@ class MantenUsuSeismographApp:
 
   # WINファイルの結合とSACファイルへの変換処理
   #   戻り値 ... 成功したら True(拠点ごとの変換エラーはログに出して続行する)
-  def convert_wins_to_sacs(self, dest_dir):
+  #   show_dialog ... エラーをダイアログで知らせるか(バッチ処理ではFalse。ログにだけ出す)
+  def convert_wins_to_sacs(self, dest_dir, show_dialog=True):
     try:
       win_pipeline.convert_wins_to_sacs(dest_dir, self.tools_dir, self.etc_dir)
     except win_pipeline.PipelineError as e:
-      messagebox.showerror("エラー", str(e))
+      if show_dialog:
+        messagebox.showerror("エラー", str(e))
+      else:
+        log_message(f"     [エラー] {e}")
       return False
     return True
 
@@ -1047,6 +1078,198 @@ class MantenUsuSeismographApp:
 
     log_message("\n=== バッチ処理がすべて完了しました ===")
 
+  # 1時間分のSACを用意して読み込む(バッチ処理用。1時間スタック波形と同じフォルダを使う)
+  #   vertical_only ... 上下動だけ読み込む
+  #   戻り値 ... Stream、用意できなければ None
+  def load_hour_stream(self, dt, vertical_only=False):
+    dest_dir = self.stack_dest_dir(dt)
+    if not self.ensure_sacs(dt, dt + timedelta(hours=1), dest_dir, show_dialog=False):
+      return None
+    st = Stream()
+    for path in win_pipeline.find_sacs(dest_dir):
+      if not vertical_only or ".U." in path.name:
+        st += read(str(path))
+    return st
+
+  # --- 地震の候補を探すバッチ処理(UIなし) ---
+  #   記録の期間から、3拠点以上が同時に大きく揺れたところを地震の候補として一覧にし、
+  #   気象庁の震源リスト(jma_hypocenter.py で保存したもの)と照合する
+  #   start_date, end_date ... 期間(YYYYMMDD)。省略すると daily_zips の最初・最後の日
+  #   add_history ... 候補の期間を履歴(history.json)に追加する
+  #   save_images ... 候補ごとに確認用の波形の画像を保存する
+  #   overwrite   ... 画像を上書きする
+  #   (保存した RMS を計算し直すときは、output/quake_rms を削除する)
+  def run_quake_detection(self, start_date=None, end_date=None, add_history=False, save_images=False,
+                          overwrite=False):
+    zip_days = jma_hypocenter.zip_days()
+    try:
+      start_day = datetime.strptime(start_date, "%Y%m%d") if start_date else zip_days[0]
+      end_day = datetime.strptime(end_date, "%Y%m%d") if end_date else zip_days[-1]
+    except (ValueError, IndexError):
+      log_message("[エラー] 期間を -s / -e で YYYYMMDD の形式で指定してください(daily_zips にZIPが無いときは必須)。")
+      return
+    if end_day < start_day:
+      log_message("[エラー] 終了日が開始日より前です。")
+      return
+    days = [start_day + timedelta(days=i) for i in range((end_day - start_day).days + 1)]
+    period = f"{start_day:%Y%m%d}_{end_day:%Y%m%d}"
+    log_message("=== 地震の候補を探すバッチ処理を開始します ===")
+    log_message(f"  - 期間: {start_day:%Y-%m-%d}〜{end_day:%Y-%m-%d}({len(days)}日)")
+    log_message(f"  - 基準: {quake_detect.QUAKE_BAND[0]:g}〜{quake_detect.QUAKE_BAND[1]:g} Hz の上下動で、"
+                f"{quake_detect.QUAKE_MIN_STATIONS}拠点以上が雑音の{quake_detect.QUAKE_RATIO:g}倍超"
+                f"(または {quake_detect.HOKUDAI} が{quake_detect.HOKUDAI_RATIO:g}倍以上で、"
+                f"ほかの{quake_detect.HOKUDAI_OTHERS}拠点以上が{quake_detect.HOKUDAI_OTHERS_RATIO:g}倍以上)")
+
+    # --- 1. 日ごとの RMS(保存したものがあれば使う) ---
+    stations = load_stations(self.etc_dir)
+    names = sorted(stations)
+    rms = {nm: [] for nm in names}
+    local_days = set(zip_days)
+    for day in days:
+      values = quake_detect.load_rms_cache(day)
+      cached = values is not None
+      if not cached and day not in local_days:
+        # 観測していない日などに、1時間ごとにGoogleドライブへ問い合わせ続けないよう、ZIPが手元に無い日は飛ばす
+        log_message(f"  {day:%Y-%m-%d}: daily_zips にZIPが無いため飛ばします")
+        values = {}
+      elif not cached:
+        hours = [(day + timedelta(hours=h), self.load_hour_stream(day + timedelta(hours=h), vertical_only=True))
+                 for h in range(24)]
+        values = quake_detect.day_rms(day, quake_detect.vertical_traces(quake_detect.merge_hours(hours)))
+        if values:
+          quake_detect.save_rms_cache(day, values)
+      present = [nm for nm in names if nm in values and np.isfinite(values[nm]).any()]
+      if values or cached:
+        log_message(f"  {day:%Y-%m-%d}: データのある拠点 {len(present)}({' '.join(present) or 'なし'})"
+                    + ("  [保存した RMS]" if cached else ""))
+      for nm in names:
+        rms[nm].append(values.get(nm, np.full(quake_detect.WINDOWS_PER_DAY, np.nan)))
+    rms = {nm: np.concatenate(v) for nm, v in rms.items()}
+
+    # --- 2. 地震の候補 ---
+    candidates, info = quake_detect.find_candidates(start_day, rms)
+    log_message(f"地震の候補: {len(candidates)}件(うち Hokudai の例外で見つけたもの "
+                f"{sum(1 for c in candidates if c['rule'] == quake_detect.RULE_HOKUDAI)}件)")
+
+    # --- 3. 気象庁の震源リストとの照合 ---
+    period_end = end_day + timedelta(days=1)
+    catalog, missing = jma_match.load_catalog(start_day, period_end, jma_match.array_center(stations))
+    if missing:
+      log_message(f"  気象庁の震源リストが無い日: {len(missing)}日(scripts/jma_hypocenter.py で取得できます)")
+    jma_match.match_candidates(candidates, catalog)
+    missed = jma_match.find_missed(catalog, lambda t0, t1: quake_detect.ratios_between(info, t0, t1),
+                                   quake_detect.QUAKE_MIN_STATIONS, start_day, period_end)
+    matched = sum(1 for c in candidates if c["match"])
+    log_message(f"  震源リストと対応した候補: {matched}件、該当なし: {len(candidates) - matched}件")
+    log_message(f"  見込みの振幅が大きいのに候補が無い地震(見逃し?): {len(missed)}件")
+    for cand in candidates:
+      log_message(f"    {quake_detect.candidate_label(cand)}")
+
+    out_dir = quake_detect.OUTPUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- 4. 候補ごとの波形の解析(有珠山の地震らしさ)と確認用の画像 ---
+    loaded = {}   # 読み込んだ時間の波形(直近のものだけ残す)
+    def window_stream(t0, t1):
+      first = t0.replace(minute=0, second=0, microsecond=0)
+      hours, h = [], first
+      while h <= t1:
+        if h not in loaded:
+          loaded[h] = self.load_hour_stream(h)
+        hours.append((h, loaded[h]))
+        h += timedelta(hours=1)
+      for old in [k for k in loaded if k < first]:
+        del loaded[old]
+      return quake_detect.merge_hours(hours)
+
+    log_message("候補ごとの波形を解析しています")
+    for cand in candidates:
+      t0 = cand["start"] - timedelta(seconds=40)
+      t1 = min(cand["end"] + timedelta(seconds=40), cand["start"] + timedelta(minutes=10))
+      st = window_stream(t0, t1)
+      try:
+        cand["features"], cand["picks"] = quake_detect.analyze_candidate(st, t0, t1, stations)
+      except Exception as e:
+        log_message(f"  [エラー] 波形を解析できませんでした({cand['start']:%Y-%m-%d %H:%M:%S}): {e}")
+        cand["features"], cand["picks"] = None, {}
+      # 有珠山の地震らしさは、震源リストに無い候補と、震源リストで有珠山の地震とされたものに付ける
+      if not cand["match"]:
+        cand["usu"] = quake_features.usu_likeness(cand["features"]) if cand["features"] else "低"
+      elif quake_features.is_usu_quake(cand["match"]):
+        cand["usu"] = quake_features.USU_CONFIRMED
+      if not save_images:
+        continue
+      path = out_dir / f"{cand['start']:%Y%m%d_%H%M%S}.png"
+      cand["image"] = path.name
+      if path.exists() and not overwrite:
+        continue
+      traces = quake_detect.vertical_traces(st)
+      if not traces:
+        continue
+      try:
+        quake_detect.save_candidate_image(path, cand, traces, cand["match"], quake_detect.candidate_title(cand))
+      except Exception as e:
+        log_message(f"  [エラー] 画像を保存できませんでした({path.name}): {e}")
+        traceback.print_exc()
+    usu_counts = {k: sum(1 for c in candidates if c.get("usu") == k) for k in ("高", "中", "低")}
+    log_message(f"  震源リストで有珠山の地震とされたもの: "
+                f"{sum(1 for c in candidates if c.get('usu') == quake_features.USU_CONFIRMED)}件")
+    log_message("  震源リストに無い候補の有珠山の地震らしさ: " + "、".join(f"{k} {v}件" for k, v in usu_counts.items()))
+
+    if save_images:
+      # 見逃した地震も、到達見込みの前後の波形を画像にする(ファイル名は missed_ で始める)
+      for q, available, ratios in missed:
+        path = out_dir / f"missed_{q['日時']:%Y%m%d_%H%M%S}.png"
+        q["image"] = path.name
+        if path.exists() and not overwrite:
+          continue
+        pseudo = {"start": q["p_time"], "end": q["s_time"] + timedelta(seconds=60), "ratios": ratios}
+        t0 = q["p_time"] - timedelta(seconds=40)
+        traces = quake_detect.vertical_traces(window_stream(t0, min(pseudo["end"], q["p_time"] + timedelta(minutes=10))
+                                                            + timedelta(seconds=40)))
+        if traces:
+          quake_detect.save_candidate_image(path, pseudo, traces, q, quake_detect.missed_title(q, available, ratios),
+                                            missed=True)
+
+      # 種類ごとにPDFにまとめる
+      groups = [("matched", "照合できたもの", [c for c in candidates if c["match"]]),
+                ("usu_high", "有珠山の地震(震源リストで確定)・らしさ 高",
+                 [c for c in candidates if c.get("usu") in (quake_features.USU_CONFIRMED, "高")]),
+                ("usu_mid", "有珠山の地震らしさ 中", [c for c in candidates if c.get("usu") == "中"]),
+                ("missed", "見逃し?", [q for q, _, _ in missed])]
+      for key, label, items in groups:
+        pdf_path = out_dir / f"quakes_{period}_{key}.pdf"
+        if quake_detect.save_pdf(pdf_path, [out_dir / it["image"] for it in items if it.get("image")]):
+          log_message(f"  PDF({label} {len(items)}件): {pdf_path.name}")
+        elif pdf_path.exists():
+          pdf_path.unlink()   # 該当が無くなったときは、前回のPDFを残さない
+      log_message(f"確認用の画像: {out_dir}")
+
+    # --- 5. 一覧 ---
+    csv_path = out_dir / f"quake_candidates_{period}.csv"
+    quake_detect.write_candidates_csv(csv_path, candidates, names)
+    log_message(f"候補の一覧: {csv_path}")
+    missed_path = out_dir / f"jma_missed_{period}.csv"
+    quake_detect.write_missed_csv(missed_path, missed, names)
+    log_message(f"見逃し?の一覧: {missed_path}")
+
+    # --- 6. 履歴(指定期間の波形表示で、あとから見られるようにする) ---
+    if add_history and candidates:
+      entries = []
+      for cand in candidates:
+        start = (cand["start"] - timedelta(seconds=30)).replace(second=0, microsecond=0)
+        end = max((cand["end"] + timedelta(seconds=30)).replace(second=0, microsecond=0),
+                  start + timedelta(minutes=1))
+        entries.append({"start": start.strftime("%Y%m%d%H%M"), "end": end.strftime("%Y%m%d%H%M"),
+                        "title": quake_detect.candidate_label(cand)})
+      added, dropped = self.add_history_entries(entries, quake_detect.LABEL_PREFIX)
+      log_message(f"履歴に {added}件を追加しました" +
+                  (f"(同じ期間を表示した履歴がある {len(entries) - added}件は、そちらを残しました)"
+                   if added < len(entries) else "") +
+                  (f"(上限 {self.MAX_HISTORY}件を超えたため、古い履歴 {dropped}件を削除)" if dropped else ""))
+
+    log_message("\n=== 地震の候補を探すバッチ処理が完了しました ===")
+
 # メインルーチン
 def main():
   # 日本語フォント設定
@@ -1055,23 +1278,38 @@ def main():
   # コマンドラインオプションの取得
   parser = argparse.ArgumentParser(description="有珠満点地震計プロジェクト 波形ビューワ / バッチ処理ツール")
   parser.add_argument("--batch", action="store_true", help="UIを起動せず、バッチ処理モードで実行する")
+  parser.add_argument("--detect-quakes", action="store_true",
+                      help="UIを起動せず、地震の候補を探して気象庁の震源リストと照合する (期間は -s / -e)")
+  parser.add_argument("--history", action="store_true", help="地震の候補の期間を履歴に追加する (--detect-quakes 用)")
+  parser.add_argument("--images", action="store_true", help="地震の候補の確認用の画像を保存する (--detect-quakes 用)")
   parser.add_argument("--channel", "-c", type=str, default="Hokudai.U", help="対象チャンネル名 (例: Hokudai.U または U)")
-  parser.add_argument("--start-date", "-s", type=str, help="テスト用開始日 (YYYYMMDD形式)")
-  parser.add_argument("--end-date", "-e", type=str, help="テスト用終了日 (YYYYMMDD形式)")
-  parser.add_argument("--overwrite", action="store_true", help="既存の画像を上書きする (デフォルトはスキップ)")
+  parser.add_argument("--start-date", "-s", type=str, help="バッチ処理の開始日 (YYYYMMDD形式)")
+  parser.add_argument("--end-date", "-e", type=str, help="バッチ処理の終了日 (YYYYMMDD形式)")
+  parser.add_argument("--overwrite", action="store_true",
+                      help="既存の画像を上書きする (デフォルトはスキップ)")
   parser.add_argument("--verbose", "-v", action="store_true", help="画面のログをコンソールにも表示する (バッチ処理モードでは常に表示)")
 
   args = parser.parse_args()
 
   # コンソールへのログ表示(バッチ処理モードは画面が無いので常に表示)
-  set_console(args.verbose or args.batch)
+  set_console(args.verbose or args.batch or args.detect_quakes)
 
   # GUIのウィンドウを生成
   root = tk.Tk()
   # MantenUsuSeismographApp クラスのインスタンスを生成
   app = MantenUsuSeismographApp(root)
 
-  if args.batch:
+  if args.detect_quakes:
+    root.withdraw() # GUIウィンドウを非表示にする
+    app.run_quake_detection(
+      start_date=args.start_date,
+      end_date=args.end_date,
+      add_history=args.history,
+      save_images=args.images,
+      overwrite=args.overwrite
+    )
+    root.destroy()
+  elif args.batch:
     root.withdraw() # GUIウィンドウを非表示にする
     app.run_batch_processing(
       channel=args.channel,
