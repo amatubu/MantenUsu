@@ -11,7 +11,9 @@ from matplotlib.widgets import Slider, Button
 from matplotlib.text import Annotation
 
 from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, fit_plane_wave, locate_grid_ps,
-                        pick_filtered, refine_p, pick_s, estimate_far, HORIZONTAL_RANGE)
+                        pick_filtered, refine_p, pick_s, estimate_far, HORIZONTAL_RANGE,
+                        LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT,
+                        MIN_OBSERVATIONS, MAX_LOCAL_RMS, FAR_MIN_SP)
 from plot_common import NM_TO_CM, get_component_color
 import gsi_tiles
 from ps_picker import load_params, save_params
@@ -29,32 +31,16 @@ SLIDER_SPECS = [
   ("p_lta",  "P波 LTA [秒]",       1.0, 60.0, 0.5),
   ("p_thr",  "P波 閾値",           1.0, 8.0,  0.1),
   ("window", "同時検出の幅 [秒]",  0.5, 10.0, 0.5),
+  # 遠い地震の S波も探せるよう、上限は60秒にしている(2026/8/23 22:45 の浦河沖(188 km)の S-P時間の見込みは約21秒)
   ("s_search", "S波を探す範囲 [秒]", 0.5, 60.0, 0.5),
   ("vp",     "P波の速度 [km/s]",   2.0, 8.0,  0.1),
   ("vp_vs",  "vp/vs",              1.5, 2.2,  0.01),
   ("omori_k", "大森係数 k [km/s]",  5.0, 10.0, 0.1),
 ]
 
-# パラメータのデフォルト値
-#   速度は有珠山周辺の浅い地震に合わせている(有珠山直下の地震の候補16件で、気象庁の震央に最も近くなったのは
-#   P波 3.0 km/s、vp/vs 1.73〜1.9。P波 5.5 km/s では平均 5.5 km 離れた)
-#   S波を探す範囲は、P波からこの秒数後まで(候補16件の S-P時間は 0.5〜1.6秒)
-#   遠い地震の S波も探せるよう、上限は60秒にしている(2026/8/23 22:45 の浦河沖(188 km)の S-P時間の見込みは約21秒)
-#   大森係数は遠い地震の距離(S-P時間 × k)に使う(P波・S波検出の画面と同じ 8.0 km/s)
-DEFAULT_PARAMS = dict(p_sta=2.5, p_lta=10.0, p_thr=2.6, window=3.0, s_search=3.0, vp=3.0, vp_vs=1.73,
-                      omori_k=8.0)
-
-# S波を最初から計算に使わない拠点(右クリックで使うようにできる)
-#   Bamba は雑音が多く、S波の検出がずれやすいため(候補16件で S-P時間が 0.5〜2.0秒とばらついた)
-S_EXCLUDED_DEFAULT = {"Bamba"}
-
-# 震源を求めるのに必要な到着時刻の数(P波・S波を合わせて。未知数は位置3つと発生時刻の4つ)
-MIN_OBSERVATIONS = 5
-
-# 震源の残差がこの秒数を超えたら、近い地震としての震源は当てにならないとみなす
-#   S波は P波のあと「S波を探す範囲」の中だけで探すので、遠い地震では P波の揺れの中の別の変化を拾ってしまう
-#   (有珠山直下の地震の候補で残差は 0.01〜0.08秒、2026/8/23 02:00 の茨城県南部の地震(730 km)では 0.6秒だった)
-MAX_LOCAL_RMS = 0.15
+# パラメータのデフォルト値(速度などは、地震の候補をまとめて計算する処理と同じ値。hypocenter.py を参照)
+DEFAULT_PARAMS = dict(p_sta=2.5, p_lta=10.0, p_thr=2.6, window=3.0, s_search=LOCAL_S_SEARCH, vp=LOCAL_VP,
+                      vp_vs=LOCAL_VP_VS, omori_k=OMORI_K)
 
 # P波の検出に関わるパラメータ(これが変わったときだけ検出をやり直す)
 PICK_KEYS = ("p_sta", "p_lta", "p_thr", "window")
@@ -430,7 +416,8 @@ def plot_hypocenter(st):
       lines.append(f"◆遠い地震として(到来方向と S-P時間から): 距離 {far['distance']:.0f} km"
                    f"(S-P {far['sp']:.1f} 秒 × k {sliders['omori_k'].val:.1f})")
       lines.append(f"  震央: 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
-    elif res.get("azimuth") is not None and loc is not None and (loc["at_edge"] or loc["rms"] > MAX_LOCAL_RMS):
+    elif res.get("azimuth") is not None and (loc is None or loc["at_edge"]):
+      # 残差が大きいだけで S-P時間が短いときは、近い地震の検出のずれなので、この案内は出さない
       lines.append(f"◆遠い地震として: {WARN_MARK}S波の到着時刻が必要です")
       lines.append("  ※「S波を探す範囲」を S-P時間より長くしてください")
 
@@ -555,10 +542,12 @@ def plot_hypocenter(st):
                                    np.array([o[2] for o in obs]))
     # 近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として
     # 到来方向と S-P時間から震央を推定する
+    #   (S-P時間が短いのに残差が大きいときは、遠い地震ではなく検出のずれとみなし、推定しない)
     loc = res.get("grid")
-    if loc is None or loc["at_edge"] or loc["rms"] > MAX_LOCAL_RMS:
-      res["far"] = estimate_far((proj.lat0, proj.lon0), res.get("azimuth"),
-                                [s_picks[nm] - picks[nm] for nm in used_s], params["omori_k"])
+    sp_times = [s_picks[nm] - picks[nm] for nm in used_s]
+    if ((loc is None or loc["at_edge"] or loc["rms"] > MAX_LOCAL_RMS)
+        and sp_times and (np.mean(sp_times) >= FAR_MIN_SP or loc is None or loc["at_edge"])):
+      res["far"] = estimate_far((proj.lat0, proj.lon0), res.get("azimuth"), sp_times, params["omori_k"])
     state["result"] = res
 
     message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ

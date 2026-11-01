@@ -23,9 +23,11 @@ from cache_dialog import OutputCacheDialog
 from stack_plot import StackFigure, StackWindow, find_trace
 from waveform_window import open_waveform_window
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError, DownloadCancelled
-from hypocenter import load_stations
+from hypocenter import load_stations, LocalProjection
 import quake_detect
 import quake_features
+import quake_locate
+from pathlib import Path
 import jma_match
 import jma_hypocenter
 
@@ -75,18 +77,24 @@ warnings.filterwarnings(
 #       震源リストの震源と比べる(自動で計算したあと、手作業で補正する想定)
 #     対応しなかった候補: 有珠山周辺の小さな地震とみて、P波の到着時刻から震源を推定する
 #     → 震源推定の画面で、P波・S波の到着時刻から震源を求められるようになった(有珠山直下の地震の候補16件で検証)。
-#       候補の一覧からまとめて計算すること、深さの断面図を出すことが残り
+#       --locate-quakes で、候補の一覧(CSV)からまとめて計算し、一覧と震央の地図・断面図を出せるようになった。
+#       アプリの画面への組み込み(一覧の CSV を選んで、結果を画面に表示する)が残り
 # 18. 震源推定の画面の使い方をドキュメントに書く(とくに遠い地震)
 #     遠い地震は、P波の揺れの中から S波らしい揺れを見つけるため、パンツール(右ドラッグで拡大縮小)で
 #     表示の範囲を合わせながら、水平動の表示で S波を手で指定する必要がある
 #     大森係数 k は距離によって変わる(2026/8/23 02:00 の茨城県南部(730 km)では、S-P 約75秒で k ≒ 9.7 になる。
 #     200〜300 km の地震では 8.4〜9.0 だった)。k の目安を距離ごとに書くか、S-P時間から走時表(TauP)で
 #     距離を求める方法を検討する
+# 19. 地震の候補の震源(--locate-quakes)で、「近い地震」と判定する基準を厳しくする
+#     到着時刻(P波・S波を合わせて)が少ないと、未知数(位置3つと発生時刻)に対して余裕がなく、
+#     残差が小さくても位置が当てにならない。「到着時刻が6つ以上」のような条件を足す
+#     (2026/8/3 00:51 は、到着時刻5つ(P波3・S波2)で残差 0.083秒の「近い地震」になったが、
+#      波形は Hokudai 以外は雑音並みで、地震とは言えなかった)
 
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "2.9.0"
+  APP_VERSION = "2.10.0"
   # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
   MAX_HISTORY = 1000
 
@@ -1278,6 +1286,71 @@ class MantenUsuSeismographApp:
 
     log_message("\n=== 地震の候補を探すバッチ処理が完了しました ===")
 
+  # --- 地震の候補の震源を求めるバッチ処理(UIなし) ---
+  #   csv_path    ... 地震の候補の一覧(--detect-quakes の quake_candidates_*.csv。「候補」の列があれば印の付いた行だけ)
+  #   save_images ... 候補ごとに確認用の画像(P波・S波の位置)も保存する
+  #   出力: batch_plots/quakes/locate/<一覧の名前>_locations.csv と _locations.png(震央の地図と断面図)
+  def run_quake_location(self, csv_path, save_images=False):
+    csv_path = Path(csv_path)
+    log_message("=== 地震の候補の震源を求めるバッチ処理を開始します ===")
+    log_message(f"  - 候補の一覧: {csv_path}")
+    if not csv_path.exists():
+      log_message("[エラー] 候補の一覧が見つかりません。")
+      return
+    candidates = quake_locate.read_candidates(csv_path)
+    log_message(f"  - 候補: {len(candidates)}件")
+    if not candidates:
+      return
+    stations = load_stations(self.etc_dir)
+    names = sorted(stations)
+    proj = LocalProjection(list(stations.values()))
+    out_dir = quake_locate.OUTPUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = csv_path.stem
+
+    loaded = {}   # 読み込んだ時間の波形(直近のものだけ残す)
+    items = []
+    for cand in candidates:
+      if cand["jma"]:
+        quake_locate.add_arrivals(cand["jma"], (proj.lat0, proj.lon0))
+      t0, t1 = quake_locate.candidate_window(cand)
+      first = t0.replace(minute=0, second=0, microsecond=0)
+      hours, h = [], first
+      while h <= t1:
+        if h not in loaded:
+          loaded[h] = self.load_hour_stream(h)
+        hours.append((h, loaded[h]))
+        h += timedelta(hours=1)
+      for old in [k for k in loaded if k < first]:
+        del loaded[old]
+      try:
+        r = quake_locate.locate_candidate(quake_detect.merge_hours(hours), cand, stations, proj)
+      except Exception as e:
+        log_message(f"  [エラー] {cand['start']:%Y-%m-%d %H:%M:%S}: {e}")
+        traceback.print_exc()
+        continue
+      items.append((cand, r))
+      summary = quake_locate.check_title(cand, r).replace("\n", " / ")
+      log_message(f"  {summary}")
+      if save_images:
+        path = out_dir / f"{stem}_{cand['start']:%Y%m%d_%H%M%S}.png"
+        if quake_locate.save_check_image(path, cand, r, quake_locate.check_title(cand, r)):
+          r["image"] = path.name
+
+    counts = {k: sum(1 for _c, r in items if r["kind"] == k)
+              for k in (quake_locate.KIND_LOCAL, quake_locate.KIND_LOCAL_POOR, quake_locate.KIND_FAR,
+                        quake_locate.KIND_NONE)}
+    log_message("結果: " + "、".join(f"{k} {v}件" for k, v in counts.items()))
+    out_csv = out_dir / f"{stem}_locations.csv"
+    quake_locate.write_csv(out_csv, items, names)
+    log_message(f"一覧: {out_csv}")
+    out_png = out_dir / f"{stem}_locations.png"
+    quake_locate.save_location_map(out_png, items, stations, proj, f"地震の候補の震源(自動) {stem}")
+    log_message(f"地図・断面図: {out_png}")
+    if save_images:
+      log_message(f"確認用の画像: {out_dir}")
+    log_message("\n=== 地震の候補の震源を求めるバッチ処理が完了しました ===")
+
 # メインルーチン
 def main():
   # 日本語フォント設定
@@ -1288,8 +1361,11 @@ def main():
   parser.add_argument("--batch", action="store_true", help="UIを起動せず、バッチ処理モードで実行する")
   parser.add_argument("--detect-quakes", action="store_true",
                       help="UIを起動せず、地震の候補を探して気象庁の震源リストと照合する (期間は -s / -e)")
+  parser.add_argument("--locate-quakes", metavar="CSV",
+                      help="UIを起動せず、地震の候補の一覧(CSV)から候補ごとに震源を求める")
   parser.add_argument("--history", action="store_true", help="地震の候補の期間を履歴に追加する (--detect-quakes 用)")
-  parser.add_argument("--images", action="store_true", help="地震の候補の確認用の画像を保存する (--detect-quakes 用)")
+  parser.add_argument("--images", action="store_true",
+                      help="地震の候補の確認用の画像を保存する (--detect-quakes・--locate-quakes 用)")
   parser.add_argument("--channel", "-c", type=str, default="Hokudai.U", help="対象チャンネル名 (例: Hokudai.U または U)")
   parser.add_argument("--start-date", "-s", type=str, help="バッチ処理の開始日 (YYYYMMDD形式)")
   parser.add_argument("--end-date", "-e", type=str, help="バッチ処理の終了日 (YYYYMMDD形式)")
@@ -1300,14 +1376,18 @@ def main():
   args = parser.parse_args()
 
   # コンソールへのログ表示(バッチ処理モードは画面が無いので常に表示)
-  set_console(args.verbose or args.batch or args.detect_quakes)
+  set_console(args.verbose or args.batch or args.detect_quakes or args.locate_quakes)
 
   # GUIのウィンドウを生成
   root = tk.Tk()
   # MantenUsuSeismographApp クラスのインスタンスを生成
   app = MantenUsuSeismographApp(root)
 
-  if args.detect_quakes:
+  if args.locate_quakes:
+    root.withdraw() # GUIウィンドウを非表示にする
+    app.run_quake_location(args.locate_quakes, save_images=args.images)
+    root.destroy()
+  elif args.detect_quakes:
     root.withdraw() # GUIウィンドウを非表示にする
     app.run_quake_detection(
       start_date=args.start_date,
