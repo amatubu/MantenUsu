@@ -15,6 +15,12 @@ WIN_SUFFIX = ".win"              # WINファイルの拡張子
 COMBINED_PREFIX = "combined_"    # 拠点ごとに結合したWINファイル(combined_拠点ID.win)
 CORRECTED_PREFIX = "corrected_"  # チャンネル番号を読み替えたWINファイル(corrected_拠点ID.win)
 SAC_PATTERN = "*_sac*"           # SACファイル(拠点名.成分.拠点ID_sac)
+CHUNK_DIR_PREFIX = "chunks_"     # 長い期間を分けて変換するときの作業フォルダ(chunks_拠点ID)
+APPLEDOUBLE_PREFIX = "._"        # Mac が外付けディスクなどに作る付随ファイル(中身は WIN や ZIP ではない)
+
+# win2sac_32 は約8000秒(2時間13分20秒)より長いWINファイルを、何も出力せずに終える。
+# そのため、これより長い期間はこの分数ずつに分けて変換し、あとでつなぐ(WINファイルは1分に1つ)
+CHUNK_MINUTES = 120
 
 
 # 処理中に必要なファイルが無いなど、続行できないときのエラー
@@ -26,7 +32,7 @@ class PipelineError(Exception):
 #   例: 1070432002_2608260858.win (拠点ID_年月日時分.win)
 def is_raw_win(path):
   return (path.suffix == WIN_SUFFIX
-          and not path.name.startswith((COMBINED_PREFIX, CORRECTED_PREFIX)))
+          and not path.name.startswith((COMBINED_PREFIX, CORRECTED_PREFIX, APPLEDOUBLE_PREFIX)))
 
 # フォルダ内のWINファイル(結合後などを含むすべて)
 def find_wins(dest_dir):
@@ -38,7 +44,7 @@ def find_raw_wins(dest_dir):
 
 # フォルダ内のSACファイル
 def find_sacs(dest_dir):
-  return list(dest_dir.glob(SAC_PATTERN))
+  return [p for p in dest_dir.glob(SAC_PATTERN) if not p.name.startswith(APPLEDOUBLE_PREFIX)]
 
 # OSに合わせた外部ツールのパス(Windowsなら .exe を付ける)
 def tool_path(tools_dir, name):
@@ -63,7 +69,8 @@ def target_dates(start_dt, end_dt):
 # 指定した日付(YYMMDD)のどれかがファイル名に含まれるZIPファイルを、サブフォルダも含めて探す
 def find_zips(zips_root, dates):
   return [zip_path for zip_path in zips_root.glob("**/*.zip")
-          if any(d in zip_path.stem for d in dates)]
+          if any(d in zip_path.stem for d in dates)
+          and not zip_path.name.startswith(APPLEDOUBLE_PREFIX)]
 
 # ZIP内のWINファイル名から日時を取り出す。WINファイルでない・形式が違うときは None
 #   例: 1070432002/260826/1070432002_2608260858.win
@@ -110,27 +117,24 @@ def extract_wins_from_zips(zip_paths, start_dt, end_dt, dest_dir):
   return extracted_count
 
 
-# 結合前のWINファイルを、拠点IDごとに結合する
-#   戻り値 ... {拠点ID: 結合後のWINファイルのパス}
-def combine_wins(dest_dir):
-  # 拠点IDごとに結合前のWINファイルを集める
-  #   ファイル名の例: 1070432002_2608260858.win (拠点ID_年月日時分.win)
+# 結合前のWINファイルを拠点IDごとに集める
+#   ファイル名の例: 1070432002_2608260858.win (拠点ID_年月日時分.win)
+#   戻り値 ... {拠点ID: WINファイルのリスト(古い順)}
+def group_raw_wins(dest_dir):
   station_files = defaultdict(list)
   for win_file in find_raw_wins(dest_dir):
     parts = win_file.name.split("_")
     if len(parts) >= 2:
       station_files[parts[0]].append(win_file)
+  # ファイル名は日付・時刻で構成されているので、名前順で古いものから並ぶ
+  return {sid: sorted(files, key=lambda x: x.name) for sid, files in station_files.items()}
 
-  combined = {}
-  for station_id, files in station_files.items():
-    # ファイル名は日付・時刻で構成されているので、名前順で古いものから並ぶ
-    combined_win = dest_dir / f"{COMBINED_PREFIX}{station_id}{WIN_SUFFIX}"
-    with open(combined_win, "wb") as out:
-      for f in sorted(files, key=lambda x: x.name):
-        with open(f, "rb") as rfd:
-          out.write(rfd.read())
-    combined[station_id] = combined_win
-  return combined
+# WINファイルを順につないで1つのファイルにする
+def combine_wins(files, combined_win):
+  with open(combined_win, "wb") as out:
+    for f in files:
+      with open(f, "rb") as rfd:
+        out.write(rfd.read())
 
 # 古いファイルなどでチャンネル番号の読み替えが必要な拠点は、wchch_32 で読み替える
 #   変換ファイル(etc/拠点ID_conv.tbl)のフォーマット: 旧IDと新IDをタブで区切って記載
@@ -171,26 +175,64 @@ def convert_wins_to_sacs(dest_dir, tools_dir, etc_dir):
   manten_tbl_path = etc_dir / "manten_ch.tbl"
   shutil.copy2(manten_tbl_path, dest_dir / manten_tbl_path.name)
 
-  for station_id, combined_win in combine_wins(dest_dir).items():
-    target_win = correct_channels(combined_win, station_id, tools_dir, etc_dir)
+  for station_id, files in group_raw_wins(dest_dir).items():
+    if len(files) <= CHUNK_MINUTES:
+      combined_win = dest_dir / f"{COMBINED_PREFIX}{station_id}{WIN_SUFFIX}"
+      combine_wins(files, combined_win)
+      target_win = correct_channels(combined_win, station_id, tools_dir, etc_dir)
+      run_win2sac(win2sac_path, win_prm_path, target_win, station_id, f"{station_id}_sac", etc_dir)
+    else:
+      convert_in_chunks(win2sac_path, win_prm_path, files, station_id, dest_dir,
+                        tools_dir, etc_dir, manten_tbl_path)
 
-    # 拠点IDごとのチャンネルIDファイル。無いときは全チャンネルを記載したファイルを使用
-    station_ch_path = etc_dir / f"{station_id}.ch"
-    if not station_ch_path.exists():
-      station_ch_path = etc_dir / "manten.ch"
+# win2sac_32 で1つのWINファイルを変換する(SACファイルはWINファイルと同じフォルダに出力)
+#   sac_name ... 出力するSACファイル名の末尾(拠点名.成分.<sac_name> になる)
+def run_win2sac(win2sac_path, win_prm_path, target_win, station_id, sac_name, etc_dir):
+  # 拠点IDごとのチャンネルIDファイル。無いときは全チャンネルを記載したファイルを使用
+  station_ch_path = etc_dir / f"{station_id}.ch"
+  if not station_ch_path.exists():
+    station_ch_path = etc_dir / "manten.ch"
 
-    # usage: win2sac_32 winfile ch_no sacfile [outdir] [-p(prmfile)]
-    #          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
-    cmd = [
-      str(win2sac_path.resolve()),     # win2sac_32 のフルパス
-      target_win.name,                 # 結合された(読み替え後の)WINファイル
-      str(station_ch_path.resolve()),  # チャンネル定義ファイルのフルパス
-      f"{station_id}_sac",             # 出力するSACファイル
-      ".",                             # 出力先フォルダ(カレントディレクトリ)
-      f"-p{win_prm_path.resolve()}",   # prmファイルのフルパス
-    ]
-    result = subprocess.run(cmd, cwd=dest_dir,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if result.returncode != 0:
-      log_message(f"変換エラー (Station: {station_id}): "
-                  f"{result.stderr.decode('utf-8', errors='ignore')}")
+  # usage: win2sac_32 winfile ch_no sacfile [outdir] [-p(prmfile)]
+  #          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
+  cmd = [
+    str(win2sac_path.resolve()),     # win2sac_32 のフルパス
+    target_win.name,                 # 結合された(読み替え後の)WINファイル
+    str(station_ch_path.resolve()),  # チャンネル定義ファイルのフルパス
+    sac_name,                        # 出力するSACファイル
+    ".",                             # 出力先フォルダ(カレントディレクトリ)
+    f"-p{win_prm_path.resolve()}",   # prmファイルのフルパス
+  ]
+  result = subprocess.run(cmd, cwd=target_win.parent,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  if result.returncode != 0:
+    log_message(f"変換エラー (Station: {station_id}): "
+                f"{result.stderr.decode('utf-8', errors='ignore')}")
+
+# 長い期間を CHUNK_MINUTES 分ずつ作業フォルダで変換し、成分ごとに1つのSACファイルにつなぐ
+#   出力するSACファイルの名前は、分けずに変換したときと同じ(拠点名.成分.拠点ID_sac)
+def convert_in_chunks(win2sac_path, win_prm_path, files, station_id, dest_dir,
+                      tools_dir, etc_dir, manten_tbl_path):
+  import obspy  # 長い期間のときだけ必要なので、ここで読み込む
+
+  work_dir = dest_dir / f"{CHUNK_DIR_PREFIX}{station_id}"
+  shutil.rmtree(work_dir, ignore_errors=True)
+  work_dir.mkdir()
+  shutil.copy2(manten_tbl_path, work_dir / manten_tbl_path.name)
+  try:
+    for i in range(0, len(files), CHUNK_MINUTES):
+      combined_win = work_dir / f"{COMBINED_PREFIX}{station_id}{WIN_SUFFIX}"
+      combine_wins(files[i:i + CHUNK_MINUTES], combined_win)
+      target_win = correct_channels(combined_win, station_id, tools_dir, etc_dir)
+      run_win2sac(win2sac_path, win_prm_path, target_win, station_id,
+                  f"{station_id}_sac{i // CHUNK_MINUTES:03d}", etc_dir)
+
+    st = obspy.Stream()
+    for sac in sorted(find_sacs(work_dir)):
+      st += obspy.read(str(sac))
+    # つなぎ目や欠測は0で埋める(SACファイルは欠測を持てないため)
+    st.merge(method=1, fill_value=0)
+    for tr in st:
+      tr.write(str(dest_dir / f"{tr.stats.station}.{tr.stats.channel}.{station_id}_sac"), format="SAC")
+  finally:
+    shutil.rmtree(work_dir, ignore_errors=True)

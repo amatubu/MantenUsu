@@ -152,6 +152,7 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 | `show_statistics.py` | `daily_zips` の拠点ごとの記録期間と記録日数を集計し、グラフにする（`--save` で画像に保存。pandas・openpyxl が必要） |
 | `simulate_size.py` | 日ごと・月ごとのデータ量を集計する |
 | `screen_events.py` | 地震らしい期間の一覧から、近い地震の候補を絞り込む（一覧のCSVと確認用の画像を出力） |
+| `train_day_plot.py` | 1日分の波形から列車らしい揺れを拾い、洞爺駅の時刻表と対応させる（貨物列車の候補・地震も判別。`--stack` で1時間スタック波形に重ねた画像とPDFも出力。時刻表は `etc/時刻表テンプレート.xlsx` で入力してCSVに保存） |
 
 ---
 
