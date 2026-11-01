@@ -76,13 +76,23 @@ ASYM_SPAN = (10, 60)              # 最大の前後、何秒から何秒まで�
 # 時刻表と対応しなかった揺れのうち、この倍率以上を貨物列車の候補とする
 FREIGHT_MIN_RATIO = 20.0
 # 地震の見分け方: 列車の揺れは線路に近い拠点にしか出ないが、地震はどの拠点でも大きく揺れる
-#   ほかの拠点のうち QUAKE_MIN_STATIONS か所以上で、同じころに雑音の QUAKE_RATIO 倍以上揺れていたら地震とする
-#   (2026/8/23 22:45 の浦河沖の地震では、ほかの3拠点で雑音の600〜1800倍。
-#    列車のときのほかの拠点は、多くて15倍程度だった)
-QUAKE_RATIO = 50.0
-QUAKE_MIN_STATIONS = 2
-# ほかの拠点の揺れを見る範囲として、揺れの前後に足す秒数
+#   列車用の帯域とは別に QUAKE_BAND で全拠点の揺れを調べ、同じころに QUAKE_MIN_STATIONS 拠点以上で
+#   雑音の QUAKE_RATIO 倍以上揺れていたら地震とする(データのある拠点がそれより少ない時間は、
+#   データのある全拠点(2拠点以上)で超えていること)
+#   地震は列車より周波数が低く、列車用の 8〜25 Hz では Bamba で小さく出るため、帯域を分けている
+#   多少外しても広く候補を拾うため、基準は低めにしている
+#   (2026/8/20〜24 の2〜20 Hz では、気象庁の震源リストにある地震5件(8/20 00:50 浦河沖 M4.0、
+#    00:55 浦河沖 M3.5、8/23 02:00 茨城県南部 M5.9、22:45 浦河沖、8/24 01:36)は3〜4拠点で20倍以上。
+#    列車や日中の揺れで20倍を超えたのは、同時には多くて2拠点だった)
+QUAKE_BAND = (2.0, 20.0)
+QUAKE_RATIO = 20.0
+QUAKE_MIN_STATIONS = 3
+# 拠点ごとに、この秒数のずれは同じころとみなす(地震の揺れが拠点に届く時間の差など)
 QUAKE_MARGIN = 30.0
+# 地震の揺れがいちばん大きい時刻からこの秒数以内に最大がある揺れを、地震とみなす
+#   地震の揺れは数分続くので、そのあいだに通った列車まで地震にしないため
+#   (2026/8/23 22:40 の普通 函館方面は、22:45:45 の地震の最中の 22:47:35 に通っていた)
+QUAKE_PEAK_SECONDS = 60.0
 # 大幅な遅れを見込む上限 [分]。時刻どおり・ふつうの遅れ・形?で見つからなかった列車だけに使う
 #   (2026/8/22 16:38 の北斗 函館方面は、単線の行き違いなどで約19分遅れて 16:55 に通っていた。
 #    2026/8/23 22:40 の普通 函館方面は、22:45 の地震のあと 22:47 に通っていた)
@@ -174,21 +184,75 @@ def classify_shape(filtered, day, events):
     elif ev["asym"] > ASYM_HIGH:
       ev["dir"] = ASYM_DIRECTIONS["after_larger"]
 
-# ほかの拠点の揺れの大きさを調べ、地震らしい揺れに印を付ける
-#   ev["others"] ... {拠点名: 揺れの前後 QUAKE_MARGIN 秒での、雑音に対する最大の倍率}
-#   ev["quake"]  ... 地震とみなしたか
-def mark_earthquakes(traces, station, day, events):
-  others = {}
+# 全拠点の揺れから地震を探し、揺れの一覧に印を付ける
+#   Bamba で拾った揺れと重なる地震は、その揺れに ev["quake"] = True を付ける
+#   Bamba で拾えていない地震(Bamba では小さかったもの)は、地震だけの揺れとして events に加える
+#   ev["others"] ... {拠点名: 揺れの前後 QUAKE_MARGIN 秒での、QUAKE_BAND の雑音に対する最大の倍率}
+#   times, ratio ... 拠点(station)の列車用の帯域での窓ごとの時刻と倍率(地震だけの揺れの大きさに使う)
+def mark_earthquakes(traces, station, day, events, times, ratio):
+  series = {}
   for name, tr in traces.items():
-    if name != station:
-      t, rms = windowed_rms(band_filtered(tr), day)
-      others[name] = (t, rms / noise_level(rms))
+    f = tr.copy()
+    f.detrend("demean")
+    f.filter("bandpass", freqmin=QUAKE_BAND[0], freqmax=QUAKE_BAND[1], corners=4, zerophase=True)
+    t, rms = windowed_rms(f, day)
+    series[name] = (t, np.where(rms > 0, rms / noise_level(rms), np.nan))
+
+  # 拠点ごとに、前後 QUAKE_MARGIN 秒での最大の倍率を、1日の窓(RMS_WINDOW 秒ごと)にそろえる
+  count = int(24 * 3600 / RMS_WINDOW)
+  half = int(QUAKE_MARGIN / RMS_WINDOW)
+  peaks, grids = [], []
+  for t, r in series.values():
+    grid = np.full(count, np.nan)
+    idx = (t // RMS_WINDOW).astype(int)
+    ok = (idx >= 0) & (idx < count)
+    grid[idx[ok]] = r[ok]
+    grids.append(grid)
+    peaks.append([np.nanmax(grid[max(0, k - half):k + half + 1]) if np.isfinite(grid[max(0, k - half):k + half + 1]).any()
+                  else np.nan for k in range(count)])
+  peaks = np.array(peaks)
+  available = np.isfinite(peaks).sum(axis=0)
+  need = np.maximum(2, np.minimum(QUAKE_MIN_STATIONS, available))
+  is_quake = (available >= 2) & ((peaks >= QUAKE_RATIO).sum(axis=0) >= need)
+
+  # 続いている窓をまとめて、地震の区間 [始まり, 終わり, いちばん大きい時刻] にする
+  #   いちばん大きい時刻は、全拠点の倍率(対数)の合計が最大の窓
+  score = np.nansum(np.log10(np.clip(np.array(grids), 1, None)), axis=0)
+  quakes = []
+  for k in np.flatnonzero(is_quake):
+    start, end = k * RMS_WINDOW, (k + 1) * RMS_WINDOW
+    if quakes and start - quakes[-1][1] <= MERGE_GAP:
+      quakes[-1][1] = end
+    else:
+      quakes.append([start, end])
+  for q in quakes:
+    k0, k1 = int(q[0] // RMS_WINDOW), int(q[1] // RMS_WINDOW)
+    q.append((k0 + int(np.argmax(score[k0:k1])) + 0.5) * RMS_WINDOW)
+
   for ev in events:
     ev["others"] = {}
-    for name, (t, ratio) in others.items():
+    for name, (t, r) in series.items():
+      if name == station:
+        continue
       sel = (t >= ev["start"] - QUAKE_MARGIN) & (t <= ev["end"] + QUAKE_MARGIN)
-      ev["others"][name] = float(np.nanmax(ratio[sel])) if sel.any() else 0.0
-    ev["quake"] = sum(r >= QUAKE_RATIO for r in ev["others"].values()) >= QUAKE_MIN_STATIONS
+      ev["others"][name] = float(np.nanmax(r[sel])) if sel.any() and np.isfinite(r[sel]).any() else 0.0
+    ev["quake"] = any(abs(ev["peak"] - qp) <= QUAKE_PEAK_SECONDS for _, _, qp in quakes)
+
+  # Bamba で拾えていない地震を加える
+  for q0, q1, qp in quakes:
+    if any(ev["quake"] and abs(ev["peak"] - qp) <= QUAKE_PEAK_SECONDS for ev in events):
+      continue
+    sel = np.flatnonzero((times >= q0) & (times <= q1))
+    sel = sel[np.isfinite(ratio[sel])] if len(sel) else sel
+    peak = qp
+    ev = {"start": q0, "end": q1, "peak": peak, "ratio": float(np.nanmax(ratio[sel])) if len(sel) else 0.0,
+          "quake": True, "asym": None, "dir": None, "duration": q1 - q0, "others": {}}
+    for name, (t, r) in series.items():
+      if name != station:
+        sel2 = (t >= q0 - QUAKE_MARGIN) & (t <= q1 + QUAKE_MARGIN)
+        ev["others"][name] = float(np.nanmax(r[sel2])) if sel2.any() and np.isfinite(r[sel2]).any() else 0.0
+    events.append(ev)
+  events.sort(key=lambda ev: ev["peak"])
 
 # 揺れの形から見た方面が、時刻表のラベルの方面と食い違っていないか
 def direction_agrees(ev, label):
@@ -549,7 +613,7 @@ def main():
   noise = noise_level(rms)
   events = detect_events(times, rms, noise)
   classify_shape(filtered, day, events)
-  mark_earthquakes(traces, args.station, day, events)
+  mark_earthquakes(traces, args.station, day, events, times, rms / noise)
   timetable = load_timetable(args.timetable) if args.timetable else []
   quakes = [ev for ev in events if ev["quake"]]
   log_message(f"  拾い出した揺れ: {len(events)}件(うち地震とみなしたもの: {len(quakes)}件 "
@@ -576,7 +640,7 @@ def main():
     writer = csv.writer(f)
     writer.writerow(["開始", "最大", "終了", "長さ[秒]", "最大の倍率", "前後の比(後/前)",
                      "揺れの形から見た方面", "時刻表の列車", "貨物列車の候補", "地震",
-                     "ほかの拠点の最大の倍率", f"揺れの長さ(最大から{DURATION_DB:g}dB)[秒]"])
+                     f"ほかの拠点の最大の倍率({QUAKE_BAND[0]:g}〜{QUAKE_BAND[1]:g} Hz)", f"揺れの長さ(最大から{DURATION_DB:g}dB)[秒]"])
     for ev in events:
       writer.writerow([hhmmss(ev["start"]), hhmmss(ev["peak"]), hhmmss(ev["end"]),
                        f"{ev['end'] - ev['start']:.0f}", f"{ev['ratio']:.1f}",
