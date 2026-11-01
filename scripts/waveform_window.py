@@ -38,6 +38,8 @@ def period_strings(ordered_st):
 
 # 拠点を2x2に並べる表示ができる拠点数
 GRID_STATIONS = 4
+# 震源推定に必要な拠点数(P波・S波の到着時刻を使うので3拠点から)
+HYPOCENTER_MIN_STATIONS = 3
 
 # 拠点名の一覧(並べ替え後の順、重複なし)
 def station_names(ordered_st):
@@ -243,9 +245,10 @@ def open_waveform_window(parent, st, title_str, return_to=None):
              command=lambda: run_for_station(analyze_jma_scale)).pack(side=tk.LEFT, padx=(0, 10))
   ttk.Button(control_frame, text="P波・S波検出",
              command=lambda: run_for_station(plot_ps_arrival_time)).pack(side=tk.LEFT, padx=(0, 10))
-  # 「震源推定」ボタン(4拠点のときだけ。全拠点の波形を使う)
+  # 「震源推定」ボタン(3拠点以上のとき。全拠点の波形を使う)
+  #   P波だけでは4拠点が必要だが、S波の到着時刻も使うので3拠点でも震源を求められる
   # 上の2つは選んだ拠点についての処理なので、縦の区切り線で分ける
-  if can_grid:
+  if len(stations) >= HYPOCENTER_MIN_STATIONS:
     ttk.Separator(control_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=(10, 20))
     ttk.Button(control_frame, text="震源推定",
                command=lambda: plot_hypocenter(ordered_st)).pack(side=tk.LEFT, padx=(0, 10))

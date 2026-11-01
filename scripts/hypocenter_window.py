@@ -8,15 +8,17 @@ from datetime import timedelta
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
+from matplotlib.text import Annotation
 
 from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, fit_plane_wave, locate_grid_ps,
-                        pick_filtered, refine_p, pick_s, HORIZONTAL_RANGE)
+                        pick_filtered, refine_p, pick_s, estimate_far, HORIZONTAL_RANGE)
 from plot_common import NM_TO_CM, get_component_color
 import gsi_tiles
 from ps_picker import load_params, save_params
 from log_common import log_message
 import app_paths
 import jma_match
+from obspy.geodetics import gps2dist_azimuth
 
 # 設定ファイル(P波・S波検出とは別に保存する)
 SETTINGS_FILE = app_paths.ETC_DIR / "hypocenter_params.json"
@@ -27,16 +29,20 @@ SLIDER_SPECS = [
   ("p_lta",  "P波 LTA [秒]",       1.0, 60.0, 0.5),
   ("p_thr",  "P波 閾値",           1.0, 8.0,  0.1),
   ("window", "同時検出の幅 [秒]",  0.5, 10.0, 0.5),
-  ("s_search", "S波を探す範囲 [秒]", 0.5, 10.0, 0.1),
+  ("s_search", "S波を探す範囲 [秒]", 0.5, 60.0, 0.5),
   ("vp",     "P波の速度 [km/s]",   2.0, 8.0,  0.1),
   ("vp_vs",  "vp/vs",              1.5, 2.2,  0.01),
+  ("omori_k", "大森係数 k [km/s]",  5.0, 10.0, 0.1),
 ]
 
 # パラメータのデフォルト値
 #   速度は有珠山周辺の浅い地震に合わせている(有珠山直下の地震の候補16件で、気象庁の震央に最も近くなったのは
 #   P波 3.0 km/s、vp/vs 1.73〜1.9。P波 5.5 km/s では平均 5.5 km 離れた)
 #   S波を探す範囲は、P波からこの秒数後まで(候補16件の S-P時間は 0.5〜1.6秒)
-DEFAULT_PARAMS = dict(p_sta=2.5, p_lta=10.0, p_thr=2.6, window=3.0, s_search=3.0, vp=3.0, vp_vs=1.73)
+#   遠い地震の S波も探せるよう、上限は60秒にしている(2026/8/23 22:45 の浦河沖(188 km)の S-P時間の見込みは約21秒)
+#   大森係数は遠い地震の距離(S-P時間 × k)に使う(P波・S波検出の画面と同じ 8.0 km/s)
+DEFAULT_PARAMS = dict(p_sta=2.5, p_lta=10.0, p_thr=2.6, window=3.0, s_search=3.0, vp=3.0, vp_vs=1.73,
+                      omori_k=8.0)
 
 # S波を最初から計算に使わない拠点(右クリックで使うようにできる)
 #   Bamba は雑音が多く、S波の検出がずれやすいため(候補16件で S-P時間が 0.5〜2.0秒とばらついた)
@@ -55,6 +61,15 @@ PICK_KEYS = ("p_sta", "p_lta", "p_thr", "window")
 
 # 波形の表示に使う帯域通過フィルター [Hz](小さな地震を見やすくする。検出には使わない)
 DISPLAY_BAND = (2.0, 20.0)
+
+# 結果の欄の文字の大きさ・行の間隔・行数の上限・色(見出し、本文、注意、気象庁の震源リスト)
+#   見出し(◆〜「: 」まで)だけ色付きの太字にし、値は黒にする。気象庁の震源リストの見出しは別の色にする
+RESULT_FONTSIZE = 9
+RESULT_LINESPACING = 1.45
+RESULT_MAX_LINES = 22
+RESULT_COLORS = {"head": "#d35400", "body": "black", "warn": "#c62828", "jma": "#00695c"}
+# 結果の文字列で、値を注意の色(赤)で表示する印(画面とテキスト出力では表示しない)
+WARN_MARK = "\x01"
 
 # 配置図の横:縦の比(拠点が東西に並んでいるので横長にする)
 MAP_ASPECT = 1.5
@@ -75,7 +90,7 @@ def format_time(t):
   return t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-4]
 
 # 震源推定の画面を開く
-#   st ... 4拠点分の波形(上下動で P波、水平動(N・E)で S波を検出する)
+#   st ... 3拠点以上の波形(上下動で P波、水平動(N・E)で S波を検出する)
 def plot_hypocenter(st):
   # --- データ取得: 拠点ごとの上下動と水平動 ---
   traces = {tr.stats.station: tr for tr in st.select(channel="*U*")}
@@ -118,14 +133,16 @@ def plot_hypocenter(st):
   # ==========================================
   # 図のレイアウト: 左に拠点ごとの波形(上下動・水平動)、右上に拠点の配置図、右下にパラメータと結果
   # ==========================================
-  fig = plt.figure(figsize=(15, 9))
+  #   結果の欄の行が多いので、縦を少し長くしている
+  fig = plt.figure(figsize=(15, 10))
   if fig.canvas.manager is not None:
     fig.canvas.manager.set_window_title(f"震源推定 - {', '.join(names)} ({start_str})")
   # グラフ領域の左余白と幅、グラフの間隔と下余白(グラフの縦幅は拠点数から決める)
   left, width = 0.06, 0.50
-  gap, bottom = 0.04, 0.08
+  # (下に線の意味を2行で書くので、下余白を少し広くしている)
+  gap, bottom = 0.04, 0.10
   n = len(names)
-  h = (0.84 - gap * (n - 1)) / n
+  h = (0.82 - gap * (n - 1)) / n
 
   # 拠点ごとの時刻と、表示する波形(フィルターなし・あり) [cm/s]
   times, raw_data, filtered_data = {}, {}, {}
@@ -190,6 +207,10 @@ def plot_hypocenter(st):
     hor_lines[name] = {c: ax.plot(t, f, lw=0.5, color=get_component_color(c), visible=False)[0]
                        for c, (t, _raw, f) in hor_display[name].items()}
   wave_axes[names[-1]].set_xlabel("時刻 (s)")
+  # 線の意味(グラフの下に書く)
+  fig.text(left, 0.008, "線: 赤の破線 = P波(自動)、橙の実線 = P波(手で指定)、マゼンタの破線 = S波(自動)、\n"
+           "紫の実線 = S波(手で指定)(薄い線は計算に使わない S波)、青緑の点線 = 気象庁の震源からの P波の到達見込み、"
+           "灰色 = CFT(右の軸)と閾値", fontsize=8, color="#333333", va="bottom", linespacing=1.3)
 
   # CFT の線と閾値の線(内容は update() で設定)
   cft_lines, thr_lines = {}, {}
@@ -199,20 +220,29 @@ def plot_hypocenter(st):
     thr_lines[name] = cft_axes[name].axhline(0, color=cft_color, ls=":", lw=0.8)
 
   # --- 拠点の配置図 ---
-  map_ax = fig.add_axes([0.60, 0.615, 0.38, 0.335])
+  map_ax = fig.add_axes([0.60, 0.655, 0.38, 0.30])
 
   # --- 結果のテキスト ---
-  #   気象庁の震源リストの地震も書くので、少し小さい文字にする
-  result_text = fig.text(0.62, 0.23, "", fontsize=9, va="top", linespacing=1.3)
+  #   見やすくするため、1行ずつ別の文字にして、見出し(◆)・注意・気象庁の震源リストを色分けする
+  #   (行の高さは、文字の大きさ × RESULT_LINESPACING を図の高さの割合にしたもの)
+  result_top = 0.30
+  line_height = RESULT_FONTSIZE * RESULT_LINESPACING / 72 / fig.get_figheight()
+  #   1行は「見出し」と「値」の2つの文字からなり、値は見出しのすぐ右に置く(見出しの右下に合わせる)
+  result_rows = []
+  for i in range(RESULT_MAX_LINES):
+    label = fig.text(0.61, result_top - (i + 1) * line_height, "", fontsize=RESULT_FONTSIZE, va="bottom")
+    value = Annotation("", xy=(1, 0), xycoords=label, fontsize=RESULT_FONTSIZE, va="bottom")
+    fig.add_artist(value)
+    result_rows.append((label, value))
 
   # ==========================================
   # スライダー(前回の設定で初期化)
   # ==========================================
   initial = load_params(SETTINGS_FILE, SLIDER_SPECS, DEFAULT_PARAMS)
   sliders = {}
-  top, step_y = 0.485, 0.031
+  top, step_y = 0.54, 0.026
   for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
-    sax = fig.add_axes([0.73, top - i * step_y, 0.20, 0.022])
+    sax = fig.add_axes([0.73, top - i * step_y, 0.20, 0.019])
     sliders[key] = Slider(sax, label, vmin, vmax, valinit=initial[key], valstep=vstep)
 
   # --- 状態: 自動検出の結果、手で指定した時刻、計算から外した拠点 ---
@@ -309,8 +339,8 @@ def plot_hypocenter(st):
     # 南北の半分の幅 [km](東西はその MAP_ASPECT 倍)。拠点が東西に収まるように決める
     half_y = radius * 1.6 / MAP_ASPECT
     loc = res.get("grid")
-    if loc is not None and not loc["at_edge"]:
-      # 近い地震: 震央を星で示す
+    if loc is not None and not loc["at_edge"] and res.get("far") is None:
+      # 近い地震: 震央を星で示す(遠い地震として推定したときは、到来方向の矢印にする)
       # 拠点の間にあると拠点名と重なるため、説明の文字は凡例に出す
       depth = "深さ不定" if loc["at_top"] else f"深さ {loc['depth']:.1f} km"
       # 残差が大きいときは、当てにならないので白抜きにする
@@ -326,8 +356,10 @@ def plot_hypocenter(st):
       map_ax.annotate("", xy=(length * np.sin(az), length * np.cos(az)), xytext=(0, 0),
                       arrowprops=dict(arrowstyle="->", color=p_color, lw=2), zorder=4)
       # 凡例用の見えない線(矢印そのものは凡例に出せないため)
+      far = res.get("far")
       map_ax.plot([], [], "-", color=p_color, lw=2,
-                  label=f"到来方向 {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})")
+                  label=f"到来方向 {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})"
+                  + (f"  距離 {far['distance']:.0f} km" if far else ""))
     half_x = half_y * MAP_ASPECT
     # 気象庁の震源リストの地震: 地図の範囲内なら震央、範囲外なら方位を示す
     q = state["jma"]
@@ -353,7 +385,9 @@ def plot_hypocenter(st):
   def result_message(picks, res):
     s_picks = current_s_picks()
     # 開始時刻はウィンドウのタイトルにあるので書かない(行数を減らすため)
-    lines = ["P波到着(最初の拠点からの差)・S-P時間:"]
+    #   見出しの行は「◆」で始め、注意の行は「※」で始める。見出しの値を赤にするときは WARN_MARK を付ける
+    #   (show_result で色分けする)
+    lines = ["◆P波到着(最初の拠点からの差)・S-P時間:"]
     used = [nm for nm in names if picks[nm] is not None and nm not in excluded]
     t_first = min((picks[nm] for nm in used), default=None)
     for nm in names:
@@ -370,37 +404,77 @@ def plot_hypocenter(st):
         sp = "  S波 検出なし"
       lines.append(f"  {nm}: {format_time(ref_time + picks[nm])[11:]}  +{diff:.3f} 秒{mark}{sp}")
     if res.get("azimuth") is not None:
-      lines.append(f"到来方向: {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})"
+      lines.append(f"◆到来方向: {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})"
                    f"  見かけの速度: {res['app_v']:.1f} km/s  残差: {res['plane_rms']:.3f} 秒")
     else:
-      lines.append("到来方向: 3拠点以上の到着時刻が必要です")
+      lines.append(f"◆到来方向: {WARN_MARK}3拠点以上の到着時刻が必要です")
     loc = res.get("grid")
     if loc is None:
-      lines.append(f"震源: P波 3拠点以上と、P波・S波を合わせて {MIN_OBSERVATIONS}つ以上の到着時刻が必要です")
+      lines.append(f"◆震源: {WARN_MARK}P波 3拠点以上と、P波・S波を合わせて {MIN_OBSERVATIONS}つ以上の到着時刻が必要です")
     elif loc["at_edge"]:
-      lines.append(f"震源: 探索範囲(±{HORIZONTAL_RANGE:.0f} km)の外です。"
-                   "遠い地震のため、位置が決まりません")
+      # 遠い地震として推定できたときは、その結果だけを書く(行数を減らすため)
+      if res.get("far") is None:
+        lines.append(f"◆震源: {WARN_MARK}探索範囲(±{HORIZONTAL_RANGE:.0f} km)の外です。"
+                     "遠い地震のため、位置が決まりません")
     else:
       lat, lon = proj.to_latlon(loc["x"], loc["y"])
       depth = ("深さは決まりません(浅い方の端)" if loc["at_top"]
                else f"深さ {loc['depth']:.1f} km(海面下)")
-      lines.append(f"震源(P波 {res['n_p']}・S波 {res['n_s']}): 北緯 {lat:.4f}° 東経 {lon:.4f}° {depth}")
-      lines.append(f"発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒"
-                   + ("  ※残差が大きく、遠い地震か検出のずれ" if loc["rms"] > MAX_LOCAL_RMS else ""))
+      lines.append(f"◆震源(P波 {res['n_p']}・S波 {res['n_s']}): 北緯 {lat:.4f}° 東経 {lon:.4f}° {depth}")
+      lines.append(f"  発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒")
+      if loc["rms"] > MAX_LOCAL_RMS:
+        lines.append("  ※残差が大きく、遠い地震か、到着時刻の検出がずれています")
+
+    far = res.get("far")
+    if far is not None:
+      lines.append(f"◆遠い地震として(到来方向と S-P時間から): 距離 {far['distance']:.0f} km"
+                   f"(S-P {far['sp']:.1f} 秒 × k {sliders['omori_k'].val:.1f})")
+      lines.append(f"  震央: 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
+    elif res.get("azimuth") is not None and loc is not None and (loc["at_edge"] or loc["rms"] > MAX_LOCAL_RMS):
+      lines.append(f"◆遠い地震として: {WARN_MARK}S波の到着時刻が必要です")
+      lines.append("  ※「S波を探す範囲」を S-P時間より長くしてください")
 
     # 気象庁の震源リストの地震(最初の P波に合うものを選ぶ)と、推定した結果との比較
     p_abs = t_ref + timedelta(seconds=t_first) if t_first is not None else None
     jma_text, q = jma_match.window_summary(jma_hits, jma_available, t_ref, p_abs, wide=True)
     state["jma"] = q
-    lines += jma_text
+    lines += ["◆" + jma_text[0]] + jma_text[1:]
     if q is not None:
       if loc is not None and not loc["at_edge"] and loc["rms"] <= MAX_LOCAL_RMS:
         qx, qy = proj.to_xy(q["緯度"], q["経度"])
         lines.append(f" 推定した震央との距離: {np.hypot(qx - loc['x'], qy - loc['y']):.1f} km")
       elif res.get("azimuth") is not None:
         d = (res["azimuth"] - q["azimuth"] + 180) % 360 - 180
-        lines.append(f" 到来方向との差: {d:+.0f}°")
+        text = f" 到来方向との差: {d:+.0f}°"
+        if far is not None:
+          dist_m, _, _ = gps2dist_azimuth(far["lat"], far["lon"], q["緯度"], q["経度"])
+          text += (f"  距離の差: {far['distance'] - q['dist_km']:+.0f} km"
+                   f"  推定した震央との距離: {dist_m / 1000:.0f} km")
+        lines.append(text)
     return "\n".join(lines)
+
+  # 結果の欄に表示する(1行ずつ)
+  #   「◆」で始まる行は、「: 」までを見出し(色付きの太字)、残りを値(黒)にする
+  #   値が WARN_MARK で始まるときと、「※」で始まる行は、注意の色(赤)にする
+  #   「◆気象庁」の見出しは気象庁の色にする
+  def show_result(message):
+    lines = message.splitlines()[:RESULT_MAX_LINES]
+    for i, (label, value) in enumerate(result_rows):
+      line = lines[i] if i < len(lines) else ""
+      head, body = "", line
+      if line.startswith("◆"):
+        k = line.find(": ")
+        head, body = (line, "") if k < 0 else (line[:k + 2], line[k + 2:])
+      warn = body.startswith(WARN_MARK) or body.lstrip().startswith("※")
+      label.set_text(head)
+      label.set_color(RESULT_COLORS["jma" if head.startswith("◆気象庁") else "head"])
+      label.set_fontweight("bold")
+      value.set_text(body.replace(WARN_MARK, ""))
+      value.set_color(RESULT_COLORS["warn" if warn else "body"])
+
+  # テキスト出力用(注意の印を除く)
+  def plain(message):
+    return message.replace(WARN_MARK, "")
 
   # ==========================================
   # 更新処理
@@ -412,7 +486,7 @@ def plot_hypocenter(st):
     if pick_params != state["pick_params"]:
       # 検出のパラメータが変わったときだけ、P波の検出をやり直す
       if params["p_lta"] <= params["p_sta"]:
-        result_text.set_text("LTA は STA より長くしてください。\nスライダーを調整してください。")
+        show_result("※LTA は STA より長くしてください。\n※スライダーを調整してください。")
         fig.canvas.draw_idle()
         return
       auto, cfts = pick_p_arrivals(traces, ref_time, params["p_sta"], params["p_lta"],
@@ -479,6 +553,12 @@ def plot_hypocenter(st):
     if len(used) >= 3 and len(obs) >= MIN_OBSERVATIONS:
       res["grid"] = locate_grid_ps(np.array([o[0] for o in obs]), np.array([o[1] for o in obs]),
                                    np.array([o[2] for o in obs]))
+    # 近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として
+    # 到来方向と S-P時間から震央を推定する
+    loc = res.get("grid")
+    if loc is None or loc["at_edge"] or loc["rms"] > MAX_LOCAL_RMS:
+      res["far"] = estimate_far((proj.lat0, proj.lon0), res.get("azimuth"),
+                                [s_picks[nm] - picks[nm] for nm in used_s], params["omori_k"])
     state["result"] = res
 
     message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ
@@ -489,7 +569,7 @@ def plot_hypocenter(st):
         jma_lines[nm].set_xdata([x, x])
       jma_lines[nm].set_visible(q is not None)
     draw_map(res)
-    result_text.set_text(message)
+    show_result(message)
     fig.canvas.draw_idle()
 
   for s in sliders.values():
@@ -520,7 +600,7 @@ def plot_hypocenter(st):
   fig.canvas.mpl_connect("button_press_event", on_click)
 
   # --- ボタン: 自動検出に戻す・リセット・テキスト出力 ---
-  aax = fig.add_axes([0.62, 0.25, 0.11, 0.035])
+  aax = fig.add_axes([0.62, 0.315, 0.11, 0.032])
   btn_auto = Button(aax, "自動検出に戻す")
   def back_to_auto(_):
     manual.clear()
@@ -533,7 +613,7 @@ def plot_hypocenter(st):
     fig.canvas.draw_idle()
   btn_auto.on_clicked(back_to_auto)
 
-  rax = fig.add_axes([0.745, 0.25, 0.08, 0.035])
+  rax = fig.add_axes([0.745, 0.315, 0.08, 0.032])
   btn_reset = Button(rax, "リセット")
   def reset(_):
     for key, val in DEFAULT_PARAMS.items():
@@ -544,20 +624,20 @@ def plot_hypocenter(st):
     update()
   btn_reset.on_clicked(reset)
 
-  pax = fig.add_axes([0.84, 0.25, 0.10, 0.035])
+  pax = fig.add_axes([0.84, 0.315, 0.10, 0.032])
   btn_print = Button(pax, "テキスト出力")
   def print_result(_):
     log_message("--- 震源推定 ---")
     for k, s in sliders.items():
       log_message(f"{k}: {s.val}")
-    for line in result_message(current_picks(), state["result"] or {}).splitlines():
+    for line in plain(result_message(current_picks(), state["result"] or {})).splitlines():
       log_message(line)
   btn_print.on_clicked(print_result)
 
-  fig.text(0.605, 0.53, "パラメータ", fontsize=12, weight="bold")
+  fig.text(0.605, 0.578, "パラメータ", fontsize=12, weight="bold")
 
   # --- 配置図の背景の切り替え(標準地図 → 色別標高図 → なし) ---
-  lax = fig.add_axes([0.68, 0.52, 0.095, 0.035])
+  lax = fig.add_axes([0.68, 0.57, 0.095, 0.032])
   def layer_label():
     layer = state["layer"]
     return f"地図: {gsi_tiles.LAYERS[layer][0] if layer else 'なし'}"
@@ -571,7 +651,7 @@ def plot_hypocenter(st):
   btn_layer.on_clicked(toggle_layer)
 
   # --- 波形のフィルター切り替え(表示だけ。P波の検出は元の波形で行う) ---
-  fax = fig.add_axes([0.78, 0.52, 0.10, 0.035])
+  fax = fig.add_axes([0.78, 0.57, 0.10, 0.032])
   def filter_label():
     return (f"表示: {DISPLAY_BAND[0]:g}-{DISPLAY_BAND[1]:g}Hz" if state["filtered"]
             else "表示: フィルターなし")
@@ -590,7 +670,7 @@ def plot_hypocenter(st):
   btn_filter.on_clicked(toggle_filter)
 
   # --- 波形の切り替え(上下動 ⇔ 水平動)。クリックで指定するのも P波 ⇔ S波 に変わる ---
-  cax_btn = fig.add_axes([0.885, 0.52, 0.095, 0.035])
+  cax_btn = fig.add_axes([0.885, 0.57, 0.095, 0.032])
   def comp_label():
     return "波形: 水平動(S波)" if state["horizontal"] else "波形: 上下動(P波)"
   btn_comp = Button(cax_btn, comp_label())

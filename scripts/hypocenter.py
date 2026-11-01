@@ -198,3 +198,29 @@ def locate_grid_ps(pos, t, v, horizontal=HORIZONTAL_RANGE, depth=DEPTH_RANGE, to
   return dict(x=x, y=y, depth=z, origin=best_origin, rms=best_rms,
               at_edge=(max(abs(x), abs(y)) >= horizontal - 0.5) or z >= depth - 0.5,
               at_top=z <= top + 0.05)
+
+# --- 遠い地震: 到来方向と S-P時間から震央を推定する ---
+#   拠点の間隔が数kmしかないため、遠い地震は P波・S波の到着時刻でも位置が決まらない
+#   そこで、P波から求めた到来方向に、S-P時間から大森公式(距離 = k × S-P時間)で求めた距離だけ進んだ点を震央とする
+#   大森公式の距離は震源距離なので、震源が深いと震央距離は少し短くなる(ここでは区別しない)
+EARTH_RADIUS_KM = 6371.0
+
+# (lat, lon) から方位 azimuth [度] に dist_km 進んだ点の (緯度, 経度)(球面で計算する)
+def destination(lat, lon, azimuth, dist_km):
+  phi1, lam1, theta = np.radians(lat), np.radians(lon), np.radians(azimuth)
+  delta = dist_km / EARTH_RADIUS_KM
+  phi2 = np.arcsin(np.sin(phi1) * np.cos(delta) + np.cos(phi1) * np.sin(delta) * np.cos(theta))
+  lam2 = lam1 + np.arctan2(np.sin(theta) * np.sin(delta) * np.cos(phi1),
+                           np.cos(delta) - np.sin(phi1) * np.sin(phi2))
+  return float(np.degrees(phi2)), float(np.degrees(lam2))
+
+# 到来方向と S-P時間(拠点ごとの値の平均)から震央を推定する
+#   center ... 拠点の中心 (緯度, 経度)、sp_times ... S-P時間 [秒] のリスト、k ... 大森係数 [km/s]
+# 戻り値: dict(sp(平均の S-P時間), distance [km], lat, lon) または None
+def estimate_far(center, azimuth, sp_times, k):
+  if azimuth is None or not sp_times:
+    return None
+  sp = float(np.mean(sp_times))
+  distance = k * sp
+  lat, lon = destination(center[0], center[1], azimuth, distance)
+  return dict(sp=sp, distance=distance, lat=lat, lon=lon)
