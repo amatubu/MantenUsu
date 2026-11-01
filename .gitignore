@@ -16,3 +16,4 @@ etc/hypocenter_params.json
 UsuMantenViewer.app
 *.pdf
 *.pptx
+._*
