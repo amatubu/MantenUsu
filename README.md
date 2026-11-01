@@ -55,6 +55,7 @@
  ┣ 📁 daily_zips/           # 日ごとのZIPファイル(Git の管理外)
  ┣ 📁 output/               # キャッシュ・履歴(Git の管理外)
  ┣ 📁 batch_plots/          # バッチ処理で保存した画像(Git の管理外)
+ ┣ 📁 jma_hypocenter/       # 気象庁の震源リスト(日ごとのCSV、Git の管理外)
  ┣ 📜 requirements.txt      # 実行に必要なライブラリ
  ┣ 📜 requirements-build.txt # ビルドに必要なライブラリ(PyInstaller を含む)
  ┣ 📜 start_env.bat         # Windows: conda 環境を有効にしたコマンドプロンプトを開く
@@ -153,6 +154,7 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 | `simulate_size.py` | 日ごと・月ごとのデータ量を集計する |
 | `screen_events.py` | 地震らしい期間の一覧から、近い地震の候補を絞り込む（一覧のCSVと確認用の画像を出力） |
 | `train_day_plot.py` | 1日分の波形から列車らしい揺れを拾い、洞爺駅の時刻表と対応させる（貨物列車の候補・地震も判別。`--stack` で1時間スタック波形に重ねた画像とPDFも出力。時刻表は `etc/train_timetable_template.xlsx` で入力してCSVに保存） |
+| `jma_hypocenter.py` | 気象庁の震源リスト（日ごと・暫定値）を取得し、`jma_hypocenter` フォルダに日ごとのCSVとして保存する（日付を省略すると観測の最初の日から昨日まで。取得済みの日は取り直さないが、最後の日だけは取り直して前回との違いを表示する） |
 
 ---
 
@@ -178,5 +180,6 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 - 観測には、京都大学防災研究所附属 地震災害研究センターからお借りした満点地震計を使用しています。
 - WINファイルの処理には、国立研究開発法人 防災科学技術研究所が「[連続波形ダウンロード](https://www.vnet.bosai.go.jp/)」で公開しているプログラム（`win2sac_32`・`wchch_32`）を利用させていただいています。
 - 震源推定の配置図の背景には、国土地理院の[地理院タイル](https://maps.gsi.go.jp/development/ichiran.html)を利用しています。
+- 地震の照合には、気象庁の[震源リスト](https://www.data.jma.go.jp/eqev/data/daily_map/index.html)（暫定値）を利用しています。
 
 ここに記して感謝いたします。

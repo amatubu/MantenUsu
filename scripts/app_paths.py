@@ -33,6 +33,7 @@ OUTPUT_DIR = PROJECT_DIR / "output"                    # WINファイル・SAC�
 ZIPS_DIR = PROJECT_DIR / "daily_zips"                  # 日ごとのZIPファイル
 SERVICE_ACCOUNT_DIR = PROJECT_DIR / "service_account"  # Googleドライブのサービスアカウントと設定
 BATCH_PLOTS_DIR = PROJECT_DIR / "batch_plots"          # バッチ処理で保存する画像
+JMA_HYPOCENTER_DIR = PROJECT_DIR / "jma_hypocenter"    # 気象庁の震源リスト(日ごとのCSV)
 
 
 # ユーザーのキャッシュフォルダ(消えても作り直せるもの: フォント一覧、地図のタイルなど)
