@@ -125,3 +125,76 @@ def locate_grid(xy, t, vp, horizontal=HORIZONTAL_RANGE, depth=DEPTH_RANGE):
   x, y, z = (float(v) for v in center)
   at_edge = (max(abs(x), abs(y)) >= horizontal - 0.5) or z >= depth - 0.5
   return dict(x=x, y=y, depth=z, origin=best_origin, rms=best_rms, at_edge=at_edge)
+
+# --- P波の到着時刻の決め直しと S波の検出(有珠山周辺の近い地震向け) ---
+#   STA/LTA の検出は窓の長さの分だけ時刻がずれることがあるので、その前後を AIC 法で決め直す
+#   AIC 法: 区間の各点で波形を前と後に分け、前後それぞれのばらつきから AIC を計算し、
+#   最小になる点(性質が最もはっきり変わる点)を到着時刻とする
+#   (有珠山直下の地震の候補16件では、2〜30 Hz で決め直した P波の到着時刻は、拡大した波形の立ち上がりとよく合った)
+PICK_BAND = (2.0, 30.0)
+# P波: STA/LTA で検出した時刻の AIC_BEFORE 秒前〜AIC_AFTER 秒後で決め直す
+AIC_BEFORE = 1.0
+AIC_AFTER = 0.5
+# S波: P波の S_MIN_GAP 秒後〜(P波 + 探す範囲)で、水平動のエネルギー(南北² + 東西²)に AIC 法を使う
+#   (候補16件では、S-P時間は Hokudai・Mimatsu 0.5〜1.3秒、Nizaemn 1.3〜1.6秒だった)
+S_MIN_GAP = 0.1
+
+# 検出に使う帯域通過フィルターをかけたデータ
+def pick_filtered(tr):
+  tr = tr.copy()
+  tr.data = tr.data.astype(float)
+  tr.detrend("demean")
+  tr.filter("bandpass", freqmin=PICK_BAND[0], freqmax=PICK_BAND[1], corners=4, zerophase=True)
+  return tr.data
+
+# data[i0:i1] で AIC が最小になるインデックス(区間が短すぎれば None)
+def aic_onset(data, i0, i1):
+  from obspy.signal.trigger import aic_simple
+  i0, i1 = max(0, i0), min(len(data), i1)
+  if i1 - i0 < 20:
+    return None
+  aic = aic_simple(data[i0:i1])
+  return i0 + 5 + int(np.argmin(aic[5:-5]))
+
+# 時刻(基準時刻からの秒)の t0〜t1 で、AIC が最小になる時刻
+#   data ... pick_filtered の結果(または水平動のエネルギー)、offset ... 記録開始の基準時刻からの秒
+def aic_time(data, df, offset, t0, t1):
+  i = aic_onset(data, int((t0 - offset) * df), int((t1 - offset) * df))
+  return None if i is None else offset + i / df
+
+# P波の到着時刻を AIC 法で決め直す。決め直せなければ元の時刻
+def refine_p(data_u, df, offset, t_p):
+  t = aic_time(data_u, df, offset, t_p - AIC_BEFORE, t_p + AIC_AFTER)
+  return t_p if t is None else t
+
+# S波の到着時刻(水平動のエネルギー energy に AIC 法を使う)
+def pick_s(energy, df, offset, t_p, search):
+  return aic_time(energy, df, offset, t_p + S_MIN_GAP, t_p + search)
+
+# P波・S波の到着時刻から震源を求める(グリッドサーチ)
+#   pos ... 観測した拠点の座標 [km] の配列 (n, 3)。3列目は高さ(海面からの高度。上が正)
+#   t   ... 到着時刻 [秒] (n,)、v ... その波の速度 [km/s] (n,)(P波なら vp、S波なら vs)
+#   深さは海面からの深さ [km]。山の上の拠点の高度を考えるため、海面より上(top まで)も探す
+# 戻り値: dict(x, y, depth, origin, rms, at_edge, at_top)
+#   at_edge ... 水平方向・深い方の端で最良になった(範囲外)、at_top ... 浅い方の端(深さが決まらない)
+def locate_grid_ps(pos, t, v, horizontal=HORIZONTAL_RANGE, depth=DEPTH_RANGE, top=-1.0):
+  center = (0.0, 0.0, (top + depth) / 2)
+  half = (horizontal, horizontal, (depth - top) / 2)
+  lows, highs = (-horizontal, -horizontal, top), (horizontal, horizontal, depth)
+  for step in (1.0, 0.1, 0.01):
+    axes = [np.arange(max(c - h, lo), min(c + h, hi) + step / 2, step)
+            for c, h, lo, hi in zip(center, half, lows, highs)]
+    gx, gy, gz = np.meshgrid(*axes, indexing="ij")
+    dist = np.sqrt((gx[..., None] - pos[:, 0]) ** 2 + (gy[..., None] - pos[:, 1]) ** 2
+                   + (gz[..., None] + pos[:, 2]) ** 2)
+    travel = dist / v
+    origin = (t - travel).mean(axis=-1)
+    rms = np.sqrt(((t - travel - origin[..., None]) ** 2).mean(axis=-1))
+    k = np.unravel_index(np.argmin(rms), rms.shape)
+    center = (gx[k], gy[k], gz[k])
+    half = (step * 2,) * 3
+    best_rms, best_origin = float(rms[k]), float(origin[k])
+  x, y, z = (float(c) for c in center)
+  return dict(x=x, y=y, depth=z, origin=best_origin, rms=best_rms,
+              at_edge=(max(abs(x), abs(y)) >= horizontal - 0.5) or z >= depth - 0.5,
+              at_top=z <= top + 0.05)
