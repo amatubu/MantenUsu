@@ -34,7 +34,9 @@ from plot_common import NM_TO_CM, setup_japanese_font
 from log_common import set_console, log_message
 
 # 列車の振動を見やすくするための帯域通過フィルター [Hz]
-BAND = (5.0, 20.0)
+#   Bamba では日中を中心に 3〜6 Hz の揺れ(設置場所の固有振動とみられる)が強いので、下限を 8 Hz にしている
+#   (2026/8/21 の昼間の普通列車は、5〜20 Hz では雑音の6〜9倍だったが、8〜25 Hz では11〜20倍になった)
+BAND = (8.0, 25.0)
 # RMS を計算する窓の長さ [秒]
 RMS_WINDOW = 10.0
 # 雑音の基準(RMS の移動中央値)を取る窓の長さ [秒]
@@ -57,6 +59,11 @@ DELAY_MINUTES = 5.0
 #   (2026/8/22 20:40 の北斗 札幌方面は、時刻どおりの範囲に小さな揺れ(雑音の14倍)があり、
 #    本当の揺れ(142倍)は 3.6分遅れの 20:46 だった)
 STRONGER_FACTOR = 3.0
+# 遅れ・形?の段階では、この長さ [秒] 以上の揺れ(貨物列車らしい長い揺れ)は対応させない
+#   (2026/8/21 19:47 の北斗 札幌方面は、4.9分遅れの長い揺れ(8〜25 Hz で33秒、貨物とみられる)を
+#    取っていたが、本当は10分遅れの 19:59(20秒)だった。遅れた普通列車には30秒のもの(8/21 17:29)が
+#    あるので、その間にしている。余裕が小さいので、ほかの日で合わなければ見直す)
+DELAY_MAX_DURATION = 32.0
 # 揺れの形(最大の前後の大きさの比)から方面を見分ける
 #   函館方面は洞爺駅に近づいて減速するので後半が小さく、札幌方面は通過後に加速するので後半が大きい
 #   (2026/8/23 の Bamba.U で、後/前 は函館方面 0.23〜0.60(17本中16本)、札幌方面 1.35〜5.2(20本中19本))
@@ -84,6 +91,10 @@ QUAKE_MARGIN = 30.0
 LONG_DELAY_MINUTES = 30.0
 # ラベルにこの言葉を含む行は、線路を通らないので揺れと対応させない(時刻表の線だけ引く)
 NOT_RAIL_WORDS = ("バス",)
+# どの段階でも見つからなかった列車は、見込んだ時刻の前後(MATCH_MINUTES 分前〜DELAY_MINUTES 分後)で、
+# 雑音のこの倍率以上の揺れを探し直す(「弱い揺れ?」とする)
+#   (2026/8/21 は昼間の雑音が深夜の約4倍あり、普通列車6本が雑音の6〜9倍にしかならず拾えていなかった)
+WEAK_RATIO = 5.0
 # 揺れの長さ: 1秒ごとの RMS が最大から DURATION_DB [dB] 下がるまでの秒数
 #   (2026/8/23 の Bamba.U で、北斗 12〜28秒、普通 12〜33秒、深夜の貨物列車は13本中11本が34〜45秒)
 DURATION_DB = 20.0
@@ -256,10 +267,17 @@ def expected_time(t, label):
 #                    ただし DELAY_MINUTES 分あとまでに、方面の形が一致して STRONGER_FACTOR 倍以上
 #                    大きい揺れがあれば、そちらを遅れとして選ぶ
 #   2. 遅れ       ... 見込んだ時刻の DELAY_MINUTES 分あとまでで、まだ対応していない最も早い揺れ
+#                    (DELAY_MAX_DURATION 秒以上の長い揺れは使わない)
 #   3. 形?        ... 方面の形が食い違っていても、見込んだ時刻の前後 MATCH_MINUTES 分にある揺れ
+#                    (DELAY_MAX_DURATION 秒以上の長い揺れは使わない)
 #                    (2026/8/23 11:06 の普通 函館方面は、すぐあとに別の揺れが続いたため後半が大きく見えていた)
 #   4. 大幅な遅れ ... LONG_DELAY_MINUTES 分あとまでで、方面の形が一致する短い揺れのうち最も早いもの
 #                    (間に地震があれば「地震後の遅れ」とする)
+#   5. 見直し     ... 1・3 で方面の形がはっきり一致しない揺れを選んだ列車は、LONG_DELAY_MINUTES 分あと
+#                    までに、形がはっきり一致する短い揺れで STRONGER_FACTOR 倍以上大きいものがあれば、
+#                    そちらに替える
+#                    (2026/8/21・22 16:38 の北斗 函館方面は、時刻どおりの範囲の小さな揺れ(雑音の11〜14倍)を
+#                    取っていたが、本当は14〜19分遅れの大きな揺れ(88〜118倍)だった)
 #   ラベルに NOT_RAIL_WORDS を含む行(バスなど)は対応させない
 #   戻り値 ... [[時刻表の時刻, ラベル, 見込んだ時刻, 揺れ または None, 備考], ...]
 #   対応した揺れには ev["trains"] にラベルを入れる
@@ -296,6 +314,7 @@ def match_timetable(timetable, events):
   for m in pending():
     t, label, expected = m[:3]
     later = [ev for ev in events if free(ev) and direction_agrees(ev, label)
+             and ev["duration"] < DELAY_MAX_DURATION
              and MATCH_MINUTES * 60 < ev["peak"] - expected <= DELAY_MINUTES * 60]
     if later:
       assign(m, min(later, key=lambda ev: ev["peak"]), "(遅れ)", "遅れ?")
@@ -303,7 +322,8 @@ def match_timetable(timetable, events):
   # 3. 形?
   for m in pending():
     t, label, expected = m[:3]
-    near = [ev for ev in events if free(ev) and abs(ev["peak"] - expected) <= MATCH_MINUTES * 60]
+    near = [ev for ev in events if free(ev) and ev["duration"] < DELAY_MAX_DURATION
+            and abs(ev["peak"] - expected) <= MATCH_MINUTES * 60]
     if near:
       assign(m, max(near, key=lambda ev: ev["ratio"]), "(形?)", "形?")
 
@@ -320,9 +340,54 @@ def match_timetable(timetable, events):
         assign(m, best, "(地震後の遅れ)", "地震後の遅れ?")
       else:
         assign(m, best, "(大幅な遅れ)", "大幅な遅れ?")
+
+  # 5. 見直し
+  for m in matches:
+    t, label, expected, best, note = m
+    if not best or note not in ("", "形?") or (best.get("dir") and best["dir"] in label):
+      continue
+    later = [ev for ev in events if free(ev) and ev.get("dir") and ev["dir"] in label
+             and ev["duration"] < FREIGHT_MIN_DURATION and ev["ratio"] >= best["ratio"] * STRONGER_FACTOR
+             and MATCH_MINUTES * 60 < ev["peak"] - expected <= LONG_DELAY_MINUTES * 60]
+    if later:
+      best["trains"] = [n for n in best["trains"] if not n.startswith(train_name(t, label))]
+      ev = min(later, key=lambda ev: ev["peak"])
+      if ev["peak"] - expected <= DELAY_MINUTES * 60:
+        assign(m, ev, "(遅れ)", "遅れ?")
+      else:
+        assign(m, ev, "(大幅な遅れ)", "大幅な遅れ?")
   return matches
 
 # 時刻表と対応しなかった大きな揺れ(貨物列車の候補)か
+# どの段階でも見つからなかった列車について、基準を WEAK_RATIO に下げて揺れを探し直す
+#   見つかった揺れは events に加え(ev["weak"] = True)、備考を「弱い揺れ?」とする
+def match_weak(matches, events, times, rms, noise, filtered, day):
+  ratio = rms / noise
+  for m in matches:
+    t, label, expected, best, note = m
+    if best or note:
+      continue
+    sel = np.flatnonzero((times >= expected - MATCH_MINUTES * 60) & (times <= expected + DELAY_MINUTES * 60))
+    sel = sel[rms[sel] > 0]
+    if len(sel) == 0:
+      continue
+    i = sel[np.nanargmax(ratio[sel])]
+    if not ratio[i] >= WEAK_RATIO or any(ev["start"] <= times[i] <= ev["end"] for ev in events):
+      continue
+    # 最大から前後に、倍率が WEAK_RATIO の半分を下回るところまでを揺れの区間とする
+    a, b = i, i
+    while a > 0 and ratio[a - 1] > WEAK_RATIO / 2:
+      a -= 1
+    while b < len(ratio) - 1 and ratio[b + 1] > WEAK_RATIO / 2:
+      b += 1
+    ev = {"start": times[a] - RMS_WINDOW / 2, "end": times[b] + RMS_WINDOW / 2, "peak": times[i],
+          "ratio": ratio[i], "weak": True, "quake": False, "others": {}}
+    classify_shape(filtered, day, [ev])
+    ev["trains"] = [train_name(t, f"{label}(弱い揺れ)")]
+    events.append(ev)
+    m[3], m[4] = ev, "弱い揺れ?"
+  events.sort(key=lambda ev: ev["peak"])
+
 def is_freight_candidate(ev):
   return (not ev.get("trains", True) and not ev.get("quake") and ev["ratio"] >= FREIGHT_MIN_RATIO
           and ev.get("duration", 0) >= FREIGHT_MIN_DURATION)
@@ -490,6 +555,8 @@ def main():
   log_message(f"  拾い出した揺れ: {len(events)}件(うち地震とみなしたもの: {len(quakes)}件 "
               + " ".join(hhmmss(ev["peak"]) for ev in quakes) + ")")
   matches = match_timetable(timetable, events) if timetable else []
+  if timetable:
+    match_weak(matches, events, times, rms, noise, filtered, day)
   candidates = [ev for ev in events if is_freight_candidate(ev)]
 
   OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
