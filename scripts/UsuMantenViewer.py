@@ -78,7 +78,7 @@ warnings.filterwarnings(
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "2.6.0"
+  APP_VERSION = "2.7.0"
   # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
   MAX_HISTORY = 1000
 

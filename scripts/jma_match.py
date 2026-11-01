@@ -146,3 +146,72 @@ def direction_name(azimuth):
   names = ["北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東",
            "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西"]
   return names[int((azimuth + 11.25) % 360 // 22.5)]
+
+# --- 画面表示用(P波・S波検出、震源推定の画面) ---
+
+# 表示している波形の期間に P波が届く、震源リストの地震
+#   t0, t1 ... 波形の期間(datetime)
+#   site   ... 到達見込みを計算する位置 (緯度, 経度)(拠点、または拠点の中心)
+#   戻り値 ... (地震のリスト, 震源リストがあるか)
+#   震源リストは、jma_hypocenter.py で取得済みのものだけを使う(ここでは取得しない)
+def quakes_in_window(t0, t1, site):
+  catalog, missing = load_catalog(t0, t1, site)
+  first_day = t0.replace(hour=0, minute=0, second=0, microsecond=0)
+  days = (t1.replace(hour=0, minute=0, second=0, microsecond=0) - first_day).days + 1
+  hits = [q for q in catalog if t0 - timedelta(seconds=MATCH_BEFORE_P) <= q["p_time"] <= t1]
+  return hits, len(missing) < days
+
+# 期間内の地震から、表示する地震を選ぶ
+#   p_time ... 画面で検出した P波の到着時刻(datetime)または None
+#   戻り値 ... (選んだ地震 または None, ほかの地震の数)
+#   P波があれば、それが到達見込み(P波の MATCH_BEFORE_P 秒前〜S波の MATCH_AFTER_S 秒後)に入る地震のうち、
+#   見込みの振幅が最も大きいもの(合う地震が無ければ None)。P波が無ければ、期間内で見込みの振幅が最も大きいもの
+def choose_quake(hits, p_time=None):
+  if p_time is not None:
+    hits = [q for q in hits
+            if q["p_time"] - timedelta(seconds=MATCH_BEFORE_P) <= p_time <= q["s_time"] + timedelta(seconds=MATCH_AFTER_S)]
+  if not hits:
+    return None, 0
+  return max(hits, key=lambda q: q["log_amp"]), len(hits) - 1
+
+# 画面に表示する文字列(複数行)
+#   hits, available ... quakes_in_window の結果
+#   t_ref  ... 画面の時刻の基準(datetime)。到達見込みを「基準からの秒」で表示する
+#   p_time ... 画面で検出した P波の到着時刻(datetime)または None
+#   wide   ... describe_lines を参照
+#   戻り値 ... (文字列のリスト, 選んだ地震 または None)
+def window_summary(hits, available, t_ref, p_time=None, wide=False):
+  if not available:
+    return ["気象庁の震源リスト: 未取得", " (scripts/jma_hypocenter.py で取得できます)"], None
+  q, others = choose_quake(hits, p_time)
+  if q is None and p_time is not None:
+    # 画面の右の狭い欄に収まるよう、1行を短くする
+    return (["気象庁の震源リスト:", " 検出した P波に合う地震なし"]
+            + ([f" (この期間に揺れが届きそうな地震 {len(hits)}件)"] if hits else [])
+            + [" 有珠山周辺の小さな地震かもしれません"]), None
+  if q is None:
+    return ["気象庁の震源リスト: この期間に揺れが届きそうな地震なし"], None
+  return ["気象庁の震源リスト(暫定値):"] + describe_lines(q, others, t_ref, p_time, wide), q
+
+# 画面に表示する地震の説明(複数行)
+#   t_ref  ... 画面の時刻の基準(datetime)。到達見込みを「基準からの秒」で表示する
+#   p_time ... 画面で検出した P波の到着時刻(datetime)。あれば到達見込みとの差を表示する
+#   wide   ... 横に広い欄に表示する(行数を減らす)。False なら狭い欄に収まるよう1行を短くする
+def describe_lines(q, others, t_ref, p_time=None, wide=False):
+  sec = lambda t: (t - t_ref).total_seconds()
+  origin = f"{q['日時']:%H:%M:%S.%f}"[:-5]
+  where = f"震央距離 {q['dist_km']:.0f} km  方位 {q['azimuth']:.0f}° ({direction_name(q['azimuth'])})"
+  arrival = f"到達見込み P {sec(q['p_time']):.1f} 秒 / S {sec(q['s_time']):.1f} 秒"
+  diff = f"(検出した P波との差 {(p_time - q['p_time']).total_seconds():+.1f} 秒)" if p_time else ""
+  if wide:
+    lines = [f" {origin} {q['震央地名']}  M{q['M']:.1f}  深さ {q['深さ[km]']:g} km  {where}",
+             f" {arrival}  {diff}"]
+  else:
+    lines = [f" {origin} {q['震央地名']}", f" M{q['M']:.1f}  深さ {q['深さ[km]']:g} km", f" {where}", f" {arrival}"]
+    if diff:
+      lines.append(f" {diff}")
+  if q["log_amp"] < DOUBTFUL_LOG_AMP:
+    lines.append(" ※遠いか小さい地震で、別の揺れかもしれません")
+  if others:
+    lines.append(f" ほかに合いそうな地震 {others}件")
+  return lines

@@ -5,10 +5,13 @@ from matplotlib.patches import Rectangle
 import obspy
 from obspy.signal.trigger import recursive_sta_lta
 import json
+from datetime import timedelta
 
 from plot_common import NM_TO_CM, plot_components
 from log_common import log_message
 import app_paths
+import jma_match
+from hypocenter import load_stations
 
 # ==========================================
 # 設定ファイル・プリセット
@@ -151,6 +154,16 @@ def plot_ps_arrival_time(st):
   header = (f"拠点名　: {station}\n"
             f"開始時刻: {start_str}\n")
 
+  # 気象庁の震源リストで、この期間に揺れが届きそうな地震(取得済みのときだけ。到達見込みは拠点の位置で計算)
+  t_ref = tr_u.stats.starttime.datetime
+  jma_hits, jma_available = [], False
+  try:
+    coords = load_stations(app_paths.ETC_DIR).get(station)
+    if coords:
+      jma_hits, jma_available = jma_match.quakes_in_window(t_ref, tr_u.stats.endtime.datetime, coords[:2])
+  except Exception as e:
+    log_message(f"気象庁の震源リストを読み込めませんでした: {e}")
+
   # 検出用の水平合成(表示には使わない)
   hor_data = np.sqrt(tr_e.data**2 + tr_n.data**2)
   t_u = tr_u.times()
@@ -212,6 +225,10 @@ def plot_ps_arrival_time(st):
   # 初期は非表示とする( visible=False )
   p_lines = [ax.axvline(0, color=p_color, ls="--", visible=False) for ax in (ax1, ax2)]
   s_lines = [ax.axvline(0, color=s_color, ls="--", visible=False) for ax in (ax3, ax4)]
+  # 気象庁の震源リストの地震の、P波(上下動)・S波(水平動)の到達見込み(細い点線)
+  jma_color = "teal"
+  jma_p_line = ax1.axvline(0, color=jma_color, ls=":", lw=1.5, visible=False)
+  jma_s_line = ax3.axvline(0, color=jma_color, ls=":", lw=1.5, visible=False)
   # S波を探さない区間(P波到着 〜 P波到着 + 待ち時間)を水平成分・S波CFTのグラフに薄く塗る
   # X はデータ座標、Y はグラフの下端〜上端(0〜1)で指定する
   gap_spans = []
@@ -234,7 +251,8 @@ def plot_ps_arrival_time(st):
 
   # 結果のテキスト表示エリアの定義
   # (等幅フォントは日本語が表示できないため、既定のフォントを使う)
-  result_text = fig.text(0.76, 0.28, "", fontsize=10, va="top")
+  #   気象庁の震源リストの地震も書くので、少し小さい文字にする
+  result_text = fig.text(0.76, 0.28, "", fontsize=9.5, va="top", linespacing=1.3)
 
   # ==========================================
   # スライダー(右パネル): 前回の設定で初期化
@@ -314,6 +332,18 @@ def plot_ps_arrival_time(st):
     gap_spans[0].set_label(f"S波を探さない区間 ({res['s_gap']:.1f} 秒)"
                            if gap_spans[0].get_visible() else None)
 
+    # 気象庁の震源リストの地震(検出した P波に合うものを選ぶ)
+    p_abs = t_ref + timedelta(seconds=p_time) if p_time is not None else None
+    jma_lines, jma_q = jma_match.window_summary(jma_hits, jma_available, t_ref, p_abs)
+    for ln, key, name in ((jma_p_line, "p_time", "P"), (jma_s_line, "s_time", "S")):
+      if jma_q:
+        x = (jma_q[key] - t_ref).total_seconds()
+        ln.set_xdata([x, x])
+        ln.set_label(f"気象庁の震源からの{name}波の見込み ({x:.1f} 秒)")
+      ln.set_visible(jma_q is not None)
+      if jma_q is None:
+        ln.set_label(None)
+
     # P波・S波到着時刻のラベル文字列を更新(表示更新は別途)
     p_lines[0].set_label(f"P波到着 ({p_time:.2f} 秒)" if p_time is not None
                          else "P波到着 (検出なし)")
@@ -356,8 +386,8 @@ def plot_ps_arrival_time(st):
              "震源距離 : 計算できません")
       # グラフタイトルを更新
       ax1.set_title("波形 (P波・S波の両方は検出できませんでした)", fontsize=11)
-    # 結果サマリを表示
-    result_text.set_text(msg)
+    # 結果サマリを表示(気象庁の震源リストの地震を続ける)
+    result_text.set_text(msg + "\n\n" + "\n".join(jma_lines))
     fig.canvas.draw_idle()
 
   for s in sliders.values():

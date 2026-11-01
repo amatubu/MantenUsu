@@ -1,5 +1,7 @@
 # hypocenter_window.py
 # 震源推定の画面: 4拠点の上下動で P波の到着時刻を検出し、震源(または到来方向)を推定して表示する
+from datetime import timedelta
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
@@ -11,6 +13,7 @@ import gsi_tiles
 from ps_picker import load_params, save_params
 from log_common import log_message
 import app_paths
+import jma_match
 
 # 設定ファイル(P波・S波検出とは別に保存する)
 SETTINGS_FILE = app_paths.ETC_DIR / "hypocenter_params.json"
@@ -74,7 +77,17 @@ def plot_hypocenter(st):
   start_str = ref_time.strftime("%Y-%m-%d %H:%M:%S")
 
   # 検出に関わる線の色(P波・S波検出と同じく、自動検出=赤。手で直した時刻=オレンジ)
-  p_color, manual_color, cft_color = "red", "darkorange", "gray"
+  # 気象庁の震源リストの地震(震央・到達見込み)は青緑
+  p_color, manual_color, cft_color, jma_color = "red", "darkorange", "gray", "teal"
+
+  # 気象庁の震源リストで、この期間に揺れが届きそうな地震(取得済みのときだけ。到達見込みは拠点の中心で計算)
+  t_ref = ref_time.datetime
+  jma_hits, jma_available = [], False
+  try:
+    end_time = max(tr.stats.endtime for tr in traces.values()).datetime
+    jma_hits, jma_available = jma_match.quakes_in_window(t_ref, end_time, (proj.lat0, proj.lon0))
+  except Exception as e:
+    log_message(f"気象庁の震源リストを読み込めませんでした: {e}")
 
   # ==========================================
   # 図のレイアウト: 左に拠点ごとの上下動、右上に拠点の配置図、右下にパラメータと結果
@@ -99,7 +112,7 @@ def plot_hypocenter(st):
     tr_f.filter("bandpass", freqmin=DISPLAY_BAND[0], freqmax=DISPLAY_BAND[1], zerophase=True)
     filtered_data[name] = tr_f.data * NM_TO_CM
 
-  wave_axes, cft_axes, pick_lines, wave_lines = {}, {}, {}, {}
+  wave_axes, cft_axes, pick_lines, wave_lines, jma_lines = {}, {}, {}, {}, {}
   first_ax = None
   for i, name in enumerate(names):
     y0 = bottom + (n - 1 - i) * (h + gap)
@@ -120,6 +133,7 @@ def plot_hypocenter(st):
     cax.tick_params(axis="y", colors=cft_color)
     wave_axes[name], cft_axes[name] = ax, cax
     pick_lines[name] = ax.axvline(0, color=p_color, ls="--", lw=1.2, visible=False)
+    jma_lines[name] = ax.axvline(0, color=jma_color, ls=":", lw=1.5, visible=False)
   first_ax.set_title("左クリック: P波到着時刻を手で指定 / Shift+左クリック: その拠点だけ自動検出に戻す / "
                      "右クリック: 拠点を計算から外す・戻す",
                      fontsize=10)
@@ -136,7 +150,8 @@ def plot_hypocenter(st):
   map_ax = fig.add_axes([0.60, 0.615, 0.38, 0.335])
 
   # --- 結果のテキスト ---
-  result_text = fig.text(0.62, 0.235, "", fontsize=9, va="top")
+  #   気象庁の震源リストの地震も書くので、少し小さい文字にする
+  result_text = fig.text(0.62, 0.235, "", fontsize=9, va="top", linespacing=1.3)
 
   # ==========================================
   # スライダー(前回の設定で初期化)
@@ -150,7 +165,7 @@ def plot_hypocenter(st):
 
   # --- 状態: 自動検出の結果、手で指定した時刻、計算から外した拠点 ---
   state = {"auto": {}, "pick_params": None, "result": None, "filtered": True, "layer": MAP_LAYERS[0],
-           "p_thr": None}
+           "p_thr": None, "jma": None}
   manual = {}
   excluded = set()
 
@@ -234,6 +249,20 @@ def plot_hypocenter(st):
       map_ax.plot([], [], "-", color=p_color, lw=2,
                   label=f"到来方向 {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})")
     half_x = half_y * MAP_ASPECT
+    # 気象庁の震源リストの地震: 地図の範囲内なら震央、範囲外なら方位を示す
+    q = state["jma"]
+    if q is not None:
+      qx, qy = proj.to_xy(q["緯度"], q["経度"])
+      label = f"気象庁の震央 ({q['震央地名']} M{q['M']:.1f})"
+      if abs(qx) <= half_x and abs(qy) <= half_y:
+        map_ax.plot(qx, qy, "*", color=jma_color, ms=14, markeredgecolor="white", zorder=4, label=label)
+      else:
+        az = np.radians(q["azimuth"])
+        length = half_y * 0.8
+        map_ax.annotate("", xy=(length * np.sin(az), length * np.cos(az)), xytext=(0, 0),
+                        arrowprops=dict(arrowstyle="->", color=jma_color, lw=2, ls="--"), zorder=4)
+        map_ax.plot([], [], "--", color=jma_color, lw=2,
+                    label=f"{label} の方位 {q['azimuth']:.0f}° ({direction_name(q['azimuth'])})")
     draw_background(half_x, half_y)
     map_ax.set_xlim(-half_x, half_x)
     map_ax.set_ylim(-half_y, half_y)
@@ -268,6 +297,19 @@ def plot_hypocenter(st):
       lat, lon = proj.to_latlon(loc["x"], loc["y"])
       lines.append(f"震源: 北緯 {lat:.4f}° 東経 {lon:.4f}° 深さ {loc['depth']:.1f} km")
       lines.append(f"発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒")
+
+    # 気象庁の震源リストの地震(最初の P波に合うものを選ぶ)と、推定した結果との比較
+    p_abs = t_ref + timedelta(seconds=t_first) if t_first is not None else None
+    jma_text, q = jma_match.window_summary(jma_hits, jma_available, t_ref, p_abs, wide=True)
+    state["jma"] = q
+    lines += jma_text
+    if q is not None:
+      if loc is not None and not loc["at_edge"]:
+        qx, qy = proj.to_xy(q["緯度"], q["経度"])
+        lines.append(f" 推定した震央との距離: {np.hypot(qx - loc['x'], qy - loc['y']):.1f} km")
+      elif res.get("azimuth") is not None:
+        d = (res["azimuth"] - q["azimuth"] + 180) % 360 - 180
+        lines.append(f" 到来方向との差: {d:+.0f}°")
     return "\n".join(lines)
 
   # ==========================================
@@ -318,8 +360,15 @@ def plot_hypocenter(st):
       res["grid"] = locate_grid(pts, times, params["vp"])
     state["result"] = res
 
+    message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ
+    q = state["jma"]
+    for nm in names:
+      if q is not None:
+        x = (q["p_time"] - t_ref).total_seconds()
+        jma_lines[nm].set_xdata([x, x])
+      jma_lines[nm].set_visible(q is not None)
     draw_map(res)
-    result_text.set_text(result_message(picks, res))
+    result_text.set_text(message)
     fig.canvas.draw_idle()
 
   for s in sliders.values():
