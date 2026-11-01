@@ -4,7 +4,7 @@ from datetime import datetime, timedelta  # 日付・時刻の処理
 import json
 import os
 import tkinter as tk                      # GUIツール
-from tkinter import messagebox, ttk       # GUIの拡張ツール(ttk = Themed Tkinter)
+from tkinter import filedialog, messagebox, ttk  # GUIの拡張ツール(ttk = Themed Tkinter)
 import warnings
 import traceback
 import re
@@ -12,6 +12,7 @@ import re
 import app_paths                       # matplotlib より先に読み込む(ビルドしたアプリ向けの設定のため)
 import numpy as np
 from obspy import read, Stream         # SACファイルの読み込み
+from obspy import UTCDateTime as obspy_time
 import matplotlib.pyplot as plt        # グラフ表示ツール
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
@@ -27,6 +28,8 @@ from hypocenter import load_stations, LocalProjection
 import quake_detect
 import quake_features
 import quake_locate
+from quake_locate_window import open_locate_window
+from hypocenter_window import plot_hypocenter
 from pathlib import Path
 import jma_match
 import jma_hypocenter
@@ -72,13 +75,9 @@ warnings.filterwarnings(
 #     どちらもそのままではビルドできないため、当てているパッチをリポジトリに追加する
 # [完了]16. 気象庁の震源リストとの自動照合(--detect-quakes で、震源から拠点への P波・S波の到達見込みを
 #     計算して候補と照合する。見込みの振幅が大きいのに候補が無い地震も「見逃し?」として一覧にする)
-# 17. 地震の候補の震源推定
-#     震源リストと対応した候補: 14 の方法(P波の到着時刻から到来方向、S-P時間から距離)で震源を推定し、
-#       震源リストの震源と比べる(自動で計算したあと、手作業で補正する想定)
-#     対応しなかった候補: 有珠山周辺の小さな地震とみて、P波の到着時刻から震源を推定する
-#     → 震源推定の画面で、P波・S波の到着時刻から震源を求められるようになった(有珠山直下の地震の候補16件で検証)。
-#       --locate-quakes で、候補の一覧(CSV)からまとめて計算し、一覧と震央の地図・断面図を出せるようになった。
-#       アプリの画面への組み込み(一覧の CSV を選んで、結果を画面に表示する)が残り
+# [完了]17. 地震の候補の震源推定(--locate-quakes でまとめて計算し、一覧と震央の地図・断面図を出す。
+#     メイン画面の「候補の一覧(CSV)を選んで震源を表示」で、結果の表と地図・断面図を画面に表示し、
+#     候補ごとに震源推定の画面を開いて到着時刻を手で直して確かめられる)
 # 18. 震源推定の画面の使い方をドキュメントに書く(とくに遠い地震)
 #     遠い地震は、P波の揺れの中から S波らしい揺れを見つけるため、パンツール(右ドラッグで拡大縮小)で
 #     表示の範囲を合わせながら、水平動の表示で S波を手で指定する必要がある
@@ -90,11 +89,13 @@ warnings.filterwarnings(
 #     残差が小さくても位置が当てにならない。「到着時刻が6つ以上」のような条件を足す
 #     (2026/8/3 00:51 は、到着時刻5つ(P波3・S波2)で残差 0.083秒の「近い地震」になったが、
 #      波形は Hokudai 以外は雑音並みで、地震とは言えなかった)
+# 20. 地震の候補の震源の画面で、震源推定の画面での手直しを一覧に反映する
+#     手直しした到着時刻と、それから求めた震源を一覧(表・地図・CSV)に反映し、保存できるようにする
 
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "2.10.0"
+  APP_VERSION = "3.0.0"
   # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
   MAX_HISTORY = 1000
 
@@ -105,7 +106,7 @@ class MantenUsuSeismographApp:
     # ウィンドウタイトル
     self.root.title(f"有珠満点地震計プロジェクト 波形ビューワ v{self.APP_VERSION}")
     # ウィンドウサイズ
-    self.root.geometry("460x640")
+    self.root.geometry("460x700")
     # リサイズを許可しない
     self.root.resizable(False, False)
 
@@ -334,6 +335,19 @@ class MantenUsuSeismographApp:
       command=self.execute_stack_pipeline
     )
     btn_stack_run.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    # --- 地震の候補の震源(候補の一覧の CSV を選んで、震源を求めて表示する) ---
+    tk.Label(
+      panel,
+      text="地震の候補の震源:",
+      font=("sans-serif", 10, "bold")
+    ).pack(anchor="w", pady=(4, 2))
+    tk.Button(
+      panel,
+      text="候補の一覧(CSV)を選んで震源を表示",
+      font=("sans-serif", 9),
+      command=self.open_quake_locations,
+    ).pack(fill=tk.X, pady=(0, 4))
 
     # ==========================================
     # 区切り線 2 (スタック機能 と メンテナンス機能 の間)
@@ -1286,6 +1300,80 @@ class MantenUsuSeismographApp:
 
     log_message("\n=== 地震の候補を探すバッチ処理が完了しました ===")
 
+  # --- 地震の候補の震源を画面に表示する ---
+  #   候補の一覧(--detect-quakes の quake_candidates_*.csv。「候補」の列があれば印の付いた行だけ)を選び、
+  #   バッチ処理(--locate-quakes)と同じ方法で震源を求めて、表と地図・断面図の画面を開く
+  def open_quake_locations(self):
+    path = filedialog.askopenfilename(
+      parent=self.root, title="地震の候補の一覧(CSV)を選んでください",
+      initialdir=str(quake_detect.OUTPUT_DIR if quake_detect.OUTPUT_DIR.exists() else self.batch_output_dir),
+      filetypes=[("CSV ファイル", "*.csv"), ("すべてのファイル", "*.*")])
+    if not path:
+      return
+    path = Path(path)
+    candidates = quake_locate.read_candidates(path)
+    if not candidates:
+      messagebox.showwarning("警告", "一覧に地震の候補がありません(「開始」の列が必要です)。")
+      return
+    # 1件あたり約0.3秒かかる(初めて読む時間は、SACファイルの準備でさらにかかる)
+    if len(candidates) > 50 and not messagebox.askyesno(
+        "確認", f"候補が {len(candidates)}件あります。計算に1分以上かかることがありますが、続けますか?"):
+      return
+    stations = load_stations(self.etc_dir)
+    proj = LocalProjection(list(stations.values()))
+
+    # 進み具合の表示(計算中は画面の操作を止める)
+    progress = tk.Toplevel(self.root)
+    progress.title("計算中")
+    progress.geometry("320x110")
+    progress.resizable(False, False)
+    progress.transient(self.root)
+    progress.grab_set()
+    progress_var = tk.StringVar(value=f"震源を計算しています... 0 / {len(candidates)}")
+    tk.Label(progress, textvariable=progress_var, font=("sans-serif", 10)).pack(expand=True)
+    progress.update()
+
+    def on_result(i, n, cand, r, error):
+      if error is not None:
+        log_message(f"[エラー] {cand['start']:%Y-%m-%d %H:%M:%S}: {error}")
+      progress_var.set(f"震源を計算しています... {i} / {n}")
+      progress.update()
+    try:
+      items = quake_locate.locate_all(candidates, self.load_hour_stream, stations, proj, on_result)
+    finally:
+      progress.destroy()
+    log_message(f"地震の候補の震源({path.name}): {quake_locate.count_summary(items)}")
+    if not items:
+      messagebox.showwarning("警告", "震源を計算できた候補がありませんでした。")
+      return
+
+    # 候補の震源推定の画面を開く(同じ範囲の波形。遠い地震は S波を探す範囲を広げる)
+    def open_event(cand, r):
+      t0, t1 = quake_locate.candidate_window(cand)
+      st = quake_locate.window_stream(t0, t1, self.load_hour_stream, {}).slice(
+        obspy_time(t0), obspy_time(t1)).copy()
+      for tr in st:
+        if np.ma.isMaskedArray(tr.data):
+          tr.data = tr.data.filled(0)
+      st = Stream([tr for tr in st if tr.stats.npts > 0 and np.any(tr.data)])
+      if len({tr.stats.station for tr in st}) < 3:
+        messagebox.showwarning("警告", "3拠点以上の波形がありません。")
+        return
+      plot_hypocenter(st, overrides={"s_search": r.get("s_search", quake_locate.LOCAL_S_SEARCH)})
+
+    # 一覧(CSV)と地図・断面図を保存する(バッチ処理と同じ場所・名前)
+    def save():
+      out_dir = quake_locate.OUTPUT_DIR
+      out_dir.mkdir(parents=True, exist_ok=True)
+      out_csv = out_dir / f"{path.stem}_locations.csv"
+      out_png = out_dir / f"{path.stem}_locations.png"
+      quake_locate.write_csv(out_csv, items, sorted(stations))
+      quake_locate.save_location_map(out_png, items, stations, proj, f"地震の候補の震源(自動) {path.stem}")
+      log_message(f"保存しました: {out_csv} / {out_png}")
+      messagebox.showinfo("保存", f"保存しました。\n\n{out_csv}\n{out_png}")
+
+    open_locate_window(self.root, items, stations, proj, path.stem, open_event, save)
+
   # --- 地震の候補の震源を求めるバッチ処理(UIなし) ---
   #   csv_path    ... 地震の候補の一覧(--detect-quakes の quake_candidates_*.csv。「候補」の列があれば印の付いた行だけ)
   #   save_images ... 候補ごとに確認用の画像(P波・S波の位置)も保存する
@@ -1308,39 +1396,17 @@ class MantenUsuSeismographApp:
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = csv_path.stem
 
-    loaded = {}   # 読み込んだ時間の波形(直近のものだけ残す)
-    items = []
-    for cand in candidates:
-      if cand["jma"]:
-        quake_locate.add_arrivals(cand["jma"], (proj.lat0, proj.lon0))
-      t0, t1 = quake_locate.candidate_window(cand)
-      first = t0.replace(minute=0, second=0, microsecond=0)
-      hours, h = [], first
-      while h <= t1:
-        if h not in loaded:
-          loaded[h] = self.load_hour_stream(h)
-        hours.append((h, loaded[h]))
-        h += timedelta(hours=1)
-      for old in [k for k in loaded if k < first]:
-        del loaded[old]
-      try:
-        r = quake_locate.locate_candidate(quake_detect.merge_hours(hours), cand, stations, proj)
-      except Exception as e:
-        log_message(f"  [エラー] {cand['start']:%Y-%m-%d %H:%M:%S}: {e}")
-        traceback.print_exc()
-        continue
-      items.append((cand, r))
-      summary = quake_locate.check_title(cand, r).replace("\n", " / ")
-      log_message(f"  {summary}")
+    def on_result(_i, _n, cand, r, error):
+      if error is not None:
+        log_message(f"  [エラー] {cand['start']:%Y-%m-%d %H:%M:%S}: {error}")
+        return
+      log_message("  " + quake_locate.check_title(cand, r).replace("\n", " / "))
       if save_images:
         path = out_dir / f"{stem}_{cand['start']:%Y%m%d_%H%M%S}.png"
         if quake_locate.save_check_image(path, cand, r, quake_locate.check_title(cand, r)):
           r["image"] = path.name
-
-    counts = {k: sum(1 for _c, r in items if r["kind"] == k)
-              for k in (quake_locate.KIND_LOCAL, quake_locate.KIND_LOCAL_POOR, quake_locate.KIND_FAR,
-                        quake_locate.KIND_NONE)}
-    log_message("結果: " + "、".join(f"{k} {v}件" for k, v in counts.items()))
+    items = quake_locate.locate_all(candidates, self.load_hour_stream, stations, proj, on_result)
+    log_message("結果: " + quake_locate.count_summary(items))
     out_csv = out_dir / f"{stem}_locations.csv"
     quake_locate.write_csv(out_csv, items, names)
     log_message(f"一覧: {out_csv}")

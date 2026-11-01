@@ -192,6 +192,45 @@ def locate_candidate(st, cand, stations, proj):
       result.update(kind=KIND_FAR, far=far, lat=far["lat"], lon=far["lon"])
   return result
 
+# 波形を使う範囲を含む時間の波形をつなぐ
+#   load_hour ... その時間の開始日時を渡すと、1時間分の Stream(または None)を返す関数
+#   cache     ... 読み込んだ時間の波形を覚えておく辞書(直近のものだけ残す)
+def window_stream(t0, t1, load_hour, cache):
+  first = t0.replace(minute=0, second=0, microsecond=0)
+  hours, h = [], first
+  while h <= t1:
+    if h not in cache:
+      cache[h] = load_hour(h)
+    hours.append((h, cache[h]))
+    h += timedelta(hours=1)
+  for old in [k for k in cache if k < first]:
+    del cache[old]
+  return quake_detect.merge_hours(hours)
+
+# 候補をすべて計算する(バッチ処理とアプリの画面で共通)
+#   on_result ... 1件ごとに (何件目, 件数, 候補, 結果 または None, エラー または None) を渡して呼ぶ関数
+#   戻り値 ... [(候補, 結果), ...](計算できなかった候補は含まない)
+def locate_all(candidates, load_hour, stations, proj, on_result=None):
+  cache, items = {}, []
+  for i, cand in enumerate(candidates, 1):
+    if cand["jma"]:
+      add_arrivals(cand["jma"], (proj.lat0, proj.lon0))
+    try:
+      r = locate_candidate(window_stream(*candidate_window(cand), load_hour, cache), cand, stations, proj)
+    except Exception as e:
+      if on_result:
+        on_result(i, len(candidates), cand, None, e)
+      continue
+    items.append((cand, r))
+    if on_result:
+      on_result(i, len(candidates), cand, r, None)
+  return items
+
+# 判定ごとの件数の説明。例: 近い地震 11件、近い地震(残差大) 6件、…
+def count_summary(items):
+  return "、".join(f"{k} {sum(1 for _c, r in items if r['kind'] == k)}件"
+                  for k in (KIND_LOCAL, KIND_LOCAL_POOR, KIND_FAR, KIND_NONE))
+
 # 推定した震央と、震源リストの震央・有珠山の山頂との距離 [km]
 def epicenter_distance(lat, lon, lat2, lon2):
   if None in (lat, lon, lat2, lon2):
@@ -311,6 +350,16 @@ def check_title(cand, r):
 # 震央の地図と、東西・南北の断面図(近い地震として震源が決まったものだけ)
 #   items ... [(候補, 結果), ...]、stations ... 拠点の位置、proj ... 平面座標
 def save_location_map(path, items, stations, proj, title):
+  fig = plt.figure(figsize=(13, 10.5))
+  draw_location_map(fig, items, stations, proj, title)
+  fig.savefig(path, dpi=110)
+  plt.close(fig)
+
+# 震央の地図と断面図を fig に描く(画像の保存と、アプリの画面で共通)
+#   listing ... 右下に番号の一覧を書く(画面では一覧の表があるので書かない)
+#   戻り値 ... dict(axes=(地図, 東西断面, 南北断面), local=[(候補, 結果), ...], points=[(東, 北, 深さ), ...])
+#     local・points は地図に描いた近い地震の順(地図の番号の順)
+def draw_location_map(fig, items, stations, proj, title, listing=True):
   local = [(cand, r) for cand, r in items if r["kind"] in (KIND_LOCAL, KIND_LOCAL_POOR)]
   points = [(*proj.to_xy(r["lat"], r["lon"]), r["loc"]["depth"]) for _cand, r in local]
   half_x = max([MAP_HALF[0]] + [abs(p[0]) + 1 for p in points])
@@ -319,9 +368,8 @@ def save_location_map(path, items, stations, proj, title):
   half_x, half_y = max(half_x, half_y * MAP_HALF[0] / MAP_HALF[1]), max(half_y, half_x * MAP_HALF[1] / MAP_HALF[0])
   zmax = max([5.0] + [p[2] + 1 for p in points])
 
-  fig = plt.figure(figsize=(13, 10.5))
   width = 0.62
-  height = width * 13 / 10.5 * half_y / half_x
+  height = width * fig.get_figwidth() / fig.get_figheight() * half_y / half_x
   axm = fig.add_axes([0.07, 0.40, width, height])
   axe = fig.add_axes([0.07, 0.105, width, 0.22], sharex=axm)
   axn = fig.add_axes([0.07 + width + 0.03, 0.40, 0.25, height], sharey=axm)
@@ -388,20 +436,22 @@ def save_location_map(path, items, stations, proj, title):
              Line2D([], [], marker="P", color="saddlebrown", ls="", label="有珠山 山頂(大有珠)")]
   fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.07 + width + 0.03, 0.325), fontsize=8)
   # 番号の一覧(多いときは途中まで)
-  listing = [f"{i:2d}. {cand['start']:%y/%m/%d %H:%M}  深さ"
+  lines = [f"{i:2d}. {cand['start']:%y/%m/%d %H:%M}  深さ"
              + ("不定" if r["loc"]["at_top"] else f"{r['loc']['depth']:.1f}km") + f"  残差{r['loc']['rms']:.2f}秒"
              + (" ×" if cand["jma"] else "") for i, (cand, r) in enumerate(local, 1)]
-  if len(listing) > 24:
-    listing = listing[:23] + [f"  ほか {len(listing) - 23}件(一覧の CSV を参照)"]
-  fig.text(0.07 + width + 0.03, 0.225, "\n".join(listing), fontsize=7, va="top", linespacing=1.15)
+  if len(lines) > 24:
+    lines = lines[:23] + [f"  ほか {len(lines) - 23}件(一覧の CSV を参照)"]
+  if listing:
+    fig.text(0.07 + width + 0.03, 0.225, "\n".join(lines), fontsize=7, va="top", linespacing=1.15)
   others = len(items) - len(local)
   fig.text(0.07, 0.005,
            f"P波・S波の到着時刻から推定(自動)。均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g})、"
-           f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。深さは海面からの深さ(拠点の高度を考慮)。\n"
-           f"番号は右下の一覧(× は気象庁の震源リストにあるもの)。近い地震として震源が決まった {len(local)}件を表示"
+           f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。" + ("" if listing else "\n")
+           + "深さは海面からの深さ(拠点の高度を考慮)。\n"
+           + (f"番号は右下の一覧(× は気象庁の震源リストにあるもの)。" if listing else "番号は一覧の「番号」。")
+           + f"近い地震として震源が決まった {len(local)}件を表示"
            + f"(残差が {MAX_LOCAL_RMS:g}秒を超えるものを含む)"
            + (f"。遠い地震・決まらないもの {others}件は一覧の CSV を参照" if others else ""),
            fontsize=8, va="bottom")
   fig.suptitle(title, fontsize=12, x=0.07, ha="left")
-  fig.savefig(path, dpi=110)
-  plt.close(fig)
+  return dict(axes=(axm, axe, axn), local=local, points=points)

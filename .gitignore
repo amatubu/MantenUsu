@@ -18,3 +18,5 @@ UsuMantenViewer.app
 *.pptx
 ._*
 jma_hypocenter/*
+notes/*
+reports/*

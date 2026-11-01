@@ -77,7 +77,8 @@ def format_time(t):
 
 # 震源推定の画面を開く
 #   st ... 3拠点以上の波形(上下動で P波、水平動(N・E)で S波を検出する)
-def plot_hypocenter(st):
+#   overrides ... 前回の設定より優先するパラメータ(例: 遠い地震の候補を開くときの {"s_search": 30})
+def plot_hypocenter(st, overrides=None):
   # --- データ取得: 拠点ごとの上下動と水平動 ---
   traces = {tr.stats.station: tr for tr in st.select(channel="*U*")}
   names = sorted(traces)
@@ -225,6 +226,7 @@ def plot_hypocenter(st):
   # スライダー(前回の設定で初期化)
   # ==========================================
   initial = load_params(SETTINGS_FILE, SLIDER_SPECS, DEFAULT_PARAMS)
+  initial.update(overrides or {})
   sliders = {}
   top, step_y = 0.54, 0.026
   for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
