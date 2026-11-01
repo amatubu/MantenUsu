@@ -214,7 +214,7 @@ def detect_events(times, rms, noise):
   return events
 
 # 時刻表のCSV(時刻,ラベル)を読む。戻り値 ... [(日の始まりからの秒, ラベル), ...]
-#   3列目以降(etc/時刻表テンプレート.xlsx の種別・列車名など)は使わない
+#   3列目以降(etc/train_timetable_template.xlsx の種別・列車名など)は使わない
 #   Excel の「CSV UTF-8」と、ふつうの「CSV」(Shift_JIS)のどちらでも読める
 def load_timetable(path):
   try:
