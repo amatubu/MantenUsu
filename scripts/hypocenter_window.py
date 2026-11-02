@@ -8,6 +8,7 @@
 from datetime import timedelta
 
 import numpy as np
+import obspy
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from matplotlib.text import Annotation
@@ -23,6 +24,7 @@ from log_common import log_message
 import app_paths
 import jma_match
 import pick_store
+import external_stations
 from obspy.geodetics import gps2dist_azimuth
 
 # 設定ファイル(P波・S波検出とは別に保存する)
@@ -78,13 +80,35 @@ def direction_name(azimuth):
 def format_time(t):
   return t.strftime("%Y-%m-%d %H:%M:%S.%f")[:-4]
 
+# 波形の期間に、ほかの機関の観測点の波形があれば加える(すでにある拠点は加えない)
+def add_external(st):
+  if not st:
+    return st
+  t0 = min(tr.stats.starttime for tr in st).datetime
+  t1 = max(tr.stats.endtime for tr in st).datetime
+  try:
+    ext = external_stations.load(t0, t1)
+  except Exception as e:
+    log_message(f"ほかの機関の観測点の波形を読み込めませんでした: {e}")
+    return st
+  have = {tr.stats.station for tr in st}
+  ext = [tr for tr in ext if tr.stats.station not in have]
+  if not ext:
+    return st
+  log_message(f"ほかの機関の観測点を加えました: {', '.join(sorted({tr.stats.station for tr in ext}))}")
+  return st.copy() + obspy.Stream(ext)
+
 # 震源推定の画面を開く
 #   st ... 3拠点以上の波形(上下動で P波、水平動(N・E)で S波を検出する)
 #   overrides ... 前回の設定より優先するパラメータ(例: 遠い地震の候補を開くときの {"s_search": 30})
 #                 保存した到着時刻があれば、そのときのパラメータをさらに優先する
 #   on_apply  ... 地震の候補の震源の画面から開いたとき、保存したあとに呼ぶ関数(保存したファイルのパスを渡す)
 #                 ボタンは「保存して一覧に反映」になる
-def plot_hypocenter(st, overrides=None, on_apply=None):
+#   external  ... ほかの機関の観測点(external_stations.py)の波形が v-net フォルダにあれば、拠点に加える
+#                 (加えた観測点も、右クリックで計算から外せる。外したときと比べて、震源がどう変わるかを確かめられる)
+def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
+  if external:
+    st = add_external(st)
   # --- データ取得: 拠点ごとの上下動と水平動 ---
   traces = {tr.stats.station: tr for tr in st.select(channel="*U*")}
   names = sorted(traces)
@@ -93,6 +117,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None):
                  for nm in names}
   try:
     station_coords = load_stations(app_paths.ETC_DIR)
+    station_coords.update(external_stations.coords())
   except OSError as e:
     log_message(f"拠点の位置を読み込めませんでした: {e}")
     return
