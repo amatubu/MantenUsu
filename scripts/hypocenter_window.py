@@ -16,7 +16,7 @@ from matplotlib.text import Annotation
 from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, locate_event,
                         pick_filtered, refine_p, pick_s, HORIZONTAL_RANGE,
                         LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT,
-                        MIN_OBSERVATIONS, MAX_LOCAL_RMS)
+                        MIN_OBSERVATIONS, MAX_LOCAL_RMS, depth_text)
 from plot_common import NM_TO_CM, get_component_color
 import gsi_tiles
 from ps_picker import load_params, save_params
@@ -383,7 +383,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
     if loc is not None and not loc["at_edge"] and res.get("far") is None:
       # 近い地震: 震央を星で示す(遠い地震として推定したときは、到来方向の矢印にする)
       # 拠点の間にあると拠点名と重なるため、説明の文字は凡例に出す
-      depth = "深さ不定" if loc["at_top"] else f"深さ {loc['depth']:.1f} km"
+      depth = f"深さ {depth_text(loc)}"
       # 残差が大きいときは、当てにならないので白抜きにする
       doubtful = loc["rms"] > MAX_LOCAL_RMS
       map_ax.plot(loc["x"], loc["y"], "*", color="none" if doubtful else p_color, ms=16,
@@ -459,8 +459,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
                      "遠い地震のため、位置が決まりません")
     else:
       lat, lon = proj.to_latlon(loc["x"], loc["y"])
-      depth = ("深さは決まりません(浅い方の端)" if loc["at_top"]
-               else f"深さ {loc['depth']:.1f} km(海面下)")
+      depth = f"深さ {depth_text(loc)}(海面下)"
       lines.append(f"◆震源(P波 {res['n_p']}・S波 {res['n_s']}): 北緯 {lat:.4f}° 東経 {lon:.4f}° {depth}")
       lines.append(f"  発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒")
       if loc["rms"] > MAX_LOCAL_RMS:

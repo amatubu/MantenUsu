@@ -88,7 +88,7 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   def row_values(cand, r):
     loc, q = r["loc"], cand["jma"]
     local = r["kind"] in (quake_locate.KIND_LOCAL, quake_locate.KIND_LOCAL_POOR)
-    depth = ("不定" if loc["at_top"] else fmt(loc["depth"], ".1f")) if local else ""
+    depth = quake_locate.depth_short(loc) if local else ""
     summit = quake_locate.epicenter_distance(r["lat"], r["lon"], *USU_SUMMIT[:2])
     jma = f"{q['震央地名']} M{fmt(q['M'], 'g')}" if q else ""
     return [view["number"].get(id(r), ""), f"{cand['start']:%Y-%m-%d %H:%M:%S}", r["kind"],

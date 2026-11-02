@@ -199,8 +199,10 @@ FAR_MIN_SP = 3.0
 #   pos ... 観測した拠点の座標 [km] の配列 (n, 3)。3列目は高さ(海面からの高度。上が正)
 #   t   ... 到着時刻 [秒] (n,)、v ... その波の速度 [km/s] (n,)(P波なら vp、S波なら vs)
 #   深さは海面からの深さ [km]。山の上の拠点の高度を考えるため、海面より上(top まで)も探す
-# 戻り値: dict(x, y, depth, origin, rms, at_edge, at_top)
+# 戻り値: dict(x, y, depth, origin, rms, at_edge, at_top, depth_min, depth_max)
 #   at_edge ... 水平方向・深い方の端で最良になった(範囲外)、at_top ... 浅い方の端(深さが決まらない)
+#   depth_min・depth_max ... 残差がほぼ同じ(最小の残差から DEPTH_RMS_TOL まで)になる深さの範囲 [km]
+#                           深さごとに震央を探し直して残差を比べる(深さがどこまで確かかの目安)
 def locate_grid_ps(pos, t, v, horizontal=HORIZONTAL_RANGE, depth=DEPTH_RANGE, top=-1.0):
   center = (0.0, 0.0, (top + depth) / 2)
   half = (horizontal, horizontal, (depth - top) / 2)
@@ -219,9 +221,68 @@ def locate_grid_ps(pos, t, v, horizontal=HORIZONTAL_RANGE, depth=DEPTH_RANGE, to
     half = (step * 2,) * 3
     best_rms, best_origin = float(rms[k]), float(origin[k])
   x, y, z = (float(c) for c in center)
+  depth_min, depth_max = _depth_range(pos, t, v, x, y, best_rms, top, depth)
   return dict(x=x, y=y, depth=z, origin=best_origin, rms=best_rms,
               at_edge=(max(abs(x), abs(y)) >= horizontal - 0.5) or z >= depth - 0.5,
-              at_top=z <= top + 0.05)
+              at_top=z <= top + 0.05, depth_min=depth_min, depth_max=depth_max)
+
+# 残差がほぼ同じとみなす幅: 最小の残差の DEPTH_RMS_TOL 倍(小さすぎるときは DEPTH_RMS_MIN 秒)まで
+#   DEPTH_RMS_MIN は到着時刻の読み取りの精度(約0.01秒)程度
+#   (2026/3/4 22:58 を6拠点の P波だけで求めると、残差は深さ -1 km で 0.041秒、0 km で 0.050秒、
+#    0.5 km で 0.052秒、1 km で 0.062秒。この基準では「0.5 km より浅い」になる。
+#    S波も加えると 1.5 km で 0.104秒が最小で、1.0〜2.4 km になる)
+DEPTH_RMS_TOL = 0.30
+DEPTH_RMS_MIN = 0.01
+# 深さの範囲を調べるときに、深さごとに震央を探し直す範囲 [km] と刻み [km]
+DEPTH_SCAN_HORIZONTAL = 3.0
+DEPTH_SCAN_STEP = 0.1
+
+# 深さを固定して(震央は best の近くで探し直して)残差を求め、残差がほぼ同じになる深さの範囲を返す
+def _depth_range(pos, t, v, bx, by, best_rms, top, bottom):
+  limit = best_rms + max(best_rms * DEPTH_RMS_TOL, DEPTH_RMS_MIN)
+  hx = np.arange(bx - DEPTH_SCAN_HORIZONTAL, bx + DEPTH_SCAN_HORIZONTAL + 1e-9, DEPTH_SCAN_STEP)
+  hy = np.arange(by - DEPTH_SCAN_HORIZONTAL, by + DEPTH_SCAN_HORIZONTAL + 1e-9, DEPTH_SCAN_STEP)
+  gx, gy = np.meshgrid(hx, hy, indexing="ij")
+  ok = []
+  for z in np.arange(top, bottom + 1e-9, DEPTH_SCAN_STEP):
+    dist = np.sqrt((gx[..., None] - pos[:, 0]) ** 2 + (gy[..., None] - pos[:, 1]) ** 2 + (z + pos[:, 2]) ** 2)
+    travel = dist / v
+    origin = (t - travel).mean(axis=-1)
+    rms = np.sqrt(((t - travel - origin[..., None]) ** 2).mean(axis=-1)).min()
+    if rms <= limit:
+      ok.append(float(z))
+    elif ok and z > max(ok) + 1.0:
+      break   # 範囲を過ぎて残差が大きくなった(深い方は調べなくてよい)
+  if not ok:
+    return None, None
+  return round(min(ok), 1), round(max(ok), 1)
+
+# --- 深さの表示(震源推定の画面・地震の候補の震源で共通) ---
+#   浅い方の端まで残差がほぼ同じときは、深さを決めずに「◯ km より浅い」とする
+#   (探す範囲は海面より上(-1 km)まであるので、浅い方の端を深さとして出すと、震源が宙に浮いて見える)
+def is_shallow(loc):
+  return loc["at_top"] or (loc.get("depth_min") is not None and loc["depth_min"] <= -0.95)
+
+# 長い説明。例: 「深さ 1.7 km(1.3〜2.1 km)」「浅い(0.5 km より浅い)」
+def depth_text(loc):
+  lo, hi = loc.get("depth_min"), loc.get("depth_max")
+  if is_shallow(loc):
+    return f"浅い({hi:.1f} km より浅い)" if hi is not None else "浅い(深さは決まらない)"
+  if lo is None:
+    return f"{loc['depth']:.1f} km"
+  return f"{loc['depth']:.1f} km({lo:.1f}〜{hi:.1f} km)"
+
+# 表などの短い表示。例: 「1.7」「<0.5」
+def depth_short(loc):
+  if is_shallow(loc):
+    return f"<{loc['depth_max']:.1f}" if loc.get("depth_max") is not None else "浅い"
+  return f"{loc['depth']:.1f}"
+
+# 断面図に描く深さ: 浅いときは、海面(0 km)と範囲の深い方の端の、浅い方
+def depth_for_plot(loc):
+  if is_shallow(loc):
+    return min(0.0, loc["depth_max"]) if loc.get("depth_max") is not None else 0.0
+  return loc["depth"]
 
 # --- 遠い地震: 到来方向と S-P時間から震央を推定する ---
 #   拠点の間隔が数kmしかないため、遠い地震は P波・S波の到着時刻でも位置が決まらない

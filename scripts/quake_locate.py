@@ -8,6 +8,7 @@
 #   4. 一覧(CSV)と、震央の地図・東西と南北の断面図、候補ごとの確認用の画像(P波・S波の位置)を出力する
 #   自動の結果なので、あやしいものは震源推定の画面で到着時刻を手で直して確かめる
 #   震源推定の画面で保存した到着時刻(output/picks、pick_store.py)がある候補は、自動の検出の代わりにそれを使う
+#   (保存した到着時刻に、ほかの機関の観測点(external_stations.py)があれば、それも使う。自動の検出には使わない)
 import csv
 from datetime import datetime, timedelta
 
@@ -23,10 +24,12 @@ import jma_match
 import quake_detect
 from quake_features import USU_SUMMIT
 import pick_store
+import external_stations
 # 判定(KIND_*)は震源推定の画面と共通(hypocenter.py)
 from hypocenter import (LocalProjection, pick_filtered, refine_p, pick_s, locate_event,
                         LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT, MAX_LOCAL_RMS,
-                        KIND_LOCAL, KIND_LOCAL_POOR, KIND_FAR, KIND_NONE)
+                        KIND_LOCAL, KIND_LOCAL_POOR, KIND_FAR, KIND_NONE,
+                        depth_text, depth_short, depth_for_plot)
 from plot_common import NM_TO_CM
 
 # 候補の前後、波形を使う範囲 [秒](揺れの始まりの前・終わりの後)
@@ -128,7 +131,8 @@ def candidate_window(cand):
 #   震源推定の画面で保存した到着時刻(pick_store)がこの範囲にあれば、自動の検出をせずにそれを使う
 #   戻り値 ... dict(kind, picks・s_picks(t0 からの秒), excluded(計算から外した拠点), s_used(S波を計算に使った拠点),
 #                  ref(t0), loc, far, azimuth, app_v, plane_rms, n_p, n_s, lat, lon, traces, s_search, k,
-#                  manual(保存した到着時刻のファイル名 または ""))
+#                  manual(保存した到着時刻のファイル名 または ""),
+#                  external(使ったほかの機関の観測点 {名前: (緯度, 経度, 高度)}))
 def locate_candidate(st, cand, stations, proj):
   t0, t1 = candidate_window(cand)
   ref = obspy.UTCDateTime(t0)
@@ -148,7 +152,15 @@ def locate_candidate(st, cand, stations, proj):
   excluded, s_excluded = set(), set(S_EXCLUDED_DEFAULT)
 
   path, record = pick_store.find_record(t0, t1)
+  external = {}
   if record is not None:
+    # 保存した到着時刻に、ほかの機関の観測点があれば加える(確認用の画像に波形も描く)
+    ext_coords = external_stations.coords()
+    external = {nm: ext_coords[nm] for nm in record["stations"] if nm in ext_coords and nm not in stations}
+    if external:
+      stations = {**stations, **external}
+      ext_st = external_stations.load(t0, t1, names=list(external))
+      w += obspy.Stream([tr for tr in ext_st if tr.stats.npts > 0])
     # 震源推定の画面で保存した到着時刻とパラメータを使う
     picks, s_picks, _p_manual, _s_manual = pick_store.record_seconds(record, t0)
     picks = {nm: t for nm, t in picks.items() if nm in stations}
@@ -183,7 +195,7 @@ def locate_candidate(st, cand, stations, proj):
   xyz = {nm: np.array([*proj.to_xy(*stations[nm][:2]), stations[nm][2] / 1000]) for nm in used}
   result = locate_event(xyz, used, used_s, proj, vp, vp_vs, k)
   result.update(picks=picks, s_picks=s_picks, excluded=sorted(excluded), s_used=sorted(used_s), ref=t0,
-                traces=w, s_search=s_search, k=k, manual=path.name if path else "")
+                traces=w, s_search=s_search, k=k, manual=path.name if path else "", external=external)
   return result
 
 # 波形を使う範囲を含む時間の波形をつなぐ
@@ -235,12 +247,14 @@ def fmt(v, spec):
   return "" if v is None else format(v, spec)
 
 # 結果の一覧(CSV)
+#   names ... 到着時刻の列を出す拠点(ほかの機関の観測点を使った候補があれば、その観測点の列も後ろに足す)
 def write_csv(path, items, names):
+  names = list(names) + sorted({nm for _cand, r in items for nm in r.get("external", {})} - set(names))
   with open(path, "w", encoding="utf-8-sig", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["開始", "判定", "手直し"]
                     + [f"{nm} P[秒]" for nm in names] + [f"{nm} S-P[秒]" for nm in names]
-                    + ["P波の数", "S波の数", "緯度", "経度", "深さ[km](海面下)", "残差[秒]", "発生時刻",
+                    + ["P波の数", "S波の数", "緯度", "経度", "深さ[km](海面下)", "深さの範囲[km]", "残差[秒]", "発生時刻",
                        "到来方向[度]", "見かけの速度[km/s]", "遠い地震の距離[km]", "S-P時間の平均[秒]",
                        "気象庁: 発震時刻", "震央地名", "M", "気象庁: 緯度", "気象庁: 経度", "気象庁: 深さ[km]",
                        "気象庁: 震央距離[km]", "気象庁の震央との距離[km]", "山頂からの距離[km]", "画像"])
@@ -256,7 +270,9 @@ def write_csv(path, items, names):
       row += [(fmt(s_picks[nm] - picks[nm], ".2f") + ("" if nm in r["s_used"] else "(不使用)"))
               if nm in s_picks and nm in picks else "" for nm in names]
       row += [r["n_p"], r["n_s"], fmt(r["lat"], ".4f"), fmt(r["lon"], ".4f"),
-              fmt(loc["depth"], ".1f") if local and not loc["at_top"] else ("不定" if local else ""),
+              depth_short(loc) if local else "",
+              (f"{fmt(loc.get('depth_min'), '.1f')}〜{fmt(loc.get('depth_max'), '.1f')}" if local and loc.get("depth_min") is not None
+               else ""),
               fmt(loc["rms"], ".3f") if loc else "",
               (r["ref"] + timedelta(seconds=loc["origin"])).strftime("%H:%M:%S.%f")[:-4] if local else "",
               fmt(r["azimuth"], ".0f"), fmt(r["app_v"], ".1f"),
@@ -330,7 +346,7 @@ def check_title(cand, r):
            + f"  P波 {r['n_p']}・S波 {r['n_s']}  S-P[秒]: {sp or '-'}")
   loc, far = r["loc"], r["far"]
   if r["kind"] in (KIND_LOCAL, KIND_LOCAL_POOR):
-    depth = "深さ不定" if loc["at_top"] else f"深さ {loc['depth']:.1f} km"
+    depth = f"深さ {depth_text(loc)}"
     line2 = f"震源 北緯 {r['lat']:.4f}° 東経 {r['lon']:.4f}° {depth}  残差 {loc['rms']:.3f} 秒"
   elif r["kind"] == KIND_FAR:
     line2 = (f"遠い地震として: 到来方向 {r['azimuth']:.0f}°  距離 {far['distance']:.0f} km"
@@ -367,7 +383,7 @@ def save_location_map(path, items, stations, proj, title):
 #     local・points は地図に描いた近い地震の順(地図の番号の順)
 def draw_location_map(fig, items, stations, proj, title, listing=True):
   local = [(cand, r) for cand, r in items if r["kind"] in (KIND_LOCAL, KIND_LOCAL_POOR)]
-  points = [(*proj.to_xy(r["lat"], r["lon"]), r["loc"]["depth"]) for _cand, r in local]
+  points = [(*proj.to_xy(r["lat"], r["lon"]), depth_for_plot(r["loc"])) for _cand, r in local]
   half_x = max([MAP_HALF[0]] + [abs(p[0]) + 1 for p in points])
   half_y = max([MAP_HALF[1]] + [abs(p[1]) + 1 for p in points])
   # 地図の縦横比を保つ
@@ -391,12 +407,18 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   except Exception:
     pass   # 地図のタイルが取得できなくても、震源は描く
 
+  # 保存した到着時刻で使った、ほかの機関の観測点(灰色の三角で描く)
+  external = {}
+  for _cand, r in items:
+    external.update({nm: c for nm, c in r.get("external", {}).items() if nm not in stations})
+
   # 3つの図に同じものを描く(fx, fy で東・北・深さのどれを横軸・縦軸にするかを決める)
   def plot_all(ax, fx, fy):
-    for nm, (la, lo, el) in stations.items():
+    for nm, (la, lo, el) in {**stations, **external}.items():
       x, y = proj.to_xy(la, lo)
       z = -el / 1000
-      ax.plot(fx(x, y, z), fy(x, y, z), "^", color="black", ms=9, markeredgecolor="white", zorder=5)
+      ax.plot(fx(x, y, z), fy(x, y, z), "^", color="gray" if nm in external else "black", ms=9,
+              markeredgecolor="white", zorder=5)
       ax.annotate(nm, (fx(x, y, z), fy(x, y, z)), textcoords="offset points", xytext=(5, 4), fontsize=8, zorder=5)
     x, y = proj.to_xy(*USU_SUMMIT[:2])
     z = -0.733   # 大有珠の標高 733 m
@@ -439,11 +461,12 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
                     label=f"推定した震源(残差 {GOOD_RMS:g}秒以上)"),
              Line2D([], [], marker="x", color="teal", mew=2, ls="", label="気象庁の震源"),
              Line2D([], [], marker="^", color="black", ls="", label="拠点"),
+             *([Line2D([], [], marker="^", color="gray", ls="", label="ほかの機関の観測点(手直しで使用)")] if external else []),
              Line2D([], [], marker="P", color="saddlebrown", ls="", label="有珠山 山頂(大有珠)")]
   fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.07 + width + 0.03, 0.325), fontsize=8)
   # 番号の一覧(多いときは途中まで)
   lines = [f"{i:2d}. {cand['start']:%y/%m/%d %H:%M}  深さ"
-             + ("不定" if r["loc"]["at_top"] else f"{r['loc']['depth']:.1f}km") + f"  残差{r['loc']['rms']:.2f}秒"
+             + depth_short(r["loc"]) + f"km  残差{r['loc']['rms']:.2f}秒"
              + (" ×" if cand["jma"] else "") for i, (cand, r) in enumerate(local, 1)]
   if len(lines) > 24:
     lines = lines[:23] + [f"  ほか {len(lines) - 23}件(一覧の CSV を参照)"]
