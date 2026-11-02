@@ -248,3 +248,44 @@ def estimate_far(center, azimuth, sp_times, k):
   distance = k * sp
   lat, lon = destination(center[0], center[1], azimuth, distance)
   return dict(sp=sp, distance=distance, lat=lat, lon=lon)
+
+# --- P波・S波の到着時刻から震源を求めて判定する(震源推定の画面と、地震の候補をまとめて計算する処理で共通) ---
+# 判定
+KIND_LOCAL = "近い地震"
+KIND_LOCAL_POOR = "近い地震(残差大)"   # S-P時間は短いが残差が大きい(到着時刻の検出がずれている。手で確かめる)
+KIND_FAR = "遠い地震"
+KIND_NONE = "決まらない"
+
+# 震源を求めて判定する
+#   xyz     ... {拠点名: 座標 [km](東, 北, 海面からの高度)}(proj の平面座標)
+#   picks   ... {拠点名: P波の到着時刻 [秒]}(計算に使う拠点だけ)
+#   s_picks ... {拠点名: S波の到着時刻 [秒]}(計算に使う拠点だけ。picks にある拠点に限る)
+#   proj    ... 平面座標(緯度・経度に直すのと、遠い地震の推定の起点(拠点の中心)に使う)
+#   vp, vp_vs, k ... P波の速度 [km/s]、vp/vs、大森係数 [km/s]
+#   近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として到来方向と S-P時間から震央を推定する
+#   (S-P時間が短いのに残差が大きいときは、遠い地震ではなく検出のずれとみなし、近い地震(残差大)とする)
+# 戻り値: dict(kind, loc(locate_grid_ps の結果 または None), far(estimate_far の結果 または None),
+#              azimuth, app_v, plane_rms, n_p, n_s, lat, lon)
+def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=OMORI_K):
+  used = sorted(picks)
+  used_s = [nm for nm in used if nm in s_picks]
+  res = dict(kind=KIND_NONE, loc=None, far=None, azimuth=None, app_v=None, plane_rms=None,
+             n_p=len(used), n_s=len(used_s), lat=None, lon=None)
+  if len(used) >= 3:
+    res["azimuth"], res["app_v"], res["plane_rms"] = fit_plane_wave(
+      np.array([xyz[nm][:2] for nm in used]), np.array([picks[nm] for nm in used]))
+  obs = [(xyz[nm], picks[nm], vp) for nm in used] + [(xyz[nm], s_picks[nm], vp / vp_vs) for nm in used_s]
+  loc = None
+  if len(used) >= 3 and len(obs) >= MIN_OBSERVATIONS:
+    loc = locate_grid_ps(np.array([o[0] for o in obs]), np.array([o[1] for o in obs]),
+                         np.array([o[2] for o in obs]))
+    res["loc"] = loc
+  sp_times = [s_picks[nm] - picks[nm] for nm in used_s]
+  if loc is not None and not loc["at_edge"] and (loc["rms"] <= MAX_LOCAL_RMS or np.mean(sp_times or [0]) < FAR_MIN_SP):
+    res["kind"] = KIND_LOCAL if loc["rms"] <= MAX_LOCAL_RMS else KIND_LOCAL_POOR
+    res["lat"], res["lon"] = proj.to_latlon(loc["x"], loc["y"])
+    return res
+  far = estimate_far((proj.lat0, proj.lon0), res["azimuth"], sp_times, k)
+  if far is not None:
+    res.update(kind=KIND_FAR, far=far, lat=far["lat"], lon=far["lon"])
+  return res

@@ -11,6 +11,7 @@ from plot_common import NM_TO_CM, plot_components
 from log_common import log_message
 import app_paths
 import jma_match
+import pick_store
 from hypocenter import load_stations
 
 # ==========================================
@@ -164,6 +165,14 @@ def plot_ps_arrival_time(st):
   except Exception as e:
     log_message(f"気象庁の震源リストを読み込めませんでした: {e}")
 
+  # 震源推定の画面で保存した、この拠点の到着時刻(この範囲に最初の P波がある記録。無ければ None)
+  #   画面の検出とは別に、橙(P波)・紫(S波)の実線で示す
+  saved_p = saved_s = None
+  record_path, record = pick_store.find_record(t_ref, tr_u.stats.endtime.datetime)
+  if record is not None:
+    p_saved, s_saved, _pm, _sm = pick_store.record_seconds(record, t_ref)
+    saved_p, saved_s = p_saved.get(station), s_saved.get(station)
+
   # 検出用の水平合成(表示には使わない)
   hor_data = np.sqrt(tr_e.data**2 + tr_n.data**2)
   t_u = tr_u.times()
@@ -229,6 +238,11 @@ def plot_ps_arrival_time(st):
   jma_color = "teal"
   jma_p_line = ax1.axvline(0, color=jma_color, ls=":", lw=1.5, visible=False)
   jma_s_line = ax3.axvline(0, color=jma_color, ls=":", lw=1.5, visible=False)
+  # 震源推定の画面で保存した到着時刻(震源推定の画面の手で指定した線と同じ色)
+  if saved_p is not None:
+    ax1.axvline(saved_p, color="darkorange", lw=1.2, label=f"保存した P波 ({saved_p:.2f} 秒)")
+  if saved_s is not None:
+    ax3.axvline(saved_s, color="purple", lw=1.2, label=f"保存した S波 ({saved_s:.2f} 秒)")
   # S波を探さない区間(P波到着 〜 P波到着 + 待ち時間)を水平成分・S波CFTのグラフに薄く塗る
   # X はデータ座標、Y はグラフの下端〜上端(0〜1)で指定する
   gap_spans = []
@@ -386,6 +400,14 @@ def plot_ps_arrival_time(st):
              "震源距離 : 計算できません")
       # グラフタイトルを更新
       ax1.set_title("波形 (P波・S波の両方は検出できませんでした)", fontsize=11)
+    # 震源推定の画面で保存した到着時刻
+    #   (結果の欄に収まるよう2行にし、ファイル名は書かない)
+    if saved_p is not None:
+      msg += f"\n保存した到着時刻: P波 {saved_p:.2f} 秒"
+      if saved_s is not None:
+        sp_saved = saved_s - saved_p
+        msg += (f"  S波 {saved_s:.2f} 秒\n　S-P時間 {sp_saved:.2f} 秒  "
+                f"震源距離 {params['omori_k'] * sp_saved:.1f} km")
     # 結果サマリを表示(気象庁の震源リストの地震を続ける)
     result_text.set_text(msg + "\n\n" + "\n".join(jma_lines))
     fig.canvas.draw_idle()

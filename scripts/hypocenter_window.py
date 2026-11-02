@@ -3,6 +3,8 @@
 #   P波は STA/LTA で検出したあと AIC 法で決め直し、S波は P波のあとの水平動に AIC 法を使う(hypocenter.py)
 #   震源は P波・S波の到着時刻から求める(均質な速度構造。拠点の高度を考え、深さは海面からの深さ)
 #   到来方向は P波の到着時刻だけから求める(遠い地震は位置が決まらないため)
+#   到着時刻(手で直したものを含む)とパラメータは「到着時刻を保存」で output/picks に保存し(pick_store.py)、
+#   同じ範囲を開いたときに読み込んで再現する
 from datetime import timedelta
 
 import numpy as np
@@ -10,16 +12,17 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from matplotlib.text import Annotation
 
-from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, fit_plane_wave, locate_grid_ps,
-                        pick_filtered, refine_p, pick_s, estimate_far, HORIZONTAL_RANGE,
+from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, locate_event,
+                        pick_filtered, refine_p, pick_s, HORIZONTAL_RANGE,
                         LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT,
-                        MIN_OBSERVATIONS, MAX_LOCAL_RMS, FAR_MIN_SP)
+                        MIN_OBSERVATIONS, MAX_LOCAL_RMS)
 from plot_common import NM_TO_CM, get_component_color
 import gsi_tiles
 from ps_picker import load_params, save_params
 from log_common import log_message
 import app_paths
 import jma_match
+import pick_store
 from obspy.geodetics import gps2dist_azimuth
 
 # 設定ファイル(P波・S波検出とは別に保存する)
@@ -78,7 +81,10 @@ def format_time(t):
 # 震源推定の画面を開く
 #   st ... 3拠点以上の波形(上下動で P波、水平動(N・E)で S波を検出する)
 #   overrides ... 前回の設定より優先するパラメータ(例: 遠い地震の候補を開くときの {"s_search": 30})
-def plot_hypocenter(st, overrides=None):
+#                 保存した到着時刻があれば、そのときのパラメータをさらに優先する
+#   on_apply  ... 地震の候補の震源の画面から開いたとき、保存したあとに呼ぶ関数(保存したファイルのパスを渡す)
+#                 ボタンは「保存して一覧に反映」になる
+def plot_hypocenter(st, overrides=None, on_apply=None):
   # --- データ取得: 拠点ごとの上下動と水平動 ---
   traces = {tr.stats.station: tr for tr in st.select(channel="*U*")}
   names = sorted(traces)
@@ -110,9 +116,9 @@ def plot_hypocenter(st, overrides=None):
 
   # 気象庁の震源リストで、この期間に揺れが届きそうな地震(取得済みのときだけ。到達見込みは拠点の中心で計算)
   t_ref = ref_time.datetime
+  end_time = max(tr.stats.endtime for tr in traces.values()).datetime
   jma_hits, jma_available = [], False
   try:
-    end_time = max(tr.stats.endtime for tr in traces.values()).datetime
     jma_hits, jma_available = jma_match.quakes_in_window(t_ref, end_time, (proj.lat0, proj.lon0))
   except Exception as e:
     log_message(f"気象庁の震源リストを読み込めませんでした: {e}")
@@ -227,6 +233,13 @@ def plot_hypocenter(st, overrides=None):
   # ==========================================
   initial = load_params(SETTINGS_FILE, SLIDER_SPECS, DEFAULT_PARAMS)
   initial.update(overrides or {})
+  # この範囲で保存した到着時刻(最初の P波が範囲内にあるもの)
+  record_path, record = pick_store.find_record(t_ref, end_time)
+  if record is not None:
+    limits = {key: (vmin, vmax) for key, _label, vmin, vmax, _step in SLIDER_SPECS}
+    for key, val in record.get("params", {}).items():
+      if key in limits:
+        initial[key] = min(max(float(val), limits[key][0]), limits[key][1])
   sliders = {}
   top, step_y = 0.54, 0.026
   for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
@@ -235,20 +248,35 @@ def plot_hypocenter(st, overrides=None):
 
   # --- 状態: 自動検出の結果、手で指定した時刻、計算から外した拠点 ---
   #   horizontal ... 水平動を表示している(クリックで S波を指定する)
+  #   fixed・fixed_s ... 保存した到着時刻のうち、自動で検出したもの(検出をやり直しても同じになるとは限らないので、
+  #                      保存した時刻を使う。P波の検出のパラメータを変えたら P波、P波か S波を探す範囲が変わったら S波を捨てる)
   state = {"auto": {}, "pick_params": None, "result": None, "filtered": True, "layer": MAP_LAYERS[0],
-           "p_thr": None, "jma": None, "horizontal": False, "auto_s": {}}
+           "p_thr": None, "jma": None, "horizontal": False, "auto_s": {}, "fixed": {}, "fixed_s": {},
+           "record_path": record_path}
   manual = {}
   manual_s = {}
   excluded = set()
   s_excluded = S_EXCLUDED_DEFAULT & set(names)
+  if record is not None:
+    p_saved, s_saved, p_manual, s_manual = pick_store.record_seconds(record, t_ref)
+    for nm in names:
+      if nm in p_saved:
+        (manual if nm in p_manual else state["fixed"])[nm] = p_saved[nm]
+      if nm in s_saved:
+        (manual_s if nm in s_manual else state["fixed_s"])[nm] = s_saved[nm]
+    # 保存した S波は、そのときの P波と S波を探す範囲のときだけ使う
+    state["fixed_s_basis"] = ({nm: p_saved.get(nm) for nm in names}, initial["s_search"])
+    excluded = set(record.get("excluded", [])) & set(names)
+    s_excluded = set(record.get("s_excluded", [])) & set(names)
+    log_message(f"保存した到着時刻を読み込みました: {record_path}")
 
-  # 計算に使う P波の到着時刻(手で指定したものを優先)
+  # 計算に使う P波の到着時刻(手で指定したもの、保存したもの、自動で検出したものの順)
   def current_picks():
-    return {nm: manual.get(nm, state["auto"].get(nm)) for nm in names}
+    return {nm: manual.get(nm, state["fixed"].get(nm, state["auto"].get(nm))) for nm in names}
 
-  # 計算に使う S波の到着時刻(手で指定したものを優先)
+  # 計算に使う S波の到着時刻(手で指定したもの、保存したもの、自動で検出したものの順)
   def current_s_picks():
-    return {nm: manual_s.get(nm, state["auto_s"].get(nm)) for nm in names}
+    return {nm: manual_s.get(nm, state["fixed_s"].get(nm, state["auto_s"].get(nm))) for nm in names}
 
   # 画面の上の説明(上下動・水平動の表示で、クリックの意味が変わる)
   def set_help_title():
@@ -326,7 +354,7 @@ def plot_hypocenter(st, overrides=None):
     radius = max(np.hypot(*xy[nm]) for nm in names)
     # 南北の半分の幅 [km](東西はその MAP_ASPECT 倍)。拠点が東西に収まるように決める
     half_y = radius * 1.6 / MAP_ASPECT
-    loc = res.get("grid")
+    loc = res.get("loc")
     if loc is not None and not loc["at_edge"] and res.get("far") is None:
       # 近い地震: 震央を星で示す(遠い地震として推定したときは、到来方向の矢印にする)
       # 拠点の間にあると拠点名と重なるため、説明の文字は凡例に出す
@@ -396,7 +424,7 @@ def plot_hypocenter(st, overrides=None):
                    f"  見かけの速度: {res['app_v']:.1f} km/s  残差: {res['plane_rms']:.3f} 秒")
     else:
       lines.append(f"◆到来方向: {WARN_MARK}3拠点以上の到着時刻が必要です")
-    loc = res.get("grid")
+    loc = res.get("loc")
     if loc is None:
       lines.append(f"◆震源: {WARN_MARK}P波 3拠点以上と、P波・S波を合わせて {MIN_OBSERVATIONS}つ以上の到着時刻が必要です")
     elif loc["at_edge"]:
@@ -473,7 +501,9 @@ def plot_hypocenter(st, overrides=None):
     pick_params = tuple(params[k] for k in PICK_KEYS)
     refit = False
     if pick_params != state["pick_params"]:
-      # 検出のパラメータが変わったときだけ、P波の検出をやり直す
+      # 検出のパラメータが変わったときだけ、P波の検出をやり直す(保存した P波は、開いたときだけ使う)
+      if state["pick_params"] is not None:
+        state["fixed"].clear()
       if params["p_lta"] <= params["p_sta"]:
         show_result("※LTA は STA より長くしてください。\n※スライダーを調整してください。")
         fig.canvas.draw_idle()
@@ -510,6 +540,12 @@ def plot_hypocenter(st, overrides=None):
       _data_u, energy, df, offset = pick_data[nm]
       if picks[nm] is not None and energy is not None:
         state["auto_s"][nm] = pick_s(energy, df, offset, picks[nm], params["s_search"])
+    # 保存した S波は、P波か S波を探す範囲が保存したときから変わったら捨てる
+    if state["fixed_s"]:
+      p_basis, s_search_basis = state["fixed_s_basis"]
+      for nm in list(state["fixed_s"]):
+        if picks[nm] != p_basis.get(nm) or params["s_search"] != s_search_basis:
+          del state["fixed_s"][nm]
     s_picks = current_s_picks()
     for nm in names:
       ln = s_lines[nm]
@@ -526,30 +562,11 @@ def plot_hypocenter(st, overrides=None):
       fit_xlim(picks)
       fit_ylim()
 
-    # --- 震源の計算 ---
-    used = [nm for nm in names if picks[nm] is not None and nm not in excluded]
-    pts = np.array([xy[nm] for nm in used])
-    times = np.array([picks[nm] for nm in used])
-    res = {}
-    if len(used) >= 3:
-      res["azimuth"], res["app_v"], res["plane_rms"] = fit_plane_wave(pts, times)
-    # 震源は P波・S波の到着時刻を合わせて求める
-    used_s = [nm for nm in used if s_picks[nm] is not None and nm not in s_excluded]
-    vs = params["vp"] / params["vp_vs"]
-    obs = ([(xyz[nm], picks[nm], params["vp"]) for nm in used]
-           + [(xyz[nm], s_picks[nm], vs) for nm in used_s])
-    res["n_p"], res["n_s"] = len(used), len(used_s)
-    if len(used) >= 3 and len(obs) >= MIN_OBSERVATIONS:
-      res["grid"] = locate_grid_ps(np.array([o[0] for o in obs]), np.array([o[1] for o in obs]),
-                                   np.array([o[2] for o in obs]))
-    # 近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として
-    # 到来方向と S-P時間から震央を推定する
-    #   (S-P時間が短いのに残差が大きいときは、遠い地震ではなく検出のずれとみなし、推定しない)
-    loc = res.get("grid")
-    sp_times = [s_picks[nm] - picks[nm] for nm in used_s]
-    if ((loc is None or loc["at_edge"] or loc["rms"] > MAX_LOCAL_RMS)
-        and sp_times and (np.mean(sp_times) >= FAR_MIN_SP or loc is None or loc["at_edge"])):
-      res["far"] = estimate_far((proj.lat0, proj.lon0), res.get("azimuth"), sp_times, params["omori_k"])
+    # --- 震源の計算(地震の候補をまとめて計算する処理と共通。hypocenter.locate_event) ---
+    #   近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として到来方向と S-P時間から震央を推定する
+    used = {nm: picks[nm] for nm in names if picks[nm] is not None and nm not in excluded}
+    used_s = {nm: s_picks[nm] for nm in used if s_picks[nm] is not None and nm not in s_excluded}
+    res = locate_event(xyz, used, used_s, proj, params["vp"], params["vp_vs"], params["omori_k"])
     state["result"] = res
 
     message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ
@@ -590,12 +607,15 @@ def plot_hypocenter(st, overrides=None):
     update()
   fig.canvas.mpl_connect("button_press_event", on_click)
 
-  # --- ボタン: 自動検出に戻す・リセット・テキスト出力 ---
-  aax = fig.add_axes([0.62, 0.315, 0.11, 0.032])
+  # --- ボタン: 自動検出に戻す・リセット・テキスト出力・到着時刻を保存 ---
+  aax = fig.add_axes([0.61, 0.315, 0.095, 0.032])
   btn_auto = Button(aax, "自動検出に戻す")
+  btn_auto.label.set_fontsize(9)
   def back_to_auto(_):
     manual.clear()
     manual_s.clear()
+    state["fixed"].clear()
+    state["fixed_s"].clear()
     excluded.clear()
     s_excluded.clear()
     s_excluded.update(S_EXCLUDED_DEFAULT & set(names))
@@ -604,8 +624,9 @@ def plot_hypocenter(st, overrides=None):
     fig.canvas.draw_idle()
   btn_auto.on_clicked(back_to_auto)
 
-  rax = fig.add_axes([0.745, 0.315, 0.08, 0.032])
+  rax = fig.add_axes([0.715, 0.315, 0.06, 0.032])
   btn_reset = Button(rax, "リセット")
+  btn_reset.label.set_fontsize(9)
   def reset(_):
     for key, val in DEFAULT_PARAMS.items():
       s = sliders[key]
@@ -615,8 +636,9 @@ def plot_hypocenter(st, overrides=None):
     update()
   btn_reset.on_clicked(reset)
 
-  pax = fig.add_axes([0.84, 0.315, 0.10, 0.032])
+  pax = fig.add_axes([0.785, 0.315, 0.08, 0.032])
   btn_print = Button(pax, "テキスト出力")
+  btn_print.label.set_fontsize(9)
   def print_result(_):
     log_message("--- 震源推定 ---")
     for k, s in sliders.items():
@@ -624,6 +646,39 @@ def plot_hypocenter(st, overrides=None):
     for line in plain(result_message(current_picks(), state["result"] or {})).splitlines():
       log_message(line)
   btn_print.on_clicked(print_result)
+
+  # 到着時刻(手で直したものを含む)・計算から外した拠点・パラメータを output/picks に保存する
+  #   地震の候補の震源の画面から開いたときは、保存したあと一覧に反映する(on_apply)
+  sax_btn = fig.add_axes([0.875, 0.315, 0.105, 0.032])
+  btn_save = Button(sax_btn, "保存して一覧に反映" if on_apply else "到着時刻を保存")
+  btn_save.label.set_fontsize(9)
+  def save_picks(_):
+    def absolute(values):
+      return {nm: t_ref + timedelta(seconds=t) for nm, t in values.items() if t is not None}
+    path = pick_store.save_record(absolute(current_picks()), absolute(current_s_picks()), set(manual), set(manual_s),
+                                  excluded, s_excluded, {k: s.val for k, s in sliders.items()},
+                                  replace=state["record_path"])
+    if path is None:
+      status_text.set_text("P波の到着時刻がないため、保存できません")
+      fig.canvas.draw_idle()
+      return
+    state["record_path"] = path
+    text = f"保存しました: {path.name}"
+    if on_apply:
+      try:
+        on_apply(path)
+        text += "(一覧に反映しました)"
+      except Exception as e:
+        log_message(f"一覧に反映できませんでした: {e}")
+        text += "(一覧に反映できませんでした)"
+    status_text.set_text(text)
+    fig.canvas.draw_idle()
+  btn_save.on_clicked(save_picks)
+
+  # 保存した到着時刻の状態(右上に表示する)
+  status_text = fig.text(0.98, 0.995, "", ha="right", va="top", fontsize=9, color=RESULT_COLORS["jma"])
+  if record is not None:
+    status_text.set_text(f"保存した到着時刻を読み込みました: {record_path.name}(保存 {record.get('saved', '')})")
 
   fig.text(0.605, 0.578, "パラメータ", fontsize=12, weight="bold")
 
@@ -684,7 +739,7 @@ def plot_hypocenter(st, overrides=None):
   fig.canvas.mpl_connect("close_event", on_close)
 
   update()
-  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_filter, btn_layer, btn_comp)
+  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_save, btn_filter, btn_layer, btn_comp)
   plt.show()
 
 if __name__ == "__main__":

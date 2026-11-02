@@ -28,6 +28,7 @@ from hypocenter import load_stations, LocalProjection
 import quake_detect
 import quake_features
 import quake_locate
+import pick_store
 from quake_locate_window import open_locate_window
 from hypocenter_window import plot_hypocenter
 from pathlib import Path
@@ -59,7 +60,7 @@ warnings.filterwarnings(
 # 12. 変更しないファイルと、使っているうちに作られる・変わるファイルの置き場所を分ける
 #     変更しないもの(動作に必須のものを含む): tools、service_account、etc の設定ファイル(win.prm、*.ch、*.tbl)
 #       → アプリと一緒に置く(今と同じ)
-#     ユーザーの操作で作られる・変わるもの: etc/ps_picker_params.json、etc/hypocenter_params.json、output(キャッシュ・history.json)、
+#     ユーザーの操作で作られる・変わるもの: etc/ps_picker_params.json、etc/hypocenter_params.json、output(キャッシュ・history.json・picks)、
 #       daily_zips(ダウンロードしたZIP)、batch_plots(バッチ処理の画像)
 #       → ユーザープロファイル配下に置く(例: Mac は ~/Library/Application Support/UsuMantenViewer、
 #          Windows は %APPDATA%\UsuMantenViewer や %LOCALAPPDATA%\UsuMantenViewer)
@@ -89,8 +90,12 @@ warnings.filterwarnings(
 #     残差が小さくても位置が当てにならない。「到着時刻が6つ以上」のような条件を足す
 #     (2026/8/3 00:51 は、到着時刻5つ(P波3・S波2)で残差 0.083秒の「近い地震」になったが、
 #      波形は Hokudai 以外は雑音並みで、地震とは言えなかった)
-# 20. 地震の候補の震源の画面で、震源推定の画面での手直しを一覧に反映する
-#     手直しした到着時刻と、それから求めた震源を一覧(表・地図・CSV)に反映し、保存できるようにする
+# [完了]20. 地震の候補の震源の画面で、震源推定の画面での手直しを一覧に反映する
+#     (到着時刻とパラメータを output/picks に保存し(pick_store.py)、震源推定・P波・S波検出・地震の候補の震源の
+#      画面とバッチ処理で再現する。一覧の画面では「保存して一覧に反映」で表・地図を更新し、CSV に「手直し」の列を足す)
+# 21. 気象庁や防災科研の観測点の波形データ(とくに有珠山の南側の観測点)を組み合わせることで、
+#     震源位置の特定の精度が上がるかどうかを検証する
+#     (今の4拠点には南側の拠点が無く、深さと位置が決まりにくい)
 
 # クラス定義
 class MantenUsuSeismographApp:
@@ -1347,19 +1352,34 @@ class MantenUsuSeismographApp:
       messagebox.showwarning("警告", "震源を計算できた候補がありませんでした。")
       return
 
-    # 候補の震源推定の画面を開く(同じ範囲の波形。遠い地震は S波を探す範囲を広げる)
-    def open_event(cand, r):
+    # 候補の前後の波形(震源推定の画面と、求め直すときに使う)
+    def event_stream(cand):
       t0, t1 = quake_locate.candidate_window(cand)
       st = quake_locate.window_stream(t0, t1, self.load_hour_stream, {}).slice(
         obspy_time(t0), obspy_time(t1)).copy()
       for tr in st:
         if np.ma.isMaskedArray(tr.data):
           tr.data = tr.data.filled(0)
-      st = Stream([tr for tr in st if tr.stats.npts > 0 and np.any(tr.data)])
+      return Stream([tr for tr in st if tr.stats.npts > 0 and np.any(tr.data)])
+
+    # 候補の震源推定の画面を開く(同じ範囲の波形。遠い地震は S波を探す範囲を広げる)
+    #   画面で「保存して一覧に反映」を押すと、保存した到着時刻から震源を求め直して、一覧の行と図を更新する(apply)
+    def open_event(cand, r, apply):
+      st = event_stream(cand)
       if len({tr.stats.station for tr in st}) < 3:
         messagebox.showwarning("警告", "3拠点以上の波形がありません。")
         return
-      plot_hypocenter(st, overrides={"s_search": r.get("s_search", quake_locate.LOCAL_S_SEARCH)})
+      def on_apply(_path):
+        apply(quake_locate.locate_candidate(st, cand, stations, proj))
+      plot_hypocenter(st, overrides={"s_search": r.get("s_search", quake_locate.LOCAL_S_SEARCH)}, on_apply=on_apply)
+
+    # 保存した到着時刻を消して、自動の検出で求め直す
+    def revert(cand, r):
+      path = pick_store.PICKS_DIR / r["manual"]
+      if path.exists():
+        path.unlink()
+        log_message(f"保存した到着時刻を消しました: {path}")
+      return quake_locate.locate_candidate(event_stream(cand), cand, stations, proj)
 
     # 一覧(CSV)と地図・断面図を保存する(バッチ処理と同じ場所・名前)
     def save():
@@ -1368,11 +1388,11 @@ class MantenUsuSeismographApp:
       out_csv = out_dir / f"{path.stem}_locations.csv"
       out_png = out_dir / f"{path.stem}_locations.png"
       quake_locate.write_csv(out_csv, items, sorted(stations))
-      quake_locate.save_location_map(out_png, items, stations, proj, f"地震の候補の震源(自動) {path.stem}")
+      quake_locate.save_location_map(out_png, items, stations, proj, quake_locate.map_title(path.stem, items))
       log_message(f"保存しました: {out_csv} / {out_png}")
       messagebox.showinfo("保存", f"保存しました。\n\n{out_csv}\n{out_png}")
 
-    open_locate_window(self.root, items, stations, proj, path.stem, open_event, save)
+    open_locate_window(self.root, items, stations, proj, path.stem, open_event, save, revert)
 
   # --- 地震の候補の震源を求めるバッチ処理(UIなし) ---
   #   csv_path    ... 地震の候補の一覧(--detect-quakes の quake_candidates_*.csv。「候補」の列があれば印の付いた行だけ)
@@ -1411,7 +1431,7 @@ class MantenUsuSeismographApp:
     quake_locate.write_csv(out_csv, items, names)
     log_message(f"一覧: {out_csv}")
     out_png = out_dir / f"{stem}_locations.png"
-    quake_locate.save_location_map(out_png, items, stations, proj, f"地震の候補の震源(自動) {stem}")
+    quake_locate.save_location_map(out_png, items, stations, proj, quake_locate.map_title(stem, items))
     log_message(f"地図・断面図: {out_png}")
     if save_images:
       log_message(f"確認用の画像: {out_dir}")

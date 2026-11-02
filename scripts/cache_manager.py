@@ -52,10 +52,15 @@ def classify(name):
     return "sac"
   return "other"
 
-# output フォルダの下の各フォルダ(期間ごと・1時間ごと)を返す。直下のファイル(履歴など)は含めない
+# キャッシュとして扱わない output フォルダの下のフォルダ
+#   picks ... 震源推定の画面で保存した到着時刻(pick_store.py)。作り直せないので消さない
+#   quake_rms ... 地震の候補を探す処理の揺れの大きさ(quake_detect.py)。作り直すのに時間がかかるので消さない
+KEEP_DIRS = {"picks", "quake_rms"}
+
+# output フォルダの下の各フォルダ(期間ごと・1時間ごと)を返す。直下のファイル(履歴など)と KEEP_DIRS は含めない
 def _cache_dirs(root):
   with os.scandir(root) as it:
-    return [e.path for e in it if e.is_dir(follow_symlinks=False)]
+    return [e.path for e in it if e.is_dir(follow_symlinks=False) and e.name not in KEEP_DIRS]
 
 # フォルダ内のファイルを、サブフォルダも含めて順に返す: (パス, ファイル名, os.DirEntry)
 def _walk_files(path):

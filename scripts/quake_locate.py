@@ -3,10 +3,11 @@
 #   1. 候補の前後の波形で P波を検出し(quake_features の短い STA/LTA)、AIC 法で決め直す
 #   2. P波のあとの水平動から S波を検出する(AIC 法)
 #      震源リストと対応した候補は、その地震の S-P時間の見込みに合わせて S波を探す範囲を広げる
-#   3. P波・S波の到着時刻から、近い地震として震源を求める(震源推定の画面と同じ方法・既定値。hypocenter.py)
+#   3. P波・S波の到着時刻から、近い地震として震源を求める(震源推定の画面と同じ方法・既定値。hypocenter.locate_event)
 #      位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として到来方向と S-P時間から震央を推定する
 #   4. 一覧(CSV)と、震央の地図・東西と南北の断面図、候補ごとの確認用の画像(P波・S波の位置)を出力する
 #   自動の結果なので、あやしいものは震源推定の画面で到着時刻を手で直して確かめる
+#   震源推定の画面で保存した到着時刻(output/picks、pick_store.py)がある候補は、自動の検出の代わりにそれを使う
 import csv
 from datetime import datetime, timedelta
 
@@ -21,9 +22,11 @@ import gsi_tiles
 import jma_match
 import quake_detect
 from quake_features import USU_SUMMIT
-from hypocenter import (LocalProjection, fit_plane_wave, locate_grid_ps, pick_filtered, refine_p, pick_s,
-                        estimate_far, LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT,
-                        MIN_OBSERVATIONS, MAX_LOCAL_RMS, FAR_MIN_SP)
+import pick_store
+# 判定(KIND_*)は震源推定の画面と共通(hypocenter.py)
+from hypocenter import (LocalProjection, pick_filtered, refine_p, pick_s, locate_event,
+                        LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT, MAX_LOCAL_RMS,
+                        KIND_LOCAL, KIND_LOCAL_POOR, KIND_FAR, KIND_NONE)
 from plot_common import NM_TO_CM
 
 # 候補の前後、波形を使う範囲 [秒](揺れの始まりの前・終わりの後)
@@ -43,12 +46,6 @@ CHECK_AFTER_S = 3.0
 CHECK_MIN, CHECK_MAX = 5.0, 90.0
 # 確認用の画像のフィルター [Hz](検出と同じ帯域)
 CHECK_BAND = (2.0, 30.0)
-
-# 判定(一覧・画像に書く)
-KIND_LOCAL = "近い地震"
-KIND_LOCAL_POOR = "近い地震(残差大)"   # S-P時間は短いが残差が大きい(到着時刻の検出がずれている。手で確かめる)
-KIND_FAR = "遠い地震"
-KIND_NONE = "決まらない"
 
 # 出力先
 OUTPUT_DIR = app_paths.BATCH_PLOTS_DIR / "quakes" / "locate"
@@ -128,8 +125,10 @@ def candidate_window(cand):
 # 候補1件の震源を求める
 #   st ... 候補の前後を含む Stream(全成分)、stations ... {拠点名: (緯度, 経度, 高度)}
 #   proj ... 震源の計算と地図に使う平面座標(全拠点の中心が原点)
-#   戻り値 ... dict(kind, picks・s_picks(t0 からの秒), s_used(S波を計算に使った拠点), ref(t0), loc, far,
-#                  azimuth, app_v, plane_rms, n_p, n_s, lat, lon, traces)
+#   震源推定の画面で保存した到着時刻(pick_store)がこの範囲にあれば、自動の検出をせずにそれを使う
+#   戻り値 ... dict(kind, picks・s_picks(t0 からの秒), excluded(計算から外した拠点), s_used(S波を計算に使った拠点),
+#                  ref(t0), loc, far, azimuth, app_v, plane_rms, n_p, n_s, lat, lon, traces, s_search, k,
+#                  manual(保存した到着時刻のファイル名 または ""))
 def locate_candidate(st, cand, stations, proj):
   t0, t1 = candidate_window(cand)
   ref = obspy.UTCDateTime(t0)
@@ -138,58 +137,53 @@ def locate_candidate(st, cand, stations, proj):
     if np.ma.isMaskedArray(tr.data):
       tr.data = tr.data.filled(0)
   w = obspy.Stream([tr for tr in w if tr.stats.npts > 0 and np.any(tr.data) and tr.stats.station in stations])
-  result = dict(kind=KIND_NONE, picks={}, s_picks={}, s_used=[], ref=t0, loc=None, far=None, azimuth=None,
-                app_v=None, plane_rms=None, n_p=0, n_s=0, lat=None, lon=None, traces=w)
 
-  # P波(短い STA/LTA で検出し、AIC 法で決め直す)
-  _feat, coarse = quake_detect.analyze_candidate(w, t0, t1, stations)
   q = cand["jma"]
   s_search = LOCAL_S_SEARCH
   if q and q.get("p_time") and q.get("s_time"):
     sp = (q["s_time"] - q["p_time"]).total_seconds()
     if sp > FAR_SP_SECONDS:
       s_search = max(s_search, sp + S_SEARCH_MARGIN)
-  result["s_search"] = s_search
-  for nm in sorted(coarse):
-    u = w.select(station=nm, channel="*U*")
-    if not u:
-      continue
-    u = u[0]
-    df, offset = u.stats.sampling_rate, u.stats.starttime - ref
-    tp = refine_p(pick_filtered(u), df, offset, (coarse[nm] - t0).total_seconds())
-    result["picks"][nm] = tp
-    # S波(水平動のエネルギーに AIC 法)
-    hor = [w.select(station=nm, channel=f"*{c}*") for c in "NE"]
-    if all(hor):
-      n_data, e_data = pick_filtered(hor[0][0]), pick_filtered(hor[1][0])
-      m = min(len(n_data), len(e_data))
-      ts = pick_s(n_data[:m] ** 2 + e_data[:m] ** 2, df, hor[0][0].stats.starttime - ref, tp, s_search)
-      if ts is not None:
-        result["s_picks"][nm] = ts
+  vp, vp_vs, k = LOCAL_VP, LOCAL_VP_VS, OMORI_K
+  excluded, s_excluded = set(), set(S_EXCLUDED_DEFAULT)
 
-  picks, s_picks = result["picks"], result["s_picks"]
-  used = sorted(picks)
-  used_s = [nm for nm in used if nm in s_picks and nm not in S_EXCLUDED_DEFAULT]
-  result.update(s_used=used_s, n_p=len(used), n_s=len(used_s))
+  path, record = pick_store.find_record(t0, t1)
+  if record is not None:
+    # 震源推定の画面で保存した到着時刻とパラメータを使う
+    picks, s_picks, _p_manual, _s_manual = pick_store.record_seconds(record, t0)
+    picks = {nm: t for nm, t in picks.items() if nm in stations}
+    s_picks = {nm: t for nm, t in s_picks.items() if nm in picks}
+    excluded, s_excluded = set(record.get("excluded", [])), set(record.get("s_excluded", []))
+    params = record.get("params", {})
+    vp, vp_vs, k = params.get("vp", vp), params.get("vp_vs", vp_vs), params.get("omori_k", k)
+    s_search = params.get("s_search", s_search)
+  else:
+    # P波(短い STA/LTA で検出し、AIC 法で決め直す)
+    _feat, coarse = quake_detect.analyze_candidate(w, t0, t1, stations)
+    picks, s_picks = {}, {}
+    for nm in sorted(coarse):
+      u = w.select(station=nm, channel="*U*")
+      if not u:
+        continue
+      u = u[0]
+      df, offset = u.stats.sampling_rate, u.stats.starttime - ref
+      tp = refine_p(pick_filtered(u), df, offset, (coarse[nm] - t0).total_seconds())
+      picks[nm] = tp
+      # S波(水平動のエネルギーに AIC 法)
+      hor = [w.select(station=nm, channel=f"*{c}*") for c in "NE"]
+      if all(hor):
+        n_data, e_data = pick_filtered(hor[0][0]), pick_filtered(hor[1][0])
+        m = min(len(n_data), len(e_data))
+        ts = pick_s(n_data[:m] ** 2 + e_data[:m] ** 2, df, hor[0][0].stats.starttime - ref, tp, s_search)
+        if ts is not None:
+          s_picks[nm] = ts
+
+  used = {nm: t for nm, t in picks.items() if nm not in excluded}
+  used_s = {nm: t for nm, t in s_picks.items() if nm in used and nm not in s_excluded}
   xyz = {nm: np.array([*proj.to_xy(*stations[nm][:2]), stations[nm][2] / 1000]) for nm in used}
-  if len(used) >= 3:
-    result["azimuth"], result["app_v"], result["plane_rms"] = fit_plane_wave(
-      np.array([xyz[nm][:2] for nm in used]), np.array([picks[nm] for nm in used]))
-  vs = LOCAL_VP / LOCAL_VP_VS
-  obs = [(xyz[nm], picks[nm], LOCAL_VP) for nm in used] + [(xyz[nm], s_picks[nm], vs) for nm in used_s]
-  if len(used) >= 3 and len(obs) >= MIN_OBSERVATIONS:
-    loc = locate_grid_ps(np.array([o[0] for o in obs]), np.array([o[1] for o in obs]),
-                         np.array([o[2] for o in obs]))
-    result["loc"] = loc
-    sp_times = [s_picks[nm] - picks[nm] for nm in used_s]
-    if not loc["at_edge"] and (loc["rms"] <= MAX_LOCAL_RMS or np.mean(sp_times or [0]) < FAR_MIN_SP):
-      result["kind"] = KIND_LOCAL if loc["rms"] <= MAX_LOCAL_RMS else KIND_LOCAL_POOR
-      result["lat"], result["lon"] = proj.to_latlon(loc["x"], loc["y"])
-  if result["kind"] == KIND_NONE:
-    far = estimate_far((proj.lat0, proj.lon0), result["azimuth"], [s_picks[nm] - picks[nm] for nm in used_s],
-                       OMORI_K)
-    if far is not None:
-      result.update(kind=KIND_FAR, far=far, lat=far["lat"], lon=far["lon"])
+  result = locate_event(xyz, used, used_s, proj, vp, vp_vs, k)
+  result.update(picks=picks, s_picks=s_picks, excluded=sorted(excluded), s_used=sorted(used_s), ref=t0,
+                traces=w, s_search=s_search, k=k, manual=path.name if path else "")
   return result
 
 # 波形を使う範囲を含む時間の波形をつなぐ
@@ -244,7 +238,7 @@ def fmt(v, spec):
 def write_csv(path, items, names):
   with open(path, "w", encoding="utf-8-sig", newline="") as f:
     writer = csv.writer(f)
-    writer.writerow(["開始", "判定"]
+    writer.writerow(["開始", "判定", "手直し"]
                     + [f"{nm} P[秒]" for nm in names] + [f"{nm} S-P[秒]" for nm in names]
                     + ["P波の数", "S波の数", "緯度", "経度", "深さ[km](海面下)", "残差[秒]", "発生時刻",
                        "到来方向[度]", "見かけの速度[km/s]", "遠い地震の距離[km]", "S-P時間の平均[秒]",
@@ -252,11 +246,13 @@ def write_csv(path, items, names):
                        "気象庁: 震央距離[km]", "気象庁の震央との距離[km]", "山頂からの距離[km]", "画像"])
     for cand, r in items:
       picks, s_picks = r["picks"], r["s_picks"]
-      first = min(picks.values(), default=None)
+      used = [t for nm, t in picks.items() if nm not in r.get("excluded", [])]
+      first = min(used or picks.values(), default=None)
       loc, far, q = r["loc"], r["far"], cand["jma"]
       local = r["kind"] in (KIND_LOCAL, KIND_LOCAL_POOR)
-      row = [cand["start"].strftime("%Y-%m-%d %H:%M:%S"), r["kind"]]
-      row += [fmt(picks[nm] - first, ".3f") if nm in picks else "" for nm in names]
+      row = [cand["start"].strftime("%Y-%m-%d %H:%M:%S"), r["kind"], r.get("manual", "")]
+      row += [(fmt(picks[nm] - first, ".3f") + ("(除外)" if nm in r.get("excluded", []) else ""))
+              if nm in picks else "" for nm in names]
       row += [(fmt(s_picks[nm] - picks[nm], ".2f") + ("" if nm in r["s_used"] else "(不使用)"))
               if nm in s_picks and nm in picks else "" for nm in names]
       row += [r["n_p"], r["n_s"], fmt(r["lat"], ".4f"), fmt(r["lon"], ".4f"),
@@ -330,14 +326,15 @@ def save_check_image(path, cand, r, title):
 def check_title(cand, r):
   picks, s_picks = r["picks"], r["s_picks"]
   sp = "  ".join(f"{nm} {s_picks[nm] - picks[nm]:.2f}" for nm in sorted(s_picks) if nm in picks)
-  line1 = f"{cand['start']:%Y-%m-%d %H:%M:%S}  {r['kind']}  P波 {r['n_p']}・S波 {r['n_s']}  S-P[秒]: {sp or '-'}"
+  line1 = (f"{cand['start']:%Y-%m-%d %H:%M:%S}  {r['kind']}" + ("(手直し)" if r.get("manual") else "")
+           + f"  P波 {r['n_p']}・S波 {r['n_s']}  S-P[秒]: {sp or '-'}")
   loc, far = r["loc"], r["far"]
   if r["kind"] in (KIND_LOCAL, KIND_LOCAL_POOR):
     depth = "深さ不定" if loc["at_top"] else f"深さ {loc['depth']:.1f} km"
     line2 = f"震源 北緯 {r['lat']:.4f}° 東経 {r['lon']:.4f}° {depth}  残差 {loc['rms']:.3f} 秒"
   elif r["kind"] == KIND_FAR:
     line2 = (f"遠い地震として: 到来方向 {r['azimuth']:.0f}°  距離 {far['distance']:.0f} km"
-             f"(S-P {far['sp']:.1f} 秒 × k {OMORI_K:g})  震央 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
+             f"(S-P {far['sp']:.1f} 秒 × k {r.get('k', OMORI_K):g})  震央 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
   else:
     line2 = "震源は決まりませんでした(P波・S波の到着時刻が足りない)"
   q = cand["jma"]
@@ -346,6 +343,15 @@ def check_title(cand, r):
     line2 += (f"\n気象庁: {q['日時']:%H:%M:%S} {q['震央地名']} M{fmt(q['M'], 'g')} 深さ {q['深さ[km]']:g} km"
               + (f"  気象庁の震央との距離 {d:.1f} km" if d is not None else ""))
   return line1 + "\n" + line2
+
+# 到着時刻が自動か手直しかの説明。例: 自動、手直し 2件
+def manual_note(items):
+  n = sum(1 for _c, r in items if r.get("manual"))
+  return f"自動、手直し {n}件" if n else "自動"
+
+# 地図・断面図のタイトル
+def map_title(stem, items):
+  return f"地震の候補の震源({manual_note(items)}) {stem}"
 
 # 震央の地図と、東西・南北の断面図(近い地震として震源が決まったものだけ)
 #   items ... [(候補, 結果), ...]、stations ... 拠点の位置、proj ... 平面座標
@@ -445,7 +451,7 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
     fig.text(0.07 + width + 0.03, 0.225, "\n".join(lines), fontsize=7, va="top", linespacing=1.15)
   others = len(items) - len(local)
   fig.text(0.07, 0.005,
-           f"P波・S波の到着時刻から推定(自動)。均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g})、"
+           f"P波・S波の到着時刻から推定({manual_note(items)})。均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g})、"
            f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。" + ("" if listing else "\n")
            + "深さは海面からの深さ(拠点の高度を考慮)。\n"
            + (f"番号は右下の一覧(× は気象庁の震源リストにあるもの)。" if listing else "番号は一覧の「番号」。")
