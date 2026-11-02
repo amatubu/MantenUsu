@@ -17,7 +17,9 @@ import numpy as np
 import app_paths
 import win_pipeline
 import matplotlib
-matplotlib.use("Agg")
+# 単体で実行したときだけ画面を使わない描画にする(アプリの画面から関数を使うときは切り替えない)
+if __name__ == "__main__":
+  matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import obspy
 

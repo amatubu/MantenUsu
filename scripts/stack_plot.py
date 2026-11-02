@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from obspy import UTCDateTime
 from datetime import timedelta
 from matplotlib.widgets import Button
+from matplotlib.patches import Rectangle
 from matplotlib.transforms import Bbox, TransformedBbox
 from plot_common import NM_TO_CM, get_component_color
 from log_common import log_message
@@ -50,6 +51,26 @@ def calc_global_max(minute_traces):
     return 1.0
   global_max = np.max(np.abs(np.concatenate(arrays)))
   return global_max if global_max > 0 else 1.0
+
+# スタック図に、1時間の開始からの秒 [start, end] の区間を色の帯で重ねる(分をまたぐ区間は段ごとに分けて塗る)
+#   text ... 区間の始まりに書く文字(None なら書かない。始まりがこの1時間より前なら書かない)
+#   戻り値 ... 追加した図形のリスト(重ね表示を消すときに使う)
+def add_span(ax, start, end, color, text=None, alpha=0.18):
+  artists = []
+  if end <= 0 or start >= STACK_ROWS * 60:
+    return artists
+  for row in range(max(0, int(start // 60)), min(STACK_ROWS, int(np.ceil(end / 60)))):
+    x0, x1 = max(start - row * 60, 0), min(end - row * 60, 60)
+    artists.append(ax.add_patch(Rectangle((x0, row - 0.5), x1 - x0, 1, color=color, alpha=alpha, lw=0, zorder=0)))
+  if text and start >= 0:
+    artists.append(add_label(ax, start, text, color))
+  return artists
+
+# スタック図の、1時間の開始からの秒 t の段に文字を書く(段の上端の高さ)
+def add_label(ax, t, text, color):
+  row, x = int(t // 60), t % 60
+  return ax.text(x, row - 0.5, text, fontsize=6, color=color, va="bottom", ha="left", clip_on=True,
+                 bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=0.5))
 
 # 60段のスタック図(画面表示・画像保存で共通)
 # 速く描けるよう、1つの軸に60本の線を並べる。i 分目の段は y = i を中心に描く(上が00分)
@@ -138,9 +159,11 @@ class StackFigure:
 #   on_compare    ... 右クリックメニューで期間を選んだときに呼ぶ関数。
 #                     (開始日時, 分数, 拠点名, 成分, このウィンドウ(Tk)) を受け取る。
 #                     None なら右クリックメニューを出さない
+#   overlays      ... 重ね表示のリスト。1つごとにトグルボタンを作り、色の説明は「凡例」ボタンで出す
+#                     (持つものは stack_overlays.py を参照)
 class StackWindow:
   def __init__(self, start_dt, station, comp, load_stream, channels,
-               log=log_message, show_error=log_message, on_compare=None):
+               log=log_message, show_error=log_message, on_compare=None, overlays=()):
     # 表示中の状態(時刻・拠点・成分)
     self.dt = start_dt
     self.station = station
@@ -151,6 +174,10 @@ class StackWindow:
     self.on_compare = on_compare
     # 右クリックメニューで選択中の範囲を示すハイライト(軸に追加した図形のリスト)
     self._highlights = []
+    # 重ね表示(オンにしたものの名前と、描いた図形)
+    self.overlays = list(overlays)
+    self._overlay_on = set()
+    self._overlay_artists = []
 
     # 直近に表示した1時間分のStream(同じ時間内の切り替えで読み直さないため)
     self._stream_dt = None
@@ -183,6 +210,21 @@ class StackWindow:
       self.stations, y=0.930, width=0.085, on_click=self.set_station)
     self.comp_buttons = self._make_button_row(
       self.comps, y=0.905, width=0.06, on_click=self.set_comp)
+    # 成分ボタンの右に、重ね表示のトグルボタンと「凡例」ボタンを配置
+    self.overlay_buttons = {}
+    self._legend_lines = []
+    if self.overlays:
+      x0 = 0.07 + len(self.comps) * 0.065 + 0.03
+      for i, ov in enumerate(self.overlays):
+        ax = self.fig.add_axes([x0 + i * 0.085, 0.905, 0.08, 0.02])
+        btn = Button(ax, ov.name)
+        btn.label.set_fontsize(8)
+        btn.on_clicked(lambda _event, o=ov: self.toggle_overlay(o))
+        self.overlay_buttons[ov.name] = btn
+      ax = self.fig.add_axes([x0 + len(self.overlays) * 0.085 + 0.01, 0.905, 0.06, 0.02])
+      self.btn_legend = Button(ax, "凡例", color=BTN_COLORS["normal"][0], hovercolor=BTN_COLORS["normal"][1])
+      self.btn_legend.label.set_fontsize(8)
+      self.btn_legend.on_clicked(lambda _event: self.show_legend())
 
     # 横軸のズーム・ドラッグ・リセットを設定
     attach_zoom_pan(self.fig, self.stack.ax)
@@ -238,7 +280,61 @@ class StackWindow:
       else:
         state = "disabled"
       self._style_button(btn, state)
+    # 重ね表示のボタン: オンなら選択中の色、使えないときは押せない
+    for ov in self.overlays:
+      ok, _reason = ov.available(self.dt, self.station)
+      state = "disabled" if not ok else "selected" if ov.name in self._overlay_on else "normal"
+      self._style_button(self.overlay_buttons[ov.name], state)
     self.fig.canvas.draw_idle()
+
+  # 重ね表示のオン・オフを切り替える
+  def toggle_overlay(self, ov):
+    if ov.name in self._overlay_on:
+      self._overlay_on.discard(ov.name)
+    else:
+      ok, reason = ov.available(self.dt, self.station)
+      if not ok:
+        self.log(f"{ov.name}の重ね表示は使えません: {reason}")
+        return
+      self._overlay_on.add(ov.name)
+    self._apply_overlays()
+    self._refresh_buttons()
+
+  # オンにした重ね表示を描き直す(時間・拠点・成分を変えたときにも呼ぶ)
+  def _apply_overlays(self):
+    for artist in self._overlay_artists:
+      artist.remove()
+    self._overlay_artists = []
+    legends = []
+    for ov in self.overlays:
+      if ov.name not in self._overlay_on:
+        continue
+      ok, reason = ov.available(self.dt, self.station)
+      if not ok:
+        legends.append(f"{ov.name}: {reason}")
+        continue
+      try:
+        self._overlay_artists += ov.draw(self.stack.ax, self.dt, self.station, self._overlay_on)
+        legends.append(ov.legend)
+      except Exception as e:
+        self.log(f"{ov.name}の重ね表示に失敗しました: {e}")
+        legends.append(f"{ov.name}: 表示できませんでした({e})")
+    self._legend_lines = legends
+    self.fig.canvas.draw_idle()
+
+  # 「凡例」ボタン: 重ね表示の色の説明を別のウィンドウに出す(オンにしていないものも含めて全部)
+  def show_legend(self):
+    text = "\n\n".join(ov.legend for ov in self.overlays)
+    notes = [line for line in self._legend_lines if line not in [ov.legend for ov in self.overlays]]
+    if notes:
+      text += "\n\n今の表示で使えないもの:\n" + "\n".join(notes)
+    if not hasattr(self.fig.canvas, "get_tk_widget"):
+      self.log(text)
+      return
+    win = tk.Toplevel(self.fig.canvas.get_tk_widget())
+    win.title("凡例(重ね表示の色)")
+    tk.Label(win, text=text, justify="left", anchor="w", padx=12, pady=10).pack(fill="both")
+    tk.Button(win, text="閉じる", command=win.destroy).pack(pady=(0, 10))
 
   # 選択中のチャンネルがこの時間に無いとき、代わりに表示する (拠点, 成分) を選ぶ。無ければ None
   def _pick_fallback(self, stream):
@@ -277,6 +373,7 @@ class StackWindow:
     self.available = {(tr.stats.station.lower(), tr.stats.channel[-1].upper()) for tr in stream}
 
     self.stack.render(trace, self.dt, self.station, self.comp)
+    self._apply_overlays()
     # ウィンドウのタイトル(既定の「Figure 1」の代わり。時間・拠点・成分の切り替えに追従)
     if self.fig.canvas.manager is not None:
       self.fig.canvas.manager.set_window_title(

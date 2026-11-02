@@ -6,8 +6,11 @@
 #   3. 6時間ずつ4段のグラフに、RMS・拾い出した揺れ・時刻表の時刻(指定したとき)を描く
 #   4. --stack を付けると、1時間スタック波形(アプリと同じ図)に揺れと時刻表を重ねた画像も作る
 #      1日のグラフと24時間分のスタック波形は、1つのPDF(<日付>_<拠点>.<成分>_trains.pdf)にもまとめる
+#   5. --format svg / pdf を付けると、画像を拡大しても粗くならない形式(ベクター)で保存する(スライド用)
+#      --hours でスタック波形を作る時間を絞れる(例: --hours 18,22。このときはまとめたPDFは作らない)
 #
 # 使い方: python3 scripts/train_day_plot.py <日付> [時刻表のCSV] [--station 拠点名] [--comp 成分] [--stack]
+#                                        [--format png|svg|pdf] [--hours 時,時,...]
 #   日付 ... 例: 2026/8/23
 #   時刻表のCSV(任意) ... 1行に1本。「時刻,ラベル」(例: 06:12,北斗2号 上り)
 #                       1行目が見出しでもよい。ラベルが「貨」で始まる行は別の色で描く
@@ -21,16 +24,17 @@ import numpy as np
 import app_paths
 import win_pipeline
 import matplotlib
-matplotlib.use("Agg")
+# 単体で実行したときだけ画面を使わない描画にする(アプリの画面から関数を使うときは切り替えない)
+if __name__ == "__main__":
+  matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import obspy
 
-from matplotlib.patches import Rectangle
 from matplotlib.backends.backend_pdf import PdfPages
 
 from screen_events import load_period
 from quake_detect import QUAKE_BAND, QUAKE_RATIO, QUAKE_MIN_STATIONS, QUAKE_MARGIN
-from stack_plot import StackFigure, STACK_ROWS
+from stack_plot import StackFigure, STACK_ROWS, add_span
 from plot_common import NM_TO_CM, setup_japanese_font
 from log_common import set_console, log_message
 
@@ -106,6 +110,8 @@ FREIGHT_MIN_DURATION = 30.0
 
 # 出力先
 OUTPUT_DIR = app_paths.BATCH_PLOTS_DIR / "trains"
+# 画像の形式(png のほか、拡大しても粗くならない svg・pdf)
+IMAGE_FORMATS = ("png", "svg", "pdf")
 
 
 # 1時間ずつ SAC ファイルを用意して読み込み、全拠点の指定した成分の1日分の波形にする
@@ -191,13 +197,15 @@ def mark_earthquakes(traces, station, day, events, times, ratio):
     t, rms = windowed_rms(f, day)
     series[name] = (t, np.where(rms > 0, rms / noise_level(rms), np.nan))
 
-  # 拠点ごとに、前後 QUAKE_MARGIN 秒での最大の倍率を、1日の窓(RMS_WINDOW 秒ごと)にそろえる
-  count = int(24 * 3600 / RMS_WINDOW)
+  # 拠点ごとに、前後 QUAKE_MARGIN 秒での最大の倍率を、窓(RMS_WINDOW 秒ごと)にそろえる
+  #   窓の並びは、いちばん早い窓を含む RMS_WINDOW の倍数の秒から(1日分なら日の始まりから)
+  origin = min(np.floor(t[0] / RMS_WINDOW) * RMS_WINDOW for t, _ in series.values())
+  count = int((max(t[-1] for t, _ in series.values()) - origin) // RMS_WINDOW) + 1
   half = int(QUAKE_MARGIN / RMS_WINDOW)
   peaks, grids = [], []
   for t, r in series.values():
     grid = np.full(count, np.nan)
-    idx = (t // RMS_WINDOW).astype(int)
+    idx = ((t - origin) // RMS_WINDOW).astype(int)
     ok = (idx >= 0) & (idx < count)
     grid[idx[ok]] = r[ok]
     grids.append(grid)
@@ -213,14 +221,14 @@ def mark_earthquakes(traces, station, day, events, times, ratio):
   score = np.nansum(np.log10(np.clip(np.array(grids), 1, None)), axis=0)
   quakes = []
   for k in np.flatnonzero(is_quake):
-    start, end = k * RMS_WINDOW, (k + 1) * RMS_WINDOW
+    start, end = origin + k * RMS_WINDOW, origin + (k + 1) * RMS_WINDOW
     if quakes and start - quakes[-1][1] <= MERGE_GAP:
       quakes[-1][1] = end
     else:
       quakes.append([start, end])
   for q in quakes:
-    k0, k1 = int(q[0] // RMS_WINDOW), int(q[1] // RMS_WINDOW)
-    q.append((k0 + int(np.argmax(score[k0:k1])) + 0.5) * RMS_WINDOW)
+    k0, k1 = int((q[0] - origin) // RMS_WINDOW), int((q[1] - origin) // RMS_WINDOW)
+    q.append(origin + (k0 + int(np.argmax(score[k0:k1])) + 0.5) * RMS_WINDOW)
 
   for ev in events:
     ev["others"] = {}
@@ -449,6 +457,25 @@ def is_freight_candidate(ev):
   return (not ev.get("trains", True) and not ev.get("quake") and ev["ratio"] >= FREIGHT_MIN_RATIO
           and ev.get("duration", 0) >= FREIGHT_MIN_DURATION)
 
+# 波形から揺れを拾い出し、地震を見分けて、時刻表と対応させる(単体実行とアプリの画面で共通)
+#   traces    ... {拠点名: トレース}(上下動。調べる期間を含む)
+#   station   ... 列車を調べる拠点
+#   day       ... 秒の基準にする日の始まり(時刻表の時刻もこの日の秒)
+#   timetable ... load_timetable の結果(None なら時刻表とは対応させず、貨物列車の候補も決めない。
+#                 空のリストなら、どの揺れも時刻表の列車と対応しないものとして貨物列車の候補を決める)
+#   戻り値 ... dict(times, rms, noise(列車用の帯域の窓ごとの値), filtered, events, matches)
+def analyze(traces, station, day, timetable):
+  filtered = band_filtered(traces[station])
+  times, rms = windowed_rms(filtered, day)
+  noise = noise_level(rms)
+  events = detect_events(times, rms, noise)
+  classify_shape(filtered, day, events)
+  mark_earthquakes(traces, station, day, events, times, rms / noise)
+  matches = match_timetable(timetable, events) if timetable is not None else []
+  if timetable:
+    match_weak(matches, events, times, rms, noise, filtered, day)
+  return dict(times=times, rms=rms, noise=noise, filtered=filtered, events=events, matches=matches)
+
 # 「2026/8/23」を日付にする。日付でなければ None
 def parse_date(text):
   try:
@@ -460,8 +487,9 @@ def parse_date(text):
 def train_name(t, label):
   return f"{hhmmss(t)[:5]}発 {label}"
 
+# 日の始まりからの秒を時刻にする(前後の日の分は、その日の時刻にする)
 def hhmmss(sec):
-  sec = int(round(sec))
+  sec = int(round(sec)) % 86400
   return f"{sec // 3600:02d}:{sec // 60 % 60:02d}:{sec % 60:02d}"
 
 def is_freight(label):
@@ -504,7 +532,7 @@ def save_image(path, title, times, rms, noise, events, timetable, pdf=None):
   axes[0].legend(loc="upper right", fontsize=8)
   fig.suptitle(title)
   fig.tight_layout()
-  fig.savefig(path, dpi=120)
+  fig.savefig(path, dpi=120)   # SVG・PDF のときは dpi は使われない(ベクターのまま)
   if pdf:
     pdf.savefig(fig)
   plt.close(fig)
@@ -519,52 +547,48 @@ def event_color(ev):
     return "#d62728"
   return "#ff7f0e"
 
-# 1時間スタック波形(アプリの画像と同じ図)に、揺れと時刻表の列車を重ねて保存する
+# 帯の説明(1時間スタック波形の下に書く)
+STACK_LEGEND = ("▼ 時刻表の列車が通ると見込んだ時刻 / 帯: 緑=時刻表の列車と対応した揺れ、"
+                "赤=貨物列車の候補、紫=地震、橙=その他の揺れ(×は雑音の何倍か)")
+
+# 1時間スタック波形の軸に、揺れと時刻表の列車を重ねる(画像の保存と、アプリの画面で共通)
 #   揺れ   ... その区間を段ごとに色の帯で塗り、始まりに種類と倍率を書く
-#   時刻表 ... 見込んだ通過時刻に ▼ とラベルを書く
-#   pdf ... PdfPages を渡すと、そのページとしても保存する(波形は画像にして、ファイルを小さくする)
-def save_stack_image(path, tr, hour_start, day, station, comp, events, timetable, pdf=None):
-  stack = StackFigure(for_screen=False)
-  stack.render(tr, hour_start, station, comp)
-  ax = stack.ax
-  base = (hour_start - day).total_seconds()
-
+#   時刻表 ... 見込んだ通過時刻に ▼ を描く
+#   base   ... 表示する1時間の開始の、日の始まりからの秒(揺れ・時刻表の秒と同じ基準)
+#   quakes ... 地震とみなした揺れも描くか(アプリの画面で地震の重ね表示もオンのときは、重ならないよう描かない)
+#   戻り値 ... 追加した図形のリスト
+def draw_train_overlay(ax, events, timetable, base, quakes=True):
+  artists = []
   for ev in events:
-    start, end = ev["start"] - base, ev["end"] - base
-    if end <= 0 or start >= STACK_ROWS * 60:
+    if ev.get("quake") and not quakes:
       continue
-    color = event_color(ev)
-    # 分をまたぐ揺れは段ごとに分けて塗る
-    for row in range(max(0, int(start // 60)), min(STACK_ROWS, int(np.ceil(end / 60)))):
-      x0, x1 = max(start - row * 60, 0), min(end - row * 60, 60)
-      ax.add_patch(Rectangle((x0, row - 0.5), x1 - x0, 1, color=color, alpha=0.18, lw=0, zorder=0))
-    if start >= 0:
-      if ev.get("trains"):
-        text = " / ".join(ev["trains"])
-      elif ev.get("quake"):
-        text = "地震(ほかの拠点でも大きい)"
-      elif is_freight_candidate(ev):
-        text = f"貨物列車の候補 {ev['duration']:.0f}秒"
-      else:
-        text = "揺れ"
-      row, x = int(start // 60), start % 60
-      ax.text(x, row - 0.5, f"{text} ×{ev['ratio']:.0f}", fontsize=6, color=color,
-              va="bottom", ha="left", clip_on=True,
-              bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=0.5))
-
+    if ev.get("trains"):
+      text = " / ".join(ev["trains"])
+    elif ev.get("quake"):
+      text = "地震(ほかの拠点でも大きい)"
+    elif is_freight_candidate(ev):
+      text = f"貨物列車の候補 {ev['duration']:.0f}秒"
+    else:
+      text = "揺れ"
+    artists += add_span(ax, ev["start"] - base, ev["end"] - base, event_color(ev), f"{text} ×{ev['ratio']:.0f}")
   for t, label in timetable:
     t = expected_time(t, label) - base
     if 0 <= t < STACK_ROWS * 60:
       row, x = int(t // 60), t % 60
       color = "#d62728" if is_freight(label) else "#2ca02c"
-      ax.plot(x, row - 0.3, marker="v", color=color, markersize=5)
+      artists += ax.plot(x, row - 0.3, marker="v", color=color, markersize=5)
+  return artists
+
+# 1時間スタック波形(アプリの画像と同じ図)に、揺れと時刻表の列車を重ねて保存する
+#   pdf ... PdfPages を渡すと、そのページとしても保存する(波形は画像にして、ファイルを小さくする)
+def save_stack_image(path, tr, hour_start, day, station, comp, events, timetable, pdf=None):
+  stack = StackFigure(for_screen=False)
+  stack.render(tr, hour_start, station, comp)
+  draw_train_overlay(stack.ax, events, timetable, (hour_start - day).total_seconds())
 
   # 下に説明の1行を入れるため、軸の下の余白を少し広げる
   stack.fig.subplots_adjust(bottom=0.075)
-  stack.fig.text(0.07, 0.008,
-                 "▼ 時刻表の列車が通ると見込んだ時刻 / 帯: 緑=時刻表の列車と対応した揺れ、"
-                 "赤=貨物列車の候補、紫=地震、橙=その他の揺れ(×は雑音の何倍か)",
-                 fontsize=7, color="#333333", va="bottom")
+  stack.fig.text(0.07, 0.008, STACK_LEGEND, fontsize=7, color="#333333", va="bottom")
   stack.fig.savefig(path, dpi=100)
   if pdf:
     for line in stack.lines:
@@ -580,6 +604,9 @@ def main():
   parser.add_argument("--comp", default="U", help="成分 U/N/E(既定: U)")
   parser.add_argument("--stack", action="store_true",
                       help="1時間スタック波形に揺れと時刻表を重ねた画像も24枚作る")
+  parser.add_argument("--format", choices=IMAGE_FORMATS, default="png",
+                      help="画像の形式(既定: png。svg・pdf は拡大しても粗くならない)")
+  parser.add_argument("--hours", help="--stack で画像を作る時間(例: 18,22。既定は0〜23時のすべて)")
   args = parser.parse_args()
 
   # 日付と時刻表のCSVの順番が逆でも受け付ける
@@ -590,6 +617,13 @@ def main():
   if day is None:
     parser.error(f"日付を 2026/8/23 のように指定してください(指定された値: {args.date})\n"
                  f"  例: python3 scripts/train_day_plot.py 2026/8/23 etc/train_timetable.csv")
+  try:
+    hours = sorted({int(h) for h in args.hours.split(",")}) if args.hours else list(range(24))
+  except ValueError:
+    hours = []
+  if not hours or any(not 0 <= h <= 23 for h in hours):
+    parser.error(f"--hours は 0〜23 の時をカンマで区切って指定してください(指定された値: {args.hours})")
+  ext = args.format
 
   set_console(True)
   setup_japanese_font()
@@ -601,19 +635,12 @@ def main():
     log_message("  波形がありません")
     return
 
-  filtered = band_filtered(tr)
-  times, rms = windowed_rms(filtered, day)
-  noise = noise_level(rms)
-  events = detect_events(times, rms, noise)
-  classify_shape(filtered, day, events)
-  mark_earthquakes(traces, args.station, day, events, times, rms / noise)
   timetable = load_timetable(args.timetable) if args.timetable else []
+  res = analyze(traces, args.station, day, timetable if args.timetable else None)
+  times, rms, noise, events, matches = res["times"], res["rms"], res["noise"], res["events"], res["matches"]
   quakes = [ev for ev in events if ev["quake"]]
   log_message(f"  拾い出した揺れ: {len(events)}件(うち地震とみなしたもの: {len(quakes)}件 "
               + " ".join(hhmmss(ev["peak"]) for ev in quakes) + ")")
-  matches = match_timetable(timetable, events) if timetable else []
-  if timetable:
-    match_weak(matches, events, times, rms, noise, filtered, day)
   candidates = [ev for ev in events if is_freight_candidate(ev)]
 
   OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -625,8 +652,9 @@ def main():
   if quakes:
     title += f"  地震(紫) {len(quakes)}件"
   # --stack のときは、1日のグラフと24時間分のスタック波形を1つのPDFにもまとめる
-  pdf = PdfPages(OUTPUT_DIR / f"{stem}_trains.pdf") if args.stack else None
-  save_image(OUTPUT_DIR / f"{stem}.png", title, times, rms, noise, events, timetable, pdf)
+  #   (--hours で時間を絞ったときは、24時間分のPDFを上書きしないよう作らない)
+  pdf = PdfPages(OUTPUT_DIR / f"{stem}_trains.pdf") if args.stack and not args.hours else None
+  save_image(OUTPUT_DIR / f"{stem}.{ext}", title, times, rms, noise, events, timetable, pdf)
 
   # 拾い出した揺れの一覧(時刻表を指定したときは、対応した列車と貨物列車の候補も)
   with open(OUTPUT_DIR / f"{stem}_events.csv", "w", encoding="utf-8-sig", newline="") as f:
@@ -671,14 +699,15 @@ def main():
     log_message(f"  時刻表にない大きく長い揺れ(雑音の{FREIGHT_MIN_RATIO:g}倍以上・{FREIGHT_MIN_DURATION:g}秒以上、貨物列車の候補): "
                 f"{len(candidates)}件")
 
-  # 1時間スタック波形に重ねた画像(stack_日付_時_拠点_成分_trains.png)
+  # 1時間スタック波形に重ねた画像(stack_日付_時_拠点_成分_trains.png など)
   if args.stack:
-    for hour in range(24):
+    for hour in hours:
       hour_start = day + timedelta(hours=hour)
-      save_stack_image(OUTPUT_DIR / f"stack_{day:%Y%m%d}_{hour:02d}_{args.station}_{args.comp}_trains.png",
+      save_stack_image(OUTPUT_DIR / f"stack_{day:%Y%m%d}_{hour:02d}_{args.station}_{args.comp}_trains.{ext}",
                        tr, hour_start, day, args.station, args.comp, events, timetable, pdf)
-    pdf.close()
-    log_message(f"  1時間スタック波形の画像: 24枚(まとめたPDF: {stem}_trains.pdf)")
+    if pdf:
+      pdf.close()
+    log_message(f"  1時間スタック波形の画像: {len(hours)}枚" + (f"(まとめたPDF: {stem}_trains.pdf)" if pdf else ""))
   log_message(f"出力: {OUTPUT_DIR}")
 
 if __name__ == "__main__":

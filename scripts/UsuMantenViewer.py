@@ -22,6 +22,7 @@ import win_pipeline
 import cache_manager
 from cache_dialog import OutputCacheDialog
 from stack_plot import StackFigure, StackWindow, find_trace
+from stack_overlays import QuakeOverlay, TrainOverlay, draw_on_image
 from waveform_window import open_waveform_window
 from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError, DownloadCancelled
 from hypocenter import load_stations, LocalProjection
@@ -774,13 +775,15 @@ class MantenUsuSeismographApp:
     # ツールバーから「保存」以外のボタン(ズーム・パン等)を外す。この窓の作成中だけ有効にする
     original_items = NavigationToolbar2Tk.toolitems
     NavigationToolbar2Tk.toolitems = [t for t in original_items if t[0] == "Save"]
+    overlays = self.make_overlays()
     try:
       window = StackWindow(start_dt, station_name, comp_name,
                            load_stream=self.load_stack_stream,
                            channels=self.load_channel_options(),
                            log=log_message,
                            show_error=lambda msg: messagebox.showerror("エラー", msg),
-                           on_compare=self.compare_from_stack)
+                           on_compare=self.compare_from_stack,
+                           overlays=overlays)
     finally:
       NavigationToolbar2Tk.toolitems = original_items
     window.show()
@@ -1009,12 +1012,29 @@ class MantenUsuSeismographApp:
     except (ValueError, TypeError):
       return None
 
+  # 1時間スタック波形に重ねる表示(地震・列車)。画面とバッチ処理で共通
+  #   時刻表は etc/train_timetable.csv(Git の管理外。無ければ列車の重ね表示は使えない)
+  #   names ... 作るものの名前(None なら全部)
+  def make_overlays(self, names=None):
+    overlays = [QuakeOverlay(load_stations(self.etc_dir)),
+                TrainOverlay(self.etc_dir / "train_timetable.csv",
+                             lambda dt: self.load_hour_stream(dt, vertical_only=True))]
+    return [ov for ov in overlays if names is None or ov.name in names]
+
   # --- 【新機能】バッチ処理実行メソッド（UIなしでの一括処理） ---
-  def run_batch_processing(self, channel, start_date=None, end_date=None, overwrite=False):
+  #   quakes ... 地震(震源リストの到達見込み・地震の候補)を重ねる
+  #   trains ... 列車(時刻表と対応した揺れ・貨物列車の候補)を重ねる(Bamba だけ)
+  #   重ねた画像は、ファイル名の最後に _quakes・_trains を付けて、重ねない画像と別に保存する
+  def run_batch_processing(self, channel, start_date=None, end_date=None, overwrite=False, quakes=False, trains=False):
     log_message(f"=== 1時間スタック波形バッチ処理を開始します ===")
     log_message(f"  - チャンネル: {channel}")
     log_message(f"  - 開始日: {start_date or '指定なし (全対象)'}")
     log_message(f"  - 終了日: {end_date or '指定なし (全対象)'}")
+    overlay_names = [n for n, on in ((QuakeOverlay.name, quakes), (TrainOverlay.name, trains)) if on]
+    overlays = self.make_overlays(overlay_names)
+    suffix = ("_quakes" if quakes else "") + ("_trains" if trains else "")
+    if overlays:
+      log_message(f"  - 重ね表示: {'・'.join(overlay_names)}")
 
     if "." in channel:
       station_name, comp_name = channel.split(".", 1)
@@ -1072,7 +1092,7 @@ class MantenUsuSeismographApp:
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         # ★【追加】最終的な出力予定のPNG画像のパスを事前に定義
-        out_img_path = batch_output_dir / f"stack_{date_str}_{hour_str}_{station_name}_{comp_name}.png"
+        out_img_path = batch_output_dir / f"stack_{date_str}_{hour_str}_{station_name}_{comp_name}{suffix}.png"
 
         # ★【追加】画像が既に存在し、かつ上書きモードでない（＝デフォルトのスキップ）場合はここで丸ごとスキップ
         if out_img_path.exists() and not overwrite:
@@ -1099,6 +1119,8 @@ class MantenUsuSeismographApp:
           # 波形の描画
           stack = StackFigure(for_screen=False)
           stack.render(target_trace, start_dt, station_name, comp_name)
+          if overlays:
+            draw_on_image(stack, overlays, start_dt, station_name)
           fig = stack.fig
 
           # 画像を保存(150dpi)
@@ -1455,6 +1477,10 @@ def main():
   parser.add_argument("--channel", "-c", type=str, default="Hokudai.U", help="対象チャンネル名 (例: Hokudai.U または U)")
   parser.add_argument("--start-date", "-s", type=str, help="バッチ処理の開始日 (YYYYMMDD形式)")
   parser.add_argument("--end-date", "-e", type=str, help="バッチ処理の終了日 (YYYYMMDD形式)")
+  parser.add_argument("--quakes", action="store_true",
+                      help="--batch の画像に、地震(震源リストの到達見込み・地震の候補)を重ねる")
+  parser.add_argument("--trains", action="store_true",
+                      help="--batch の画像に、列車(時刻表と対応した揺れ・貨物列車の候補)を重ねる(Bamba だけ)")
   parser.add_argument("--overwrite", action="store_true",
                       help="既存の画像を上書きする (デフォルトはスキップ)")
   parser.add_argument("--verbose", "-v", action="store_true", help="画面のログをコンソールにも表示する (バッチ処理モードでは常に表示)")
@@ -1489,7 +1515,9 @@ def main():
       channel=args.channel,
       start_date=args.start_date,
       end_date=args.end_date,
-      overwrite=args.overwrite
+      overwrite=args.overwrite,
+      quakes=args.quakes,
+      trains=args.trains
     )
     root.destroy()
   else:
