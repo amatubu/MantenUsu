@@ -1,6 +1,7 @@
 # cache_dialog.py
 # output キャッシュの整理画面(削除するファイルの種類を選ぶ)
 # 集計・削除は時間がかかるので別スレッドで行い、画面は0.1秒ごとに進み具合を表示する
+import gc
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -71,6 +72,10 @@ class OutputCacheDialog:
       except Exception as e:
         self.error = e
     self.error = None
+    # 別スレッドの処理中は自動のごみ集めを止め、画面側で行う(理由は maintenance_window.run_in_thread を参照)
+    gc.collect()
+    gc.disable()
+    self.polls = 0
     self.thread = threading.Thread(target=target, daemon=True)
     self.thread.start()
     self.poll(on_done)
@@ -78,12 +83,17 @@ class OutputCacheDialog:
   # 別スレッドの進み具合を0.1秒ごとに表示し、終わったら on_done を呼ぶ
   def poll(self, on_done):
     if not self.win.winfo_exists():
+      gc.enable()
       return
     if self.thread.is_alive():
       verb = "削除中" if self.stats is not None else "集計中"
       self.status.config(text=f"{verb}... {self.progress:,} 件")
+      self.polls += 1
+      if self.polls % 10 == 0:
+        gc.collect()
       self.win.after(100, self.poll, on_done)
       return
+    gc.enable()
     if self.error is not None:
       messagebox.showerror("エラー", f"処理中にエラーが発生しました:\n{self.error}", parent=self.win)
       self.win.destroy()

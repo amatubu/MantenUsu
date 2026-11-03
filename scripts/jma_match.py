@@ -9,12 +9,14 @@
 #   遠くほど高い周波数の揺れが弱まる分(ATTENUATION_PER_KM × Δ)を差し引いたもの
 #   (A: 変位の最大振幅 [μm]、Δ: 震源距離 [km])。地震を選ぶための目安で、正確な振幅ではない
 from datetime import timedelta
-from functools import lru_cache
+import json
+import threading
 
 import numpy as np
 from obspy.geodetics import gps2dist_azimuth, kilometers2degrees
 from obspy.taup import TauPyModel
 
+import app_paths
 import jma_hypocenter
 
 # 走時の計算に使う速度構造
@@ -42,7 +44,14 @@ MISSED_LOG_AMP = 0.5
 # 候補の揺れの始まりより、この分数前までに発生した地震を調べる(遠い地震の走時を含める)
 SEARCH_MINUTES = 20
 
+# 計算した走時を保存するファイル(消えても作り直せるので、ユーザーのキャッシュフォルダに置く)
+#   1回目は震源リスト 1万6千件の走時の計算に約2分かかるが、2回目からは新しく増えた分だけを計算する
+TRAVEL_TIME_FILE = app_paths.USER_CACHE_DIR / f"travel_times_{VELOCITY_MODEL}.json"
+
 _model = None
+_travel_times = None       # {"震央距離[度],深さ[km]": [P波, S波]}(None ならまだファイルを読んでいない)
+_travel_times_added = 0    # ファイルに保存していない数
+_travel_times_lock = threading.Lock()   # メンテナンス画面の別スレッドと画面で同時に使うことがあるため
 
 def model():
   global _model
@@ -51,14 +60,47 @@ def model():
   return _model
 
 # P波・S波の最初の到達までの時間 [秒](震央距離 [度]、深さ [km])
-#   同じような距離・深さの計算を繰り返さないよう、0.01度・1kmに丸めて覚えておく
-@lru_cache(maxsize=None)
+#   同じような距離・深さの計算を繰り返さないよう、呼ぶ側で0.01度・1kmに丸め、計算した結果を覚えておく
+#   (save_travel_times で TRAVEL_TIME_FILE に保存し、次に起動したときも使う)
 def travel_times(dist_deg, depth_km):
+  global _travel_times, _travel_times_added
+  key = f"{dist_deg:g},{depth_km:g}"
+  with _travel_times_lock:
+    if _travel_times is None:
+      _travel_times = _load_travel_times()
+    if key in _travel_times:
+      p, s = _travel_times[key]
+      return p, s
   arrivals = model().get_travel_times(source_depth_in_km=max(depth_km, 0.0), distance_in_degree=dist_deg,
                                       phase_list=["p", "P", "s", "S"])
   p = min((a.time for a in arrivals if a.name.upper().startswith("P")), default=None)
   s = min((a.time for a in arrivals if a.name.upper().startswith("S")), default=None)
+  with _travel_times_lock:
+    _travel_times[key] = [p, s]
+    _travel_times_added += 1
   return p, s
+
+def _load_travel_times():
+  try:
+    return json.loads(TRAVEL_TIME_FILE.read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return {}
+
+# 覚えた走時のうち、まだ保存していない分があればファイルに書く
+def save_travel_times():
+  global _travel_times_added
+  with _travel_times_lock:
+    if not _travel_times_added:
+      return
+    text = json.dumps(_travel_times, separators=(",", ":"))
+    _travel_times_added = 0
+  try:
+    TRAVEL_TIME_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = TRAVEL_TIME_FILE.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(TRAVEL_TIME_FILE)
+  except OSError:
+    pass   # 保存できなくても、次に計算し直すだけ
 
 # 拠点の中心(緯度・経度の平均)
 def array_center(stations):
@@ -68,14 +110,19 @@ def array_center(stations):
 # 期間の震源リストを読み、照合に使う地震に距離・方位・到達見込みを加える
 #   start, end ... 期間(datetime)。遠い地震の走時を見込んで、前の日の分から読む
 #   center     ... 拠点の中心 (緯度, 経度)
+#   on_progress ... 進み具合 (何日目, 全体の日数) を受け取る関数(走時の計算に時間がかかるため。長い期間で数分)
 #   戻り値 ... (地震のリスト, 震源リストの無かった日のリスト)
 #     地震 ... jma_hypocenter.load_day の項目に加え、
 #              "dist_km"(震央距離)、"azimuth"(拠点から見た震源の方位 [度])、"log_amp"(見込みの振幅)、
 #              "p_time"・"s_time"(到達見込みの時刻)
-def load_catalog(start, end, center):
+def load_catalog(start, end, center, on_progress=None):
   quakes, missing = [], []
-  day = (start - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+  first = (start - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+  total = (end - first).days + 1
+  day = first
   while day <= end:
+    if on_progress:
+      on_progress((day - first).days + 1, total)
     if not jma_hypocenter.csv_path(day).exists():
       if day >= start.replace(hour=0, minute=0, second=0, microsecond=0):
         missing.append(day)
@@ -94,6 +141,7 @@ def load_catalog(start, end, center):
       quakes.append(dict(q, dist_km=dist_km, azimuth=azimuth, log_amp=float(log_amp),
                          p_time=q["日時"] + timedelta(seconds=p), s_time=q["日時"] + timedelta(seconds=s)))
     day += timedelta(days=1)
+  save_travel_times()
   quakes.sort(key=lambda q: q["日時"])
   return quakes, missing
 

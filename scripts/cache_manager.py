@@ -57,7 +57,8 @@ def classify(name):
 #   quake_rms ... 地震の候補を探す処理の揺れの大きさ(quake_detect.py)。作り直すのに時間がかかるので消さない
 #   vnet ... ほかの機関の観測点の変換済みの SAC(external_stations.py)。メンテナンス画面の「ほかの機関の観測点」で消す
 #   picks で始まるフォルダ(picks_backup_... など、到着時刻のバックアップ)も消さない
-KEEP_DIRS = {"picks", "quake_rms", "vnet"}
+#   quake_features ... 地震の候補ごとの波形の解析結果(quake_detect.py)。作り直すのに時間がかかるので消さない
+KEEP_DIRS = {"picks", "quake_rms", "vnet", "quake_features"}
 
 # output フォルダの下の各フォルダ(期間ごと・1時間ごと)を返す。直下のファイル(履歴など)と KEEP_DIRS は含めない
 def _cache_dirs(root):

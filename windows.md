@@ -181,6 +181,8 @@ build_win.bat
 
 ### 配布・実行時の注意
 
+- 別のマシンに移すときは、手で直した到着時刻・RMS・震源リストなど Git の管理外のデータも移します。まとめて zip にする `pack_data_win.bat` と、コピーするフォルダの一覧は、README の「別のマシンに移すとき」を参照してください。
+
 - アプリは、`UsuMantenViewer.exe` と同じフォルダにある `etc`・`tools`・`output`・`daily_zips`・`service_account` を使います（`scripts/app_paths.py`）。zip を展開したフォルダの構成は変えないでください。
 - `daily_zips` は配布物に含めていません。必要な日付のZIPファイルは、初回の表示時にGoogleドライブからダウンロードされます。
 - ビルド直後や配布先での**最初の起動だけ**、Matplotlib のフォント一覧の作成などで時間がかかります。2回目以降は数秒で起動します（フォント一覧は `%LOCALAPPDATA%\UsuMantenViewer\matplotlib` に保存されます）。

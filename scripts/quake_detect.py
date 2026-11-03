@@ -8,6 +8,7 @@
 #   3. 候補の前後を、拠点の倍率の中央値が ONSET_RATIO 倍を下回るところまで広げ、揺れの始まりと終わりとする
 #   判定の基準は train_day_plot.py(列車の揺れから地震を除く処理)で決めたものと同じ
 import csv
+import json
 from datetime import datetime, timedelta
 import warnings
 
@@ -144,6 +145,43 @@ def analyze_candidate(st, t0, t1, stations):
   res, info = quake_features.analyze(w, stations, proj)
   picks = {nm: info["ref_time"].datetime + timedelta(seconds=t) for nm, t in info["picks"].items() if t is not None}
   return res, picks
+
+# 候補ごとの波形の解析結果(analyze_candidate の戻り値)を保存するファイル
+#   候補の始まり・終わりが同じなら解析結果も同じなので、次に候補を探すときは波形を読まずにこれを使う
+#   (全期間で200件余りの候補の解析に、SAC が手元にあっても1分近く、ZIP から取り出すときはもっとかかるため)
+#   quake_features.analyze や analyze_candidate の中身を変えたら FEATURES_VERSION を上げて、作り直させる
+FEATURES_VERSION = 1
+FEATURES_CACHE_FILE = app_paths.OUTPUT_DIR / "quake_features" / f"features_v{FEATURES_VERSION}.json"
+
+# 解析結果を保存するときの、候補の見分け方(始まりと終わり)
+def features_key(cand):
+  return f"{cand['start']:%Y%m%d%H%M%S}_{cand['end']:%Y%m%d%H%M%S}"
+
+# 保存した解析結果。戻り値 ... {features_key: {"features": ..., "picks": ..., "utc": 時刻の項目}}
+def load_features_cache():
+  try:
+    return json.loads(FEATURES_CACHE_FILE.read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return {}
+
+def save_features_cache(cache):
+  FEATURES_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+  tmp = FEATURES_CACHE_FILE.with_suffix(".tmp")
+  tmp.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+  tmp.replace(FEATURES_CACHE_FILE)
+
+# 解析結果を保存できる形にする(時刻は文字列にし、どの項目が時刻だったかを覚えておく)
+def encode_features(features, picks):
+  utc = [k for k, v in (features or {}).items() if isinstance(v, obspy.UTCDateTime)]
+  f = None if features is None else {k: str(v) if k in utc else v for k, v in features.items()}
+  return {"features": f, "picks": {nm: t.isoformat() for nm, t in picks.items()}, "utc": utc}
+
+# encode_features の逆。戻り値 ... (features, picks)
+def decode_features(entry):
+  f = entry["features"]
+  if f is not None:
+    f = {k: obspy.UTCDateTime(v) if k in entry["utc"] else v for k, v in f.items()}
+  return f, {nm: datetime.fromisoformat(t) for nm, t in entry["picks"].items()}
 
 # 1日分の波形から、拠点ごとに QUAKE_BAND の 10秒ごとの RMS [cm/s] を求める
 #   戻り値 ... {拠点名: 長さ WINDOWS_PER_DAY の配列}(データの無い窓は NaN)

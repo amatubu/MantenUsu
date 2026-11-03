@@ -7,6 +7,7 @@
 # 取得・変換は時間がかかるので別スレッドで行い、画面は0.1秒ごとに進み具合を表示する
 # 別スレッドからは画面に触れないので、メッセージはいったん溜め、画面側で実行ログに書く
 #   (log_message を別スレッドから呼んだときも、log_common が溜めておき、画面側の flush_pending で書く)
+import gc
 import os
 import subprocess
 import sys
@@ -21,10 +22,12 @@ import external_stations
 import jma_hypocenter
 import quake_detect
 from cache_dialog import OutputCacheDialog
-from log_common import log_message, flush_pending
+from log_common import log_message, flush_pending, add_log_widget, remove_log_widget
 
 # 取得していない日を、状況の欄に並べる上限
 MAX_MISSING_SHOWN = 5
+# 別スレッドの処理中に、画面側で循環参照のごみを片付ける間隔 [回](進み具合の表示 0.1秒ごとの回数)
+GC_EVERY = 10
 
 
 # フォルダやファイルを OS の標準のアプリで開く
@@ -77,9 +80,17 @@ class MaintenanceWindow:
     frame.pack(fill=tk.BOTH, expand=True)
     self.busy_widgets = []   # 処理中は押せなくするボタン
 
+    # 項目ごとのタブ(画面の小さいパソコンでも、下の実行ログと進み具合が隠れないように)
+    notebook = ttk.Notebook(frame)
+    notebook.pack(fill=tk.X)
+    def page(title):
+      tab = ttk.Frame(notebook, padding=12)
+      notebook.add(tab, text=title)
+      return tab
+
     # --- 気象庁の震源リスト ---
-    jma = ttk.LabelFrame(frame, text="気象庁の震源リスト", padding=10)
-    jma.pack(fill=tk.X)
+    jma = page("震源リスト")
+    ttk.Label(jma, text="気象庁の震源リスト", font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(0, 6))
     self.lbl_jma = ttk.Label(jma, text="", justify=tk.LEFT)
     self.lbl_jma.pack(anchor="w")
     row = ttk.Frame(jma)
@@ -99,8 +110,8 @@ class MaintenanceWindow:
               ).pack(anchor="w", pady=(8, 0))
 
     # --- 地震の候補の検出 ---
-    det = ttk.LabelFrame(frame, text="地震の候補の検出(--detect-quakes と同じ処理)", padding=10)
-    det.pack(fill=tk.X, pady=(10, 0))
+    det = page("地震の候補の検出")
+    ttk.Label(det, text="地震の候補の検出(--detect-quakes と同じ処理)", font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(0, 6))
     self.lbl_detect = ttk.Label(det, text="", justify=tk.LEFT)
     self.lbl_detect.pack(anchor="w")
     row = ttk.Frame(det)
@@ -132,8 +143,8 @@ class MaintenanceWindow:
         w.config(state=tk.DISABLED)
 
     # --- キャッシュ ---
-    cache = ttk.LabelFrame(frame, text="キャッシュ", padding=10)
-    cache.pack(fill=tk.X, pady=(10, 0))
+    cache = page("キャッシュ")
+    ttk.Label(cache, text="キャッシュの整理", font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(0, 6))
     row = ttk.Frame(cache)
     row.pack(fill=tk.X)
     self.add_button(row, "出力データキャッシュ整理", self.clean_output_cache).pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -144,8 +155,8 @@ class MaintenanceWindow:
               ).pack(anchor="w", pady=(8, 0))
 
     # --- ほかの機関の観測点 ---
-    ext = ttk.LabelFrame(frame, text="ほかの機関の観測点(v-net フォルダの ZIP)", padding=10)
-    ext.pack(fill=tk.X, pady=(10, 0))
+    ext = page("ほかの機関の観測点")
+    ttk.Label(ext, text="ほかの機関の観測点(v-net フォルダの ZIP)", font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(0, 6))
     self.lbl_stations = ttk.Label(ext, text="", justify=tk.LEFT)
     self.lbl_stations.pack(anchor="w")
     columns = (("zip", "ZIP", 230), ("start", "開始", 120), ("minutes", "分", 40),
@@ -173,6 +184,18 @@ class MaintenanceWindow:
               text="ZIP は防災科研のページなどからダウンロードし、v-net フォルダにそのまま置きます。\n"
                    "変換は、波形を表示するときにも自動で行います(観測点の設定を変えたときは、変換済みの SAC を消してください)。"
               ).pack(anchor="w", pady=(8, 0))
+
+    # --- 実行ログ(メイン画面の実行ログと同じもの。メイン画面が隠れていても見えるように) ---
+    ttk.Label(frame, text="実行ログ:").pack(anchor="w", pady=(10, 2))
+    log_frame = ttk.Frame(frame)
+    log_frame.pack(fill=tk.BOTH, expand=True)
+    self.log_text = tk.Text(log_frame, height=8, width=90, font=("sans-serif", 9), bg="#f9f9f9", fg="#333333",
+                            relief="solid", bd=1, state=tk.DISABLED)
+    log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+    self.log_text.configure(yscrollcommand=log_scroll.set)
+    self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    log_scroll.pack(side=tk.LEFT, fill=tk.Y)
+    add_log_widget(self.log_text)
 
     # --- 進み具合・閉じる ---
     bottom = ttk.Frame(frame)
@@ -236,20 +259,39 @@ class MaintenanceWindow:
         self.result = work(self.messages.append, lambda: self.cancel, self.set_progress)
       except Exception as e:
         self.error = e
-    self.label, self.total, self.progress = label, total, 0
+    self.label, self.total, self.progress, self.stage = label, total, 0, None
     self.result, self.error, self.cancel = None, None, False
     for w in self.busy_widgets:
       w.config(state=tk.DISABLED)
     self.btn_close.config(text="中止")
+    # 別スレッドの処理中は、自動のごみ集め(循環参照の片付け)を止め、画面側のスレッドで GC_EVERY 回ごとに行う
+    #   止めないと、閉じた画面の部品(matplotlib のツールバーの画像や変数など)が別スレッドで片付けられ、
+    #   そこから Tcl を呼んでしまう。Tcl は別スレッドから呼べないので、画面が消えたり落ちたりする
+    #   (「main thread is not in main loop」「Tcl interpreter is leaked」が出る)
+    gc.collect()
+    gc.disable()
+    self.polls = 0
     self.thread = threading.Thread(target=target, daemon=True)
     self.thread.start()
     self.poll(on_done)
 
-  # 進み具合(済んだ数。全体の数が変わる処理は (済んだ数, 全体の数))
-  def set_progress(self, done, total=None):
+  # 進み具合(済んだ数。段階のある処理は (何番目, 全体の数, 今していること)。数の無い段階は total=0)
+  def set_progress(self, done, total=None, stage=None):
     self.progress = done
     if total is not None:
       self.total = total
+    self.stage = stage
+
+  # 進み具合の表示。段階の文字の最後の「(日)」などは、数の単位として数の後ろに付ける
+  #   例: 地震の候補を探す処理: 候補ごとの波形を解析しています 12 / 215 件目
+  def status_text(self):
+    if self.stage is None:
+      return f"{self.label}... {self.progress} / {self.total}"
+    stage, unit = self.stage, ""
+    if stage.endswith(")") and "(" in stage:
+      stage, unit = stage[:-1].rsplit("(", 1)
+    count = f" {self.progress} / {self.total} {unit}".rstrip() if self.total else "..."
+    return f"{self.label}: {stage}{count}"
 
   # 溜まったメッセージを実行ログに書く
   def flush_messages(self):
@@ -261,12 +303,16 @@ class MaintenanceWindow:
   def poll(self, on_done):
     self.flush_messages()
     if not self.win.winfo_exists():
+      gc.enable()
       return
     if self.thread.is_alive():
-      self.lbl_status.config(text=f"{self.label}... {self.progress} / {self.total}"
-                                  + ("(中止しています)" if self.cancel else ""))
+      self.lbl_status.config(text=self.status_text() + ("(中止しています)" if self.cancel else ""))
+      self.polls += 1
+      if self.polls % GC_EVERY == 0:
+        gc.collect()
       self.win.after(100, self.poll, on_done)
       return
+    gc.enable()
     for w in self.busy_widgets:
       w.config(state=tk.NORMAL)
     self.btn_close.config(text="閉じる")
@@ -283,6 +329,7 @@ class MaintenanceWindow:
     if self.thread is not None and self.thread.is_alive():
       self.cancel = True
       return
+    remove_log_widget(self.log_text)
     self.win.destroy()
 
   # --- 気象庁の震源リスト ---

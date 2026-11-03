@@ -1146,7 +1146,7 @@ class MantenUsuSeismographApp:
   #   save_images ... 候補ごとに確認用の波形の画像を保存する
   #   overwrite   ... 画像を上書きする
   #   cancelled   ... 中止するときに True を返す関数(日・候補の区切りで止める)
-  #   on_progress ... 進み具合 (済んだ数, 全体の数) を受け取る関数
+  #   on_progress ... 進み具合 (何番目, 全体の数, 今していること) を受け取る関数(数の無い段階は 0, 0)
   #   戻り値 ... 地震の候補のリスト(期間の指定が誤っているときや、中止したときは None)
   #   メンテナンス画面からは別スレッドで呼ぶので、画面の部品には触れない(履歴の追加は add_history=False にして、
   #   戻り値を add_candidates_to_history に渡す)
@@ -1182,7 +1182,7 @@ class MantenUsuSeismographApp:
         log_message("=== 地震の候補を探す処理を中止しました ===")
         return None
       if on_progress:
-        on_progress(i, len(days))
+        on_progress(i + 1, len(days), "日ごとの RMS を用意しています(日)")
       values = quake_detect.load_rms_cache(day)
       cached = values is not None
       if not cached and day not in local_days:
@@ -1204,13 +1204,16 @@ class MantenUsuSeismographApp:
     rms = {nm: np.concatenate(v) for nm, v in rms.items()}
 
     # --- 2. 地震の候補 ---
+    if on_progress:
+      on_progress(0, 0, "地震の候補を探しています")
     candidates, info = quake_detect.find_candidates(start_day, rms)
     log_message(f"地震の候補: {len(candidates)}件(うち Hokudai の例外で見つけたもの "
                 f"{sum(1 for c in candidates if c['rule'] == quake_detect.RULE_HOKUDAI)}件)")
 
     # --- 3. 気象庁の震源リストとの照合 ---
     period_end = end_day + timedelta(days=1)
-    catalog, missing = jma_match.load_catalog(start_day, period_end, jma_match.array_center(stations))
+    catalog_progress = (lambda i, n: on_progress(i, n, "震源リストを読み、到達見込みを計算しています(日)")) if on_progress else None
+    catalog, missing = jma_match.load_catalog(start_day, period_end, jma_match.array_center(stations), catalog_progress)
     if missing:
       log_message(f"  気象庁の震源リストが無い日: {len(missing)}日(scripts/jma_hypocenter.py で取得できます)")
     jma_match.match_candidates(candidates, catalog)
@@ -1239,21 +1242,37 @@ class MantenUsuSeismographApp:
         del loaded[old]
       return quake_detect.merge_hours(hours)
 
+    # 前に解析した候補(始まり・終わりが同じもの)は、保存した結果を使い、波形を読まない
+    features_cache = quake_detect.load_features_cache()
+    reused = analyzed = 0
     log_message("候補ごとの波形を解析しています")
     for i, cand in enumerate(candidates):
       if cancelled():
+        quake_detect.save_features_cache(features_cache)
         log_message("=== 地震の候補を探す処理を中止しました(一覧は保存していません) ===")
         return None
       if on_progress:
-        on_progress(i, len(candidates))
+        on_progress(i + 1, len(candidates), "候補ごとの波形を解析しています(件目)")
       t0 = cand["start"] - timedelta(seconds=40)
       t1 = min(cand["end"] + timedelta(seconds=40), cand["start"] + timedelta(minutes=10))
-      st = window_stream(t0, t1)
-      try:
-        cand["features"], cand["picks"] = quake_detect.analyze_candidate(st, t0, t1, stations)
-      except Exception as e:
-        log_message(f"  [エラー] 波形を解析できませんでした({cand['start']:%Y-%m-%d %H:%M:%S}): {e}")
-        cand["features"], cand["picks"] = None, {}
+      key = quake_detect.features_key(cand)
+      path = out_dir / f"{cand['start']:%Y%m%d_%H%M%S}.png"
+      need_image = save_images and (overwrite or not path.exists())
+      st = None
+      if key in features_cache:
+        cand["features"], cand["picks"] = quake_detect.decode_features(features_cache[key])
+        reused += 1
+      else:
+        st = window_stream(t0, t1)
+        try:
+          cand["features"], cand["picks"] = quake_detect.analyze_candidate(st, t0, t1, stations)
+          features_cache[key] = quake_detect.encode_features(cand["features"], cand["picks"])
+          analyzed += 1
+          if analyzed % 20 == 0:
+            quake_detect.save_features_cache(features_cache)   # 中止しても、ここまでの分は次に使えるように
+        except Exception as e:
+          log_message(f"  [エラー] 波形を解析できませんでした({cand['start']:%Y-%m-%d %H:%M:%S}): {e}")
+          cand["features"], cand["picks"] = None, {}
       # 有珠山の地震らしさは、震源リストに無い候補と、震源リストで有珠山の地震とされたものに付ける
       if not cand["match"]:
         cand["usu"] = quake_features.usu_likeness(cand["features"]) if cand["features"] else "低"
@@ -1261,10 +1280,11 @@ class MantenUsuSeismographApp:
         cand["usu"] = quake_features.USU_CONFIRMED
       if not save_images:
         continue
-      path = out_dir / f"{cand['start']:%Y%m%d_%H%M%S}.png"
       cand["image"] = path.name
-      if path.exists() and not overwrite:
+      if not need_image:
         continue
+      if st is None:
+        st = window_stream(t0, t1)
       traces = quake_detect.vertical_traces(st)
       if not traces:
         continue
@@ -1273,6 +1293,10 @@ class MantenUsuSeismographApp:
       except Exception as e:
         log_message(f"  [エラー] 画像を保存できませんでした({path.name}): {e}")
         traceback.print_exc()
+    quake_detect.save_features_cache(features_cache)
+    log_message(f"  波形を解析した候補 {analyzed}件、前に解析した結果を使った候補 {reused}件")
+    if on_progress:
+      on_progress(0, 0, "見逃し?の確認用の画像と一覧を保存しています" if save_images else "一覧を保存しています")
     usu_counts = {k: sum(1 for c in candidates if c.get("usu") == k) for k in ("高", "中", "低")}
     log_message(f"  震源リストで有珠山の地震とされたもの: "
                 f"{sum(1 for c in candidates if c.get('usu') == quake_features.USU_CONFIRMED)}件")

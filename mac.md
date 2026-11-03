@@ -118,6 +118,8 @@ python3 scripts/UsuMantenViewer.py
 
 ## 6. 配布・実行時の注意
 
+- 別のマシンに移すときは、手で直した到着時刻・RMS・震源リストなど Git の管理外のデータも移します。まとめて zip にする `./pack_data_mac.sh` と、コピーするフォルダの一覧は、README の「別のマシンに移すとき」を参照してください。
+
 - **フォルダの構成**: アプリは、自分の横（`.app` 形式なら `.app` の横）にある `etc`・`tools`・`output`・`daily_zips`・`service_account` を使います（`scripts/app_paths.py`）。zip を展開したフォルダの構成は変えないでください。
 - **最初の起動は遅い**: ビルド直後や配布先での最初の1回は、Matplotlib のフォント一覧の作成と macOS による新しいファイルのチェックで、数十秒〜1分半ほどかかります。2回目以降は数秒で起動します（フォント一覧は `~/Library/Caches/UsuMantenViewer/matplotlib` に保存されます）。
 - **ダウンロードした zip から使う場合**: 署名していないアプリと `tools` の外部ツールを macOS が止めることがあります。展開したフォルダで次のコマンドを実行して、隔離情報を外してください。
