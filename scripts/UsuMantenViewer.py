@@ -19,8 +19,7 @@ from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 from plot_common import setup_japanese_font
 from log_common import log_message, set_console, set_log_widget
 import win_pipeline
-import cache_manager
-from cache_dialog import OutputCacheDialog
+from maintenance_window import MaintenanceWindow
 from stack_plot import StackFigure, StackWindow, find_trace
 from stack_overlays import QuakeOverlay, TrainOverlay, draw_on_image
 from waveform_window import open_waveform_window
@@ -114,7 +113,7 @@ warnings.filterwarnings(
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "3.1.0"
+  APP_VERSION = "3.2.0"
   # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
   MAX_HISTORY = 1000
 
@@ -381,26 +380,18 @@ class MantenUsuSeismographApp:
       font=("sans-serif", 10, "bold")
     ).pack(anchor="w", pady=(10, 2))
 
+    # 震源リストの取得・キャッシュの整理・ほかの機関の観測点は、別の画面(maintenance_window.py)にまとめる
     maint_frame = tk.Frame(panel)
     maint_frame.pack(fill=tk.X, pady=(0, 0))
-
-    # output フォルダの整理
-    btn_clean_output = tk.Button(
+    tk.Button(
       maint_frame,
-      text="出力データキャッシュ整理",
+      text="メンテナンス…",
       font=("sans-serif", 9),
-      command=self.clean_output_cache,
-    )
-    btn_clean_output.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
-
-    # daily_zips フォルダの整理
-    btn_clean_zips = tk.Button(
-      maint_frame,
-      text="波形Zipファイル整理",
-      font=("sans-serif", 9),
-      command=self.clean_daily_zips,
-    )
-    btn_clean_zips.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(3, 0))
+      command=self.open_maintenance,
+    ).pack(side=tk.LEFT, padx=(0, 6))
+    # 震源リストを取得済みの最後の日(更新を忘れないように)
+    self.lbl_jma_status = tk.Label(maint_frame, text="", font=("sans-serif", 9), fg="#555555")
+    self.lbl_jma_status.pack(side=tk.LEFT)
 
     # クラスの初期化内でのUI追加例
     # 5. 実行履歴セクションの下あたりに「実行ログ」エリアを追加
@@ -428,6 +419,7 @@ class MantenUsuSeismographApp:
     # 履歴データの読み込みと初期の時間間隔計算
     self.update_history_ui()
     self.update_duration_display()
+    self.update_jma_status()
 
   # manten_ch.tbl から 「拠点名.コンポーネント」 のリストを自動生成するヘルパー
   def load_channel_options(self):
@@ -976,38 +968,20 @@ class MantenUsuSeismographApp:
     finally:
       loading_win.destroy()   # 成功・失敗・中止どれでも必ずポップアップを閉じる
 
-  # outputキャッシュの整理(削除するファイルの種類を選ぶ画面を開く。履歴ファイルは残す)
-  def clean_output_cache(self):
-    if not self.output_base.exists():
-      messagebox.showinfo("情報", "outputディレクトリが存在しません。")
-      return
-    OutputCacheDialog(self.root, self.output_base)
+  # メンテナンス画面を開く
+  def open_maintenance(self):
+    MaintenanceWindow(self.root, on_change=self.update_jma_status)
 
-  # daily_zipsの整理
-  def clean_daily_zips(self):
-    if not self.zips_root.exists():
-      messagebox.showinfo("情報", "daily_zipsディレクトリが存在しません。")
-      return
-
-    # zipファイルのみを対象にする
-    zip_files = cache_manager.collect_files(self.zips_root, "*.zip")
-    if not zip_files:
-      messagebox.showinfo("情報", "対象のZIPファイルが見つかりません。")
-      return
-
-    msg = (
-      f"daily_zipsディレクトリ内のZIPファイルを削除します。\n\n"
-      f"・ZIPファイル数: {len(zip_files):,} 件\n"
-      f"・総容量: {cache_manager.format_size(cache_manager.total_size(zip_files))}\n\n"
-      f"本当によろしいですか？"
-    )
-
-    if messagebox.askyesno("確認 - daily_zips整理", msg):
-      try:
-        cache_manager.delete_files(zip_files)
-        messagebox.showinfo("完了", "ZIPファイルの整理が完了しました。")
-      except Exception as e:
-        messagebox.showerror("エラー", f"削除中にエラーが発生しました:\n{e}")
+  # 震源リストを取得済みの最後の日を表示する
+  def update_jma_status(self):
+    s = jma_hypocenter.summary()
+    if s["last"] is None:
+      text = "震源リスト: 未取得"
+    else:
+      text = f"震源リスト: {s['last']:%Y/%m/%d} まで"
+    if s["missing"]:
+      text += f"(未取得 {len(s['missing'])}日)"
+    self.lbl_jma_status.config(text=text, fg="#c0392b" if s["missing"] else "#555555")
 
   @staticmethod
   def parse_datetime(dt_str):

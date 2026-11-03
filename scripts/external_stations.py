@@ -78,7 +78,8 @@ def _channels(ch_text, code):
 #   SAC ファイルの名前 ... <画面で使う名前>.<成分>.sac
 #   変換した観測点は DONE_FILE に書いておく(その ZIP に無い観測点(別の網の ZIP など)も、変換し直さないため)
 DONE_FILE = "converted.txt"
-def _convert(zip_path, stations):
+#   log ... メッセージを受け取る関数(メンテナンス画面からは別スレッドで呼ぶため、画面側で表示する)
+def _convert(zip_path, stations, log=log_message):
   out_dir = CACHE_DIR / zip_path.stem
   done_path = out_dir / DONE_FILE
   done = set(done_path.read_text().split()) if done_path.exists() else set()
@@ -87,7 +88,7 @@ def _convert(zip_path, stations):
   catwin = tool_path(app_paths.TOOLS_DIR, "catwin32")
   win2sac = tool_path(app_paths.TOOLS_DIR, "win2sac_32")
   if not catwin.exists() or not win2sac.exists():
-    log_message(f"外部の観測点の変換に必要なツールがありません: {catwin.name}・{win2sac.name}")
+    log(f"外部の観測点の変換に必要なツールがありません: {catwin.name}・{win2sac.name}")
     return None
   work = out_dir / "work"
   if work.exists():
@@ -98,7 +99,7 @@ def _convert(zip_path, stations):
       cnts = sorted(n for n in z.namelist() if n.endswith(".cnt"))
       ch_names = [n for n in z.namelist() if n.endswith(".euc.ch")]
       if not cnts or not ch_names:
-        log_message(f"ZIP に .cnt またはチャンネル表(.euc.ch)がありません: {zip_path.name}")
+        log(f"ZIP に .cnt またはチャンネル表(.euc.ch)がありません: {zip_path.name}")
         return None
       for n in cnts + ch_names[:1]:
         (work / _base_name(n)).write_bytes(z.read(n))
@@ -110,7 +111,7 @@ def _convert(zip_path, stations):
     res = subprocess.run([str(catwin.resolve())] + [_base_name(n) for n in cnts] + ["-o", "all.cnt"],
                          cwd=work, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0 or not (work / "all.cnt").exists():
-      log_message(f"外部の観測点の WIN32 ファイルをつなげませんでした({zip_path.name}): "
+      log(f"外部の観測点の WIN32 ファイルをつなげませんでした({zip_path.name}): "
                   f"{res.stderr.decode('utf-8', errors='ignore')}")
       return None
     for name, st in stations.items():
@@ -125,7 +126,7 @@ def _convert(zip_path, stations):
         if src.exists():
           src.replace(out_dir / f"{name}.{c}.sac")
         else:
-          log_message(f"  {st['code']}.{c} を SAC に変換できませんでした({zip_path.name}): "
+          log(f"  {st['code']}.{c} を SAC に変換できませんでした({zip_path.name}): "
                       f"{res.stderr.decode('utf-8', errors='ignore')[-200:]}")
     done_path.write_text("\n".join(sorted(done | set(stations))) + "\n")
   finally:
@@ -157,3 +158,45 @@ def load(t0, t1, names=None):
     st.merge(method=1, fill_value=0)
     st.trim(obspy.UTCDateTime(t0), obspy.UTCDateTime(t1))
   return st
+
+# --- メンテナンス画面(maintenance_window.py)から使う ---
+
+# v-net フォルダの ZIP ごとの状況
+#   戻り値 ... [{"path": ZIP のパス, "start": 開始, "end": 終了, "size": ZIP の大きさ[バイト],
+#               "converted": 設定の観測点をすべて変換済みか, "stations": 変換できた設定の観測点の名前のリスト}, ...]
+def zip_status():
+  names = set(load_config())
+  rows = []
+  for path, start, end in data_files():
+    out_dir = CACHE_DIR / path.stem
+    done_path = out_dir / DONE_FILE
+    done = set(done_path.read_text().split()) if done_path.exists() else set()
+    found = sorted({f.name.split(".")[0] for f in out_dir.glob("*.sac")} & names) if out_dir.exists() else []
+    rows.append({"path": path, "start": start, "end": end, "size": path.stat().st_size,
+                 "converted": bool(names) and names <= done, "stations": found})
+  return rows
+
+# 変換済みの SAC(output/vnet)の (ファイル数, 合計の大きさ[バイト])
+def cache_size():
+  files = [f for f in CACHE_DIR.glob("**/*") if f.is_file()] if CACHE_DIR.exists() else []
+  return len(files), sum(f.stat().st_size for f in files)
+
+# 変換済みの SAC を消す(ZIP から変換し直せる)
+def clear_cache():
+  if CACHE_DIR.exists():
+    shutil.rmtree(CACHE_DIR)
+
+# まだ変換していない ZIP を変換する
+#   log・cancelled・on_progress ... jma_hypocenter.fetch_days と同じ
+#   戻り値 ... 変換した ZIP の数
+def convert_all(log=log_message, cancelled=lambda: False, on_progress=None):
+  stations = load_config()
+  todo = [r["path"] for r in zip_status() if not r["converted"]]
+  for i, path in enumerate(todo):
+    if cancelled():
+      return i
+    if on_progress:
+      on_progress(i)
+    log(f"  {path.name} を変換しています")
+    _convert(path, stations, log)
+  return len(todo)

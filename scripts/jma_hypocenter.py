@@ -1,9 +1,11 @@
 # jma_hypocenter.py
-# 気象庁の震源リスト(日ごと・暫定値)を取得し、日ごとのCSVとして jma_hypocenter フォルダに保存する(単体実行用)
+# 気象庁の震源リスト(日ごと・暫定値)を取得し、日ごとのCSVとして jma_hypocenter フォルダに保存する
 #   取得元: https://www.data.jma.go.jp/eqev/data/daily_map/YYYYMMDD.html(2025/1/1 以降)
 #   ページ内の <pre> にある固定幅の一覧を読み取る。例:
 #     2026  8 20 00:50 21.2  41°52.7'N 143° 3.0'E   46     4.0  浦河沖
 #   出典: 気象庁 震源リスト。震源位置やマグニチュードは暫定値で、変更になる場合がある
+#
+# メイン画面の「メンテナンス」ボタンで開く画面からも取得できる(maintenance_window.py)
 #
 # 使い方: python3 scripts/jma_hypocenter.py [開始日 [終了日]] [--overwrite]
 #   日付 ... 例: 2026/8/20。省略すると、観測の最初の日(daily_zips の最も古い日)から昨日まで
@@ -130,6 +132,103 @@ def describe(q):
   m = "-" if q["M"] is None else f"{q['M']:g}"
   return f"{q['日時']:%H:%M:%S} {q['震央地名']} M{m} 深さ{q['深さ[km]']:g}km"
 
+# 昨日(震源リストの日ごとのページは、その日が終わってから載る)
+def yesterday():
+  return datetime.combine(datetime.now().date(), datetime.min.time()) - timedelta(days=1)
+
+# 観測の最初の日(daily_zips の最も古い日。取得済みの CSV がそれより古ければその日)。どちらも無ければ None
+def first_day():
+  firsts = zip_days()[:1] + saved_days()[:1]
+  return min(firsts) if firsts else None
+
+# 取得の状況(メンテナンス画面の表示用)
+#   戻り値 ... {"saved": 取得済みの日数, "first": 取得済みの最初の日, "last": 取得済みの最後の日,
+#              "missing": 観測の最初の日から昨日までで、取得していない日のリスト}(取得済みが無ければ first・last は None)
+def summary():
+  saved = saved_days()
+  start, end = first_day(), yesterday()
+  saved_set = set(saved)
+  missing = [] if start is None else [start + timedelta(days=i) for i in range((end - start).days + 1)
+                                      if start + timedelta(days=i) not in saved_set]
+  return {"saved": len(saved), "first": saved[0] if saved else None, "last": saved[-1] if saved else None,
+          "missing": missing}
+
+# 取得する日を決める
+#   start, end ... 期間(start が None なら観測の最初の日から昨日まで、end が None なら start と同じ日)
+#   overwrite  ... 取得済みの日も取り直す
+#   取得するのは、まだ取得していない日と、取得済みの最後の日(暫定値の更新を確かめる)
+#   戻り値 ... (期間の日のリスト, 取得する日のリスト, 取得済みの最後の日 または None)
+def plan_days(start=None, end=None, overwrite=False):
+  if start is None:
+    start = first_day()
+    if start is None:
+      raise ValueError("daily_zips にZIPが無いため、開始日を指定してください(例: 2026/8/20)")
+    end = yesterday()
+  elif end is None:
+    end = start
+  days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+  saved_set = set(saved_days())
+  last_saved = max((d for d in days if d in saved_set), default=None)
+  todo = [d for d in days if overwrite or d not in saved_set or d == last_saved]
+  return days, todo, last_saved
+
+# 取得の前に表示する説明
+def describe_plan(days, todo, last_saved):
+  return (f"{days[0]:%Y-%m-%d}〜{days[-1]:%Y-%m-%d} の {len(days)}日のうち、取得するもの {len(todo)}日"
+          + (f"(取得済みの最後の日 {last_saved:%Y-%m-%d} を含む)" if last_saved in todo else "")
+          + f" → {app_paths.JMA_HYPOCENTER_DIR}")
+
+# 日ごとに取得して CSV に保存する。取り直した日は前回との違いを log に書く
+#   log         ... メッセージを受け取る関数(画面から使うときは、別スレッドから呼ばれる)
+#   cancelled   ... 中止するときに True を返す関数(日の区切りで止める)
+#   on_progress ... 済んだ日数を受け取る関数
+#   戻り値 ... {"done": 保存した日数, "failed": 取得できなかった日数, "changed": 前回と違った日数}
+def fetch_days(todo, log=log_message, cancelled=lambda: False, on_progress=None):
+  saved_set = set(saved_days())
+  result = {"done": 0, "failed": 0, "changed": 0}
+  for i, day in enumerate(todo):
+    if cancelled():
+      break
+    if i:
+      time.sleep(REQUEST_INTERVAL)
+    if on_progress:
+      on_progress(i)
+    try:
+      text = fetch_list(day)
+    except (urllib.error.URLError, TimeoutError) as e:
+      log(f"  {day:%Y-%m-%d}: 取得できませんでした ({e})")
+      result["failed"] += 1
+      continue
+    if text is None:
+      log(f"  {day:%Y-%m-%d}: 震源リストのページがありません")
+      result["failed"] += 1
+      continue
+    quakes, skipped = parse_list(text)
+    old = load_day(day) if day in saved_set else None
+    save_csv(csv_path(day), quakes)
+    result["done"] += 1
+    log(f"  {day:%Y-%m-%d}: {len(quakes)}件" + (f"(読み取れなかった行 {len(skipped)}行)" if skipped else ""))
+    for line in skipped[:3]:
+      log(f"    {line}")
+
+    # 取り直した日は、前回との違いを表示する
+    if old is not None:
+      added, removed, changed = compare(old, quakes)
+      if not (added or removed or changed):
+        log(f"    前回({len(old)}件)と同じでした")
+        continue
+      result["changed"] += 1
+      log(f"    前回({len(old)}件)との違い: 追加 {len(added)}件、削除 {len(removed)}件、変更 {len(changed)}件")
+      for q in added[:5]:
+        log(f"      + {describe(q)}")
+      for q in removed[:5]:
+        log(f"      - {describe(q)}")
+      for a, b in changed[:5]:
+        log(f"      * {describe(a)} → {describe(b)}")
+  if on_progress:
+    on_progress(result["done"] + result["failed"])
+  return result
+
 def main():
   parser = argparse.ArgumentParser(description="気象庁の震源リスト(日ごと)を取得してCSVに保存する")
   parser.add_argument("start", nargs="?", help="開始日(例: 2026/8/20)。省略すると観測の最初の日から昨日まで")
@@ -138,58 +237,15 @@ def main():
   args = parser.parse_args()
   set_console(True)
 
-  saved = saved_days()
-  if args.start:
-    start = datetime.strptime(args.start, "%Y/%m/%d")
-    end = datetime.strptime(args.end, "%Y/%m/%d") if args.end else start
-  else:
-    firsts = zip_days()[:1] + saved[:1]
-    if not firsts:
-      log_message("daily_zips にZIPが無いため、開始日を指定してください(例: 2026/8/20)")
-      return 1
-    start = min(firsts)
-    end = datetime.combine(datetime.now().date(), datetime.min.time()) - timedelta(days=1)
-  days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-
-  # 取得するのは、まだ取得していない日と、取得済みの最後の日(暫定値の更新を確かめる)
-  saved_set = set(saved)
-  last_saved = max((d for d in days if d in saved_set), default=None)
-  todo = [d for d in days if args.overwrite or d not in saved_set or d == last_saved]
-  log_message(f"{start:%Y-%m-%d}〜{end:%Y-%m-%d} の {len(days)}日のうち、取得するもの {len(todo)}日"
-              + (f"(取得済みの最後の日 {last_saved:%Y-%m-%d} を含む)" if last_saved in todo else "")
-              + f" → {app_paths.JMA_HYPOCENTER_DIR}")
-
-  for i, day in enumerate(todo):
-    if i:
-      time.sleep(REQUEST_INTERVAL)
-    try:
-      text = fetch_list(day)
-    except (urllib.error.URLError, TimeoutError) as e:
-      log_message(f"  {day:%Y-%m-%d}: 取得できませんでした ({e})")
-      continue
-    if text is None:
-      log_message(f"  {day:%Y-%m-%d}: 震源リストのページがありません")
-      continue
-    quakes, skipped = parse_list(text)
-    old = load_day(day) if day in saved_set else None
-    save_csv(csv_path(day), quakes)
-    log_message(f"  {day:%Y-%m-%d}: {len(quakes)}件" + (f"(読み取れなかった行 {len(skipped)}行)" if skipped else ""))
-    for line in skipped[:3]:
-      log_message(f"    {line}")
-
-    # 取り直した日は、前回との違いを表示する
-    if old is not None:
-      added, removed, changed = compare(old, quakes)
-      if not (added or removed or changed):
-        log_message(f"    前回({len(old)}件)と同じでした")
-        continue
-      log_message(f"    前回({len(old)}件)との違い: 追加 {len(added)}件、削除 {len(removed)}件、変更 {len(changed)}件")
-      for q in added[:5]:
-        log_message(f"      + {describe(q)}")
-      for q in removed[:5]:
-        log_message(f"      - {describe(q)}")
-      for a, b in changed[:5]:
-        log_message(f"      * {describe(a)} → {describe(b)}")
+  start = datetime.strptime(args.start, "%Y/%m/%d") if args.start else None
+  end = datetime.strptime(args.end, "%Y/%m/%d") if args.end else None
+  try:
+    days, todo, last_saved = plan_days(start, end, args.overwrite)
+  except ValueError as e:
+    log_message(str(e))
+    return 1
+  log_message(describe_plan(days, todo, last_saved))
+  fetch_days(todo)
 
 if __name__ == "__main__":
   sys.exit(main())
