@@ -146,6 +146,8 @@ class MantenUsuSeismographApp:
     self.target_folder_id = load_folder_id(self.folder_config_file)
     # 履歴を格納するファイル(JSON)
     self.history_file = self.output_base / "history.json"
+    # 手元に無い日のZIPを Googleドライブからダウンロードするか(ダウンロードの画面を出せない別スレッドの処理では False にする)
+    self.allow_download = True
 
     # WINファイル等の出力先フォルダを作成(既にあればok)
     self.output_base.mkdir(parents=True, exist_ok=True)
@@ -833,8 +835,9 @@ class MantenUsuSeismographApp:
     dates = win_pipeline.target_dates(start_dt, end_dt)
 
     # 期間内の各日付について(古い日から順に)、ローカルになければGoogleドライブからダウンロードを試みる
+    #   allow_download が False のとき(メンテナンス画面から別スレッドで検出するとき)は、手元のZIPだけを使う
     for d_str in sorted(dates):
-      if not list(self.zips_root.glob(f"*{d_str}*.zip")):
+      if self.allow_download and not list(self.zips_root.glob(f"*{d_str}*.zip")):
         # （※ ドライブ上のファイル名が 「260826.zip」 のような形式である場合）
         zip_filename = f"{d_str}.zip"
         log_message(f"ローカルに存在しないため、Googleドライブから取得を試みます: {zip_filename}")
@@ -970,7 +973,7 @@ class MantenUsuSeismographApp:
 
   # メンテナンス画面を開く
   def open_maintenance(self):
-    MaintenanceWindow(self.root, on_change=self.update_jma_status)
+    MaintenanceWindow(self.root, app=self, on_change=self.update_jma_status)
 
   # 震源リストを取得済みの最後の日を表示する
   def update_jma_status(self):
@@ -1142,9 +1145,14 @@ class MantenUsuSeismographApp:
   #   add_history ... 候補の期間を履歴(history.json)に追加する
   #   save_images ... 候補ごとに確認用の波形の画像を保存する
   #   overwrite   ... 画像を上書きする
+  #   cancelled   ... 中止するときに True を返す関数(日・候補の区切りで止める)
+  #   on_progress ... 進み具合 (済んだ数, 全体の数) を受け取る関数
+  #   戻り値 ... 地震の候補のリスト(期間の指定が誤っているときや、中止したときは None)
+  #   メンテナンス画面からは別スレッドで呼ぶので、画面の部品には触れない(履歴の追加は add_history=False にして、
+  #   戻り値を add_candidates_to_history に渡す)
   #   (保存した RMS を計算し直すときは、output/quake_rms を削除する)
   def run_quake_detection(self, start_date=None, end_date=None, add_history=False, save_images=False,
-                          overwrite=False):
+                          overwrite=False, cancelled=lambda: False, on_progress=None):
     zip_days = jma_hypocenter.zip_days()
     try:
       start_day = datetime.strptime(start_date, "%Y%m%d") if start_date else zip_days[0]
@@ -1169,7 +1177,12 @@ class MantenUsuSeismographApp:
     names = sorted(stations)
     rms = {nm: [] for nm in names}
     local_days = set(zip_days)
-    for day in days:
+    for i, day in enumerate(days):
+      if cancelled():
+        log_message("=== 地震の候補を探す処理を中止しました ===")
+        return None
+      if on_progress:
+        on_progress(i, len(days))
       values = quake_detect.load_rms_cache(day)
       cached = values is not None
       if not cached and day not in local_days:
@@ -1227,7 +1240,12 @@ class MantenUsuSeismographApp:
       return quake_detect.merge_hours(hours)
 
     log_message("候補ごとの波形を解析しています")
-    for cand in candidates:
+    for i, cand in enumerate(candidates):
+      if cancelled():
+        log_message("=== 地震の候補を探す処理を中止しました(一覧は保存していません) ===")
+        return None
+      if on_progress:
+        on_progress(i, len(candidates))
       t0 = cand["start"] - timedelta(seconds=40)
       t1 = min(cand["end"] + timedelta(seconds=40), cand["start"] + timedelta(minutes=10))
       st = window_stream(t0, t1)
@@ -1298,21 +1316,28 @@ class MantenUsuSeismographApp:
     log_message(f"見逃し?の一覧: {missed_path}")
 
     # --- 6. 履歴(指定期間の波形表示で、あとから見られるようにする) ---
-    if add_history and candidates:
-      entries = []
-      for cand in candidates:
-        start = (cand["start"] - timedelta(seconds=30)).replace(second=0, microsecond=0)
-        end = max((cand["end"] + timedelta(seconds=30)).replace(second=0, microsecond=0),
-                  start + timedelta(minutes=1))
-        entries.append({"start": start.strftime("%Y%m%d%H%M"), "end": end.strftime("%Y%m%d%H%M"),
-                        "title": quake_detect.candidate_label(cand)})
-      added, dropped = self.add_history_entries(entries, quake_detect.LABEL_PREFIX)
-      log_message(f"履歴に {added}件を追加しました" +
-                  (f"(同じ期間を表示した履歴がある {len(entries) - added}件は、そちらを残しました)"
-                   if added < len(entries) else "") +
-                  (f"(上限 {self.MAX_HISTORY}件を超えたため、古い履歴 {dropped}件を削除)" if dropped else ""))
+    if add_history:
+      self.add_candidates_to_history(candidates)
 
     log_message("\n=== 地震の候補を探すバッチ処理が完了しました ===")
+    return candidates
+
+  # 地震の候補の期間を履歴に追加する(画面の履歴のプルダウンも更新するので、画面側のスレッドで呼ぶ)
+  def add_candidates_to_history(self, candidates):
+    if not candidates:
+      return
+    entries = []
+    for cand in candidates:
+      start = (cand["start"] - timedelta(seconds=30)).replace(second=0, microsecond=0)
+      end = max((cand["end"] + timedelta(seconds=30)).replace(second=0, microsecond=0),
+                start + timedelta(minutes=1))
+      entries.append({"start": start.strftime("%Y%m%d%H%M"), "end": end.strftime("%Y%m%d%H%M"),
+                      "title": quake_detect.candidate_label(cand)})
+    added, dropped = self.add_history_entries(entries, quake_detect.LABEL_PREFIX)
+    log_message(f"履歴に {added}件を追加しました" +
+                (f"(同じ期間を表示した履歴がある {len(entries) - added}件は、そちらを残しました)"
+                 if added < len(entries) else "") +
+                (f"(上限 {self.MAX_HISTORY}件を超えたため、古い履歴 {dropped}件を削除)" if dropped else ""))
 
   # --- 地震の候補の震源を画面に表示する ---
   #   候補の一覧(--detect-quakes の quake_candidates_*.csv。「候補」の列があれば印の付いた行だけ)を選び、

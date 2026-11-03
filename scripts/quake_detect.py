@@ -8,7 +8,7 @@
 #   3. 候補の前後を、拠点の倍率の中央値が ONSET_RATIO 倍を下回るところまで広げ、揺れの始まりと終わりとする
 #   判定の基準は train_day_plot.py(列車の揺れから地震を除く処理)で決めたものと同じ
 import csv
-from datetime import timedelta
+from datetime import datetime, timedelta
 import warnings
 
 import numpy as np
@@ -18,7 +18,7 @@ import app_paths
 import jma_match
 import quake_features
 from hypocenter import LocalProjection
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import obspy
 
 from plot_common import NM_TO_CM
@@ -89,6 +89,18 @@ def load_rms_cache(day):
   except Exception as e:
     log_message(f"  保存した RMS を読めませんでした({path.name}): {e}")
     return None
+
+# RMS を保存済みの日(今の帯域・窓の長さのもの)
+def rms_cache_days():
+  suffix = rms_cache_path(datetime(2000, 1, 1)).name[8:]
+  days = []
+  if RMS_CACHE_DIR.exists():
+    for path in RMS_CACHE_DIR.glob(f"*{suffix}"):
+      try:
+        days.append(datetime.strptime(path.name[:8], "%Y%m%d"))
+      except ValueError:
+        pass
+  return sorted(days)
 
 def save_rms_cache(day, rms):
   RMS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -302,7 +314,9 @@ def save_candidate_image(path, cand, traces, match, title, missed=False):
   t0 = cand["start"] - timedelta(seconds=30)
   t1 = min(cand["end"] + timedelta(seconds=30), t0 + timedelta(minutes=10))
   names = sorted(traces)
-  fig, axes = plt.subplots(len(names), 1, figsize=(12, 1.8 * len(names) + 0.6), sharex=True, squeeze=False)
+  # pyplot を使わずに描く(メンテナンス画面から別スレッドで呼ぶため)
+  fig = Figure(figsize=(12, 1.8 * len(names) + 0.6))
+  axes = fig.subplots(len(names), 1, sharex=True, squeeze=False)
   axes = axes[:, 0]
   for ax, nm in zip(axes, names):
     # 欠測をはさむときは、連続した区間ごとにフィルターをかける
@@ -344,7 +358,6 @@ def save_candidate_image(path, cand, traces, match, title, missed=False):
   axes[-1].set_xlabel(note, fontsize=8)
   fig.tight_layout()
   fig.savefig(path, dpi=90)
-  plt.close(fig)
 
 # 候補の短い説明(画像のタイトル・履歴に使う)
 #   例: 地震候補 08/23 22:45:40 浦河沖 M4.0(4拠点 最大×350)

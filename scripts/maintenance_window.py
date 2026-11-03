@@ -1,10 +1,12 @@
 # maintenance_window.py
 # メンテナンス画面(メイン画面の「メンテナンス」ボタンで開く)
 #   気象庁の震源リスト ... 取得の状況と、不足分の取得・期間を指定した取り直し(jma_hypocenter.py と同じ処理)
+#   地震の候補の検出   ... 揺れの大きさ(RMS)の保存の状況と、地震の候補を探す処理(--detect-quakes と同じ処理)
 #   キャッシュ         ... output フォルダ(cache_dialog.py)と daily_zips フォルダの整理
 #   ほかの機関の観測点 ... v-net フォルダの ZIP の一覧と、変換済みの SAC(output/vnet)の変換・削除(external_stations.py)
 # 取得・変換は時間がかかるので別スレッドで行い、画面は0.1秒ごとに進み具合を表示する
 # 別スレッドからは画面に触れないので、メッセージはいったん溜め、画面側で実行ログに書く
+#   (log_message を別スレッドから呼んだときも、log_common が溜めておき、画面側の flush_pending で書く)
 import os
 import subprocess
 import sys
@@ -17,8 +19,9 @@ import app_paths
 import cache_manager
 import external_stations
 import jma_hypocenter
+import quake_detect
 from cache_dialog import OutputCacheDialog
-from log_common import log_message
+from log_common import log_message, flush_pending
 
 # 取得していない日を、状況の欄に並べる上限
 MAX_MISSING_SHOWN = 5
@@ -49,8 +52,10 @@ def format_days(days):
 
 class MaintenanceWindow:
   # parent    ... 親ウィンドウ
+  # app       ... メイン画面(MantenUsuSeismographApp。地震の候補を探す処理と、履歴への追加に使う)
   # on_change ... 震源リストを取得したあとに呼ぶ関数(メイン画面の表示を更新する)
-  def __init__(self, parent, on_change=None):
+  def __init__(self, parent, app=None, on_change=None):
+    self.app = app
     self.on_change = on_change
     # 別スレッドとの受け渡し(スレッド側は書き込むだけ、画面側が読んで表示する)
     self.messages = []     # 実行ログに書くメッセージ
@@ -92,6 +97,39 @@ class MaintenanceWindow:
                    "期間の終わりを空けると、始めの1日だけ取り直します。前回との違いは実行ログに表示します。\n"
                    f"気象庁のサーバーに負担をかけないよう、1日ごとに {jma_hypocenter.REQUEST_INTERVAL:g}秒あけて取得します。"
               ).pack(anchor="w", pady=(8, 0))
+
+    # --- 地震の候補の検出 ---
+    det = ttk.LabelFrame(frame, text="地震の候補の検出(--detect-quakes と同じ処理)", padding=10)
+    det.pack(fill=tk.X, pady=(10, 0))
+    self.lbl_detect = ttk.Label(det, text="", justify=tk.LEFT)
+    self.lbl_detect.pack(anchor="w")
+    row = ttk.Frame(det)
+    row.pack(fill=tk.X, pady=(8, 0))
+    ttk.Label(row, text="期間(YYYYMMDD):").pack(side=tk.LEFT)
+    self.entry_det_from = ttk.Entry(row, width=10)
+    self.entry_det_from.pack(side=tk.LEFT)
+    ttk.Label(row, text="〜").pack(side=tk.LEFT)
+    self.entry_det_to = ttk.Entry(row, width=10)
+    self.entry_det_to.pack(side=tk.LEFT)
+    self.add_button(row, "地震の候補を探す", self.detect_quakes).pack(side=tk.LEFT, padx=(5, 0))
+    row = ttk.Frame(det)
+    row.pack(fill=tk.X, pady=(6, 0))
+    self.var_images = tk.BooleanVar(value=False)
+    self.var_history = tk.BooleanVar(value=False)
+    self.var_overwrite = tk.BooleanVar(value=False)
+    for text, var in (("確認用の画像・PDF も保存", self.var_images), ("候補を履歴に追加", self.var_history),
+                      ("画像を上書き", self.var_overwrite)):
+      chk = ttk.Checkbutton(row, text=text, variable=var)
+      chk.pack(side=tk.LEFT, padx=(0, 10))
+      self.busy_widgets.append(chk)
+    ttk.Label(det, foreground="#666666", justify=tk.LEFT,
+              text="期間を空けると daily_zips の最初の日から最後の日までです。RMS を保存済みの日はそれを使い、\n"
+                   "まだの日だけ波形から計算します(1日あたり数十秒〜数分)。daily_zips に ZIP が無い日は飛ばします。\n"
+                   "結果(候補の一覧・見逃し?の一覧)は batch_plots/quakes に保存し、1時間スタック画面の「地震」でも使います。"
+              ).pack(anchor="w", pady=(8, 0))
+    if app is None:
+      for w in self.busy_widgets[-4:]:
+        w.config(state=tk.DISABLED)
 
     # --- キャッシュ ---
     cache = ttk.LabelFrame(frame, text="キャッシュ", padding=10)
@@ -165,6 +203,19 @@ class MaintenanceWindow:
       text += "\n昨日まで取得済みです"
     self.lbl_jma.config(text=text)
 
+    zip_days = set(jma_hypocenter.zip_days())
+    rms_days = quake_detect.rms_cache_days()
+    todo = sorted(zip_days - set(rms_days))
+    if rms_days:
+      text = f"RMS を保存済み: {len(rms_days):,}日({rms_days[0]:%Y-%m-%d}〜{rms_days[-1]:%Y-%m-%d})"
+    else:
+      text = "RMS を保存済みの日はありません(1時間スタック画面の「地震」で候補の帯が出ません)"
+    if todo:
+      text += f"\ndaily_zips にあって、まだ計算していない日: {len(todo):,}日({format_days(todo)})"
+    else:
+      text += "\ndaily_zips の日はすべて計算済みです"
+    self.lbl_detect.config(text=text)
+
     config = external_stations.load_config()
     names = "・".join(f"{n}({st['code']})" for n, st in config.items()) or "なし"
     self.lbl_stations.config(text=f"設定の観測点: {names}")
@@ -182,8 +233,7 @@ class MaintenanceWindow:
   def run_in_thread(self, label, total, work, on_done):
     def target():
       try:
-        self.result = work(self.messages.append, lambda: self.cancel,
-                           lambda n: setattr(self, "progress", n))
+        self.result = work(self.messages.append, lambda: self.cancel, self.set_progress)
       except Exception as e:
         self.error = e
     self.label, self.total, self.progress = label, total, 0
@@ -195,8 +245,15 @@ class MaintenanceWindow:
     self.thread.start()
     self.poll(on_done)
 
+  # 進み具合(済んだ数。全体の数が変わる処理は (済んだ数, 全体の数))
+  def set_progress(self, done, total=None):
+    self.progress = done
+    if total is not None:
+      self.total = total
+
   # 溜まったメッセージを実行ログに書く
   def flush_messages(self):
+    flush_pending()
     while self.messages:
       log_message(self.messages.pop(0))
 
@@ -268,6 +325,37 @@ class MaintenanceWindow:
                 f"前回と違った日 {result['changed']}日" + ("(中止しました)" if self.cancel else ""))
     if self.on_change:
       self.on_change()
+
+  # --- 地震の候補の検出 ---
+  def detect_quakes(self):
+    texts = [self.entry_det_from.get().strip(), self.entry_det_to.get().strip()]
+    try:
+      start, end = [datetime.strptime(t, "%Y%m%d") if t else None for t in texts]
+    except ValueError:
+      messagebox.showerror("入力エラー", "期間は YYYYMMDD の形で入力してください(例: 20260820)", parent=self.win)
+      return
+    if start and end and end < start:
+      messagebox.showerror("入力エラー", "期間の終わりが始めより前になっています", parent=self.win)
+      return
+    if not jma_hypocenter.zip_days() and not (start and end):
+      messagebox.showinfo("情報", "daily_zips に ZIP が無いため、期間を指定してください", parent=self.win)
+      return
+    add_history = self.var_history.get()
+    args = dict(start_date=texts[0] or None, end_date=texts[1] or None, save_images=self.var_images.get(),
+                overwrite=self.var_overwrite.get())
+
+    def work(log, cancelled, progress):
+      # 別スレッドではダウンロードの画面を出せないので、手元の ZIP だけを使う
+      self.app.allow_download = False
+      try:
+        return self.app.run_quake_detection(cancelled=cancelled, on_progress=progress, **args)
+      finally:
+        self.app.allow_download = True
+
+    def on_done(candidates):
+      if candidates is not None and add_history:
+        self.app.add_candidates_to_history(candidates)
+    self.run_in_thread("地震の候補を探す処理", 0, work, on_done)
 
   # --- キャッシュ ---
   # output フォルダの整理(削除するファイルの種類を選ぶ画面を開く。履歴ファイルは残す)
