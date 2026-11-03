@@ -972,8 +972,15 @@ class MantenUsuSeismographApp:
       loading_win.destroy()   # 成功・失敗・中止どれでも必ずポップアップを閉じる
 
   # メンテナンス画面を開く
+  # メンテナンス画面は1つだけ開く(開いていれば前に出す。処理が重なって同じファイルを書かないように)
   def open_maintenance(self):
-    MaintenanceWindow(self.root, app=self, on_change=self.update_jma_status)
+    win = getattr(self, "maintenance", None)
+    if win is not None and win.win.winfo_exists():
+      win.win.deiconify()
+      win.win.lift()
+      win.win.focus_force()
+      return
+    self.maintenance = MaintenanceWindow(self.root, app=self, on_change=self.update_jma_status)
 
   # 震源リストを取得済みの最後の日を表示する
   def update_jma_status(self):

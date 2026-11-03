@@ -5,7 +5,7 @@
 #     ZIP の名前 ... <網の番号>_<開始 YYYYMMDDHHMM>_<分数>.zip(例: 03_02_07_202607081119_6.zip)
 #     中身       ... 1分ごとの WIN32 形式のファイル(.cnt)と、チャンネル表(.euc.ch)
 #   ZIP ごとに、使う観測点の上下動・水平動だけを SAC に変換し、output/vnet/<ZIPの名前> に保存して再利用する
-#   (catwin32 で1つにつなぎ、win2sac_32 で変換する。どちらも満点地震計の変換と同じ tools のもの)
+#   (1分ごとのファイルを1つにつなぎ、win2sac_32 で変換する。win2sac_32 は満点地震計の変換と同じ tools のもの)
 #   防災科研・気象庁のデータなので、v-net フォルダは Git の管理外にしている
 import re
 import shutil
@@ -27,6 +27,8 @@ ZIP_RE = re.compile(r"_(\d{12})_(\d+)\.zip$")
 # 使う成分と、チャンネル表の単位(加速度計(m/s/s)や、広帯域の別のチャンネル(wU など)は使わない)
 COMPONENTS = ("U", "N", "E")
 VELOCITY_UNIT = "m/s"
+# WIN32 形式のファイルのヘッダーの長さ
+WIN32_HEADER_SIZE = 4
 
 
 # 観測点の一覧。戻り値 ... {画面で使う名前: {"code": WIN の観測点コード, "coords": (緯度, 経度, 標高[m])}}
@@ -79,16 +81,23 @@ def _channels(ch_text, code):
 #   変換した観測点は DONE_FILE に書いておく(その ZIP に無い観測点(別の網の ZIP など)も、変換し直さないため)
 DONE_FILE = "converted.txt"
 #   log ... メッセージを受け取る関数(メンテナンス画面からは別スレッドで呼ぶため、画面側で表示する)
+# WIN32 形式のファイルを時刻の順に1つにつなぐ
+#   WIN32 形式は、先頭4バイトのファイルのヘッダーのあとに1秒ごとのブロックが続くので、
+#   2つ目以降はヘッダーを除いてつなげばよい(catwin32 の出力と同じ。Windows 用の catwin32 は用意していない)
+def join_win32(blobs, out_path):
+  with open(out_path, "wb") as f:
+    for i, data in enumerate(blobs):
+      f.write(data if i == 0 else data[WIN32_HEADER_SIZE:])
+
 def _convert(zip_path, stations, log=log_message):
   out_dir = CACHE_DIR / zip_path.stem
   done_path = out_dir / DONE_FILE
   done = set(done_path.read_text().split()) if done_path.exists() else set()
   if set(stations) <= done:
     return out_dir
-  catwin = tool_path(app_paths.TOOLS_DIR, "catwin32")
   win2sac = tool_path(app_paths.TOOLS_DIR, "win2sac_32")
-  if not catwin.exists() or not win2sac.exists():
-    log(f"外部の観測点の変換に必要なツールがありません: {catwin.name}・{win2sac.name}")
+  if not win2sac.exists():
+    log(f"外部の観測点の変換に必要なツールがありません: {win2sac.name}")
     return None
   work = out_dir / "work"
   if work.exists():
@@ -101,19 +110,13 @@ def _convert(zip_path, stations, log=log_message):
       if not cnts or not ch_names:
         log(f"ZIP に .cnt またはチャンネル表(.euc.ch)がありません: {zip_path.name}")
         return None
-      for n in cnts + ch_names[:1]:
-        (work / _base_name(n)).write_bytes(z.read(n))
+      # 1分ごとのファイルを1つにつなぐ(catwin32 と同じ結果になる)
+      join_win32([z.read(n) for n in cnts], work / "all.cnt")
+      (work / _base_name(ch_names[0])).write_bytes(z.read(ch_names[0]))
     ch_text = (work / _base_name(ch_names[0])).read_bytes().decode("euc_jp", errors="replace")
     (work / "channels.tbl").write_text(ch_text, encoding="euc_jp", errors="replace")
     # win2sac_32 のパラメータファイル(2行目がチャンネル表)
     (work / "win.prm").write_text(".\nchannels.tbl\n.\n.\n")
-    # 1分ごとのファイルを1つにつなぐ
-    res = subprocess.run([str(catwin.resolve())] + [_base_name(n) for n in cnts] + ["-o", "all.cnt"],
-                         cwd=work, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if res.returncode != 0 or not (work / "all.cnt").exists():
-      log(f"外部の観測点の WIN32 ファイルをつなげませんでした({zip_path.name}): "
-                  f"{res.stderr.decode('utf-8', errors='ignore')}")
-      return None
     for name, st in stations.items():
       chans = _channels(ch_text, st["code"])
       if not chans:
