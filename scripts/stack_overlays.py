@@ -24,6 +24,8 @@ COLOR_MATCHED = "#9467bd"   # 震源リストと照合した地震の候補
 COLOR_UNKNOWN = "#e377c2"   # 震源リストに無い地震の候補(未知の地震かもしれない)
 COLOR_P, COLOR_S = "#d62728", "#2ca02c"   # 震源リストの地震の P波・S波の到達見込み
 COLOR_JMA_TEXT = "#1f4e9c"   # 震源リストの地震の文字(貨物列車の候補の赤と区別する)
+# 検出結果が無い日の注意書きの高さ(軸の下端からの割合。横軸の目盛りの下、横軸の名前と同じ高さ)
+NO_RMS_NOTE_Y = -0.034
 # 到達見込みを描く震源リストの地震の、見込みの振幅(log A)の下限
 #   照合に使う下限(jma_match.MIN_LOG_AMP)の地震まで描くと、揺れの見えない小さな地震で図が埋まるため、
 #   照合が疑わしいとする基準(jma_match.DOUBTFUL_LOG_AMP)以上にする
@@ -82,10 +84,10 @@ class QuakeOverlay:
     # 地震の候補(帯)。帯の文字に地名を書いた地震は、到達見込みの文字を省く(重ならないように)
     labeled = set()
     if quake_detect.load_rms_cache(_day_start(t0)) is None:
-      # 検出結果が無い日は、候補が無いのか検出していないのか見分けられないので、図の上に書いておく
-      #   (右上の最大振幅の文字と重ならないよう短くする。作り方はメンテナンス画面の「地震の候補を探す」)
-      artists.append(ax.text(0.01, 1.005, "検出結果(RMS)が無い日のため、地震の候補の帯は出せません",
-                             transform=ax.transAxes, fontsize=8, color="#b03a2e", va="bottom", ha="left"))
+      # 検出結果が無い日は、候補が無いのか検出していないのか見分けられないので、図の左下に書いておく
+      #   (図の上は画面ではボタンと重なるため、横軸の名前の左に置く。作り方はメンテナンス画面の「地震の候補の検出」)
+      artists.append(ax.text(0.0, NO_RMS_NOTE_Y, "※ 検出結果(RMS)が無い日のため、候補の帯なし",
+                             transform=ax.transAxes, fontsize=8, color="#b03a2e", va="top", ha="left"))
     for cand in self._candidates(_day_start(t0)):
       if cand["end"] <= t0 or cand["start"] >= t1:
         continue

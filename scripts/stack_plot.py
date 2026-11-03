@@ -213,6 +213,8 @@ class StackWindow:
     # 成分ボタンの右に、重ね表示のトグルボタンと「凡例」ボタンを配置
     self.overlay_buttons = {}
     self._legend_lines = []
+    # 開いている凡例のウィンドウ(1つだけ開くため)
+    self._legend_win = None
     if self.overlays:
       x0 = 0.07 + len(self.comps) * 0.065 + 0.03
       for i, ov in enumerate(self.overlays):
@@ -331,10 +333,19 @@ class StackWindow:
     if not hasattr(self.fig.canvas, "get_tk_widget"):
       self.log(text)
       return
+    # 凡例のウィンドウは1つだけ開く(開いていれば中身を今の状態にして前に出す)
+    win = self._legend_win
+    if win is not None and win.winfo_exists():
+      self._legend_label.config(text=text)
+      win.deiconify()
+      win.lift()
+      return
     win = tk.Toplevel(self.fig.canvas.get_tk_widget())
     win.title("凡例(重ね表示の色)")
-    tk.Label(win, text=text, justify="left", anchor="w", padx=12, pady=10).pack(fill="both")
+    self._legend_label = tk.Label(win, text=text, justify="left", anchor="w", padx=12, pady=10)
+    self._legend_label.pack(fill="both")
     tk.Button(win, text="閉じる", command=win.destroy).pack(pady=(0, 10))
+    self._legend_win = win
 
   # 選択中のチャンネルがこの時間に無いとき、代わりに表示する (拠点, 成分) を選ぶ。無ければ None
   def _pick_fallback(self, stream):

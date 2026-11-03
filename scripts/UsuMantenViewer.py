@@ -116,6 +116,8 @@ class MantenUsuSeismographApp:
   APP_VERSION = "3.2.0"
   # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
   MAX_HISTORY = 1000
+  # 終了日時を入れるボタンの長さ(分。開始・終了の分を両方含めた長さ)
+  SPAN_BUTTON_MINUTES = (1, 3, 5, 10)
 
   # クラスの初期化
   def __init__(self, root):
@@ -204,31 +206,33 @@ class MantenUsuSeismographApp:
     self.entry_start.insert(0, "202608232245")
     self.entry_start.pack(fill=tk.X, pady=(0, 8))
 
-    # 3. 終了日時 ＆ コピーボタン用フレーム
-    # 日時とボタンを横に並べるためのフレームを定義
+    # 3. 終了日時
+    # ラベル
+    tk.Label(
+      panel,
+      text = "終了日時 (YYYYMMDDHHmm):",
+      font = ("sans-serif", 10, "bold")
+    ).pack(anchor="w", pady=(0, 2))
+
+    # 日時と長さのボタンを横に並べるためのフレームを定義
     end_frame = tk.Frame(panel)
     end_frame.pack(fill=tk.X, pady=(0, 2))
 
-    # ラベル
-    tk.Label(
-      end_frame,
-      text = "終了日時 (YYYYMMDDHHmm):",
-      font = ("sans-serif", 10, "bold")
-    ).pack(side=tk.LEFT)
+    # 開始日時から、押した長さ(開始・終了の分を両方含めた分数)になるように終了日時を入れるボタン
+    #   1分なら終了日時=開始日時、3分なら開始の2分後
+    # ボタンは右側に揃える(右から詰めて並ぶので、長いほうから置く)
+    for minutes in reversed(self.SPAN_BUTTON_MINUTES):
+      tk.Button(
+        end_frame,
+        text = f"{minutes}分",
+        font = ("sans-serif", 9),
+        command = lambda m=minutes: self.set_end_by_span(m),
+      ).pack(side=tk.RIGHT, padx=(2, 0))
 
-    # 開始時間をコピーするためのボタン定義
-    btn_copy = tk.Button(
-      end_frame,
-      text = "開始時間をコピー",            # ボタンに表示されるラベル
-      font = ("sans-serif", 9),
-      command = self.copy_start_to_end,  # ボタンが押された際に実行されるメソッド
-    )
-    # ボタンは右側に揃える
-    btn_copy.pack(side=tk.RIGHT)
-
-    # テキスト入力項目の定義
+    # テキスト入力項目の定義(ボタンの左の残りの幅に広げる)
     self.entry_end = tk.Entry(
-      panel,
+      end_frame,
+      width = 14,                  # 日時の12桁が入る幅(残りの幅に広げる)
       font = ("sans-serif", 11),
       bg = "white",
       fg = "black",
@@ -238,7 +242,7 @@ class MantenUsuSeismographApp:
     )
     # 初期表示
     self.entry_end.insert(0, "202608232249")
-    self.entry_end.pack(fill=tk.X, pady=(0, 2))
+    self.entry_end.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
 
     # 時間間隔（●分間）のリアルタイム表示ラベル
     self.lbl_duration = tk.Label(
@@ -496,13 +500,16 @@ class MantenUsuSeismographApp:
         text="形式: YYYYMMDDHHmm (例: 202608232245)", fg="gray"
       )
 
-  # 開始日時を終了日時にコピー
-  def copy_start_to_end(self):
-    # 開始日時の値
-    start_val = self.entry_start.get()
-    # 終了日時をいったん消してから開始日時を挿入
+  # 開始日時から minutes 分間になるように終了日時を入れる(1分なら終了日時=開始日時)
+  def set_end_by_span(self, minutes):
+    start_dt = self.parse_datetime(self.entry_start.get().strip())
+    if start_dt is None:
+      self.lbl_duration.config(text="⚠️ 開始日時の形式が正しくありません (YYYYMMDDHHmm)", fg="red")
+      return
+    end_dt = start_dt + timedelta(minutes=minutes - 1)
+    # 終了日時をいったん消してから入れる
     self.entry_end.delete(0, tk.END)
-    self.entry_end.insert(0, start_val)
+    self.entry_end.insert(0, end_dt.strftime("%Y%m%d%H%M"))
     # 時間間隔の表示を更新
     self.update_duration_display()
 
