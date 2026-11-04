@@ -1,9 +1,10 @@
 # waveform_window.py
 # 指定期間の波形表示(全拠点・全成分を縦に並べる)と、震度推定・P波・S波検出への入口
+from datetime import timedelta
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from obspy import Stream
+from obspy import Stream, UTCDateTime
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvasTkAgg
 
@@ -160,7 +161,8 @@ def draw_station_grid(fig, ordered_st, title_str):
 #   st         ... SACファイルから読み込んだStream
 #   title_str  ... 波形上部に表示するタイトル(日本語表示可)
 #   return_to  ... このウィンドウを閉じたときに戻るウィンドウ(Tk)。None ならOS任せ
-def open_waveform_window(parent, st, title_str, return_to=None):
+#   load_range ... (開始, 終了) の分を渡すと、その範囲の Stream を返す関数(表示の範囲を広げるときに使う)
+def open_waveform_window(parent, st, title_str, return_to=None, load_range=None):
   ordered_st = sort_stream(st)
   fig = create_waveform_figure(ordered_st)
   # 4拠点のときは拠点ごとに2x2、それ以外は縦に1列に並べる
@@ -217,6 +219,9 @@ def open_waveform_window(parent, st, title_str, return_to=None):
   # 3. 残り部分にグラフを埋め込む
   canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
+  # 表示している波形(view["st"])と、読み込み済みの波形(view["loaded"])。範囲を縮めたときは読み込み済みから切り出す
+  view = {"st": ordered_st, "loaded": ordered_st}
+
   # 読み込まれたデータから重複のない拠点名リストを作成
   stations = sorted(list(set(tr.stats.station for tr in ordered_st)))
 
@@ -234,7 +239,7 @@ def open_waveform_window(parent, st, title_str, return_to=None):
       messagebox.showwarning("警告", "拠点名が選択されていません。")
       return
 
-    station_st = ordered_st.select(station=selected_station)
+    station_st = view["st"].select(station=selected_station)
 
     # 該当拠点のデータが空でないかチェック
     if len(station_st) == 0:
@@ -251,7 +256,7 @@ def open_waveform_window(parent, st, title_str, return_to=None):
   def ps_arrival():
     run_for_station(lambda station_st: plot_ps_arrival_time(station_st, return_to=wave_win))
   def hypocenter():
-    plot_hypocenter(ordered_st, return_to=wave_win)
+    plot_hypocenter(view["st"], return_to=wave_win)
   ttk.Button(control_frame, text=shortcuts.with_label("震度推定", "i"), command=intensity).pack(side=tk.LEFT, padx=(0, 10))
   ttk.Button(control_frame, text=shortcuts.with_label("P波・S波検出", "p"), command=ps_arrival).pack(side=tk.LEFT, padx=(0, 10))
   shortcuts.bind(wave_win, "i", intensity)
@@ -264,13 +269,82 @@ def open_waveform_window(parent, st, title_str, return_to=None):
     ttk.Button(control_frame, text=shortcuts.with_label("震源推定", "l"), command=hypocenter).pack(side=tk.LEFT, padx=(0, 10))
     shortcuts.bind(wave_win, "l", hypocenter)
 
+  # --- 表示の範囲を1分ずつ変える(TODO 24) ---
+  #   開始・終了の分を ◀(1分前)・▶(1分後)で動かす。縮めるときは読み込み済みの波形を切り出すだけで、
+  #   読み込み済みの外へ広げるときは load_range でその範囲の波形を用意する(load_range が無ければ広げられない)
+  #   震度推定・P波・S波検出・震源推定は、今の範囲の波形を使う(S-P時間の試算で、前の大きな雑音を外すときなど)
+  #   キー: 終了 ⌘[・⌘]、開始 ⌘⇧[・⌘⇧](Windows は Ctrl)
+  def minute_of(t):
+    return t.datetime.replace(second=0, microsecond=0)
+  def loaded_range():
+    return (minute_of(min(tr.stats.starttime for tr in view["loaded"])),
+            minute_of(max(tr.stats.endtime for tr in view["loaded"]) - 0.5))
+  rng = dict(zip(("start", "end"), loaded_range()))
+
+  def range_text():
+    minutes = int((rng["end"] - rng["start"]).total_seconds() // 60) + 1
+    return f"{rng['start']:%H:%M}〜{rng['end']:%H:%M}({minutes}分)"
+
+  def set_range(start, end):
+    if end < start:
+      return   # 1分より短くはしない
+    lo, hi = loaded_range()
+    if start < lo or end > hi:
+      if load_range is None:
+        messagebox.showinfo("表示の範囲", "読み込んだ範囲の外へは広げられません。", parent=wave_win)
+        return
+      wave_win.config(cursor="watch")
+      wave_win.update_idletasks()
+      try:
+        st_new = load_range(min(start, lo), max(end, hi))
+      finally:
+        wave_win.config(cursor="")
+      if st_new is None or len(st_new) == 0:
+        messagebox.showerror("エラー", "その範囲の波形を用意できませんでした。", parent=wave_win)
+        return
+      view["loaded"] = sort_stream(st_new)
+    st_view = view["loaded"].slice(UTCDateTime(start), UTCDateTime(end + timedelta(minutes=1)) - 0.001)
+    st_view = Stream([tr for tr in st_view if tr.stats.npts > 0])
+    if len(st_view) == 0:
+      messagebox.showerror("エラー", "その範囲の波形がありません。", parent=wave_win)
+      return
+    rng["start"], rng["end"] = start, end
+    view["st"] = sort_stream(st_view)
+    (draw_station_grid if layout["grid"] else draw_vertical)(fig, view["st"], title_str)
+    canvas.draw()
+    toolbar.update()
+    range_label.config(text=range_text())
+    s_time, e_time = period_strings(view["st"])
+    wave_win.title(f"波形表示 - {title_stations} ({s_time} - {e_time})")
+
+  def shift(edge, minutes):
+    one = timedelta(minutes=minutes)
+    if edge == "start":
+      set_range(rng["start"] + one, rng["end"])
+    else:
+      set_range(rng["start"], rng["end"] + one)
+
+  ttk.Separator(control_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=(10, 12))
+  ttk.Label(control_frame, text="範囲 開始").pack(side=tk.LEFT)
+  for text, minutes in (("◀", -1), ("▶", +1)):
+    ttk.Button(control_frame, text=text, width=2, command=lambda m=minutes: shift("start", m)).pack(side=tk.LEFT)
+  range_label = ttk.Label(control_frame, text=range_text())
+  range_label.pack(side=tk.LEFT, padx=6)
+  for text, minutes in (("◀", -1), ("▶", +1)):
+    ttk.Button(control_frame, text=text, width=2, command=lambda m=minutes: shift("end", m)).pack(side=tk.LEFT)
+  ttk.Label(control_frame, text="終了").pack(side=tk.LEFT)
+  shortcuts.bind(wave_win, "bracketleft", lambda: shift("end", -1))
+  shortcuts.bind(wave_win, "bracketright", lambda: shift("end", +1))
+  shortcuts.bind(wave_win, "braceleft", lambda: shift("start", -1))
+  shortcuts.bind(wave_win, "braceright", lambda: shift("start", +1))
+
   # 「2x2 / 縦に並べる」切り替えボタン(4拠点のときだけ)。押すと同じ図に描き直す
   if can_grid:
     def layout_label():
       return "縦に並べる" if layout["grid"] else "拠点ごとに2x2"
     def toggle_layout():
       layout["grid"] = not layout["grid"]
-      (draw_station_grid if layout["grid"] else draw_vertical)(fig, ordered_st, title_str)
+      (draw_station_grid if layout["grid"] else draw_vertical)(fig, view["st"], title_str)
       canvas.draw()
       toolbar.update()   # ツールバーの「戻る・ホーム」の履歴を新しい表示に合わせる
       btn_layout.config(text=layout_label())

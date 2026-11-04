@@ -10,7 +10,9 @@ MODIFIER = "Command" if IS_MAC else "Control"
 TEXT_INPUT_CLASSES = ("Entry", "TEntry", "TCombobox", "Text", "Spinbox", "TSpinbox")
 
 # Tk のキーの名前と、ボタンなどに出す表記
-KEY_NAMES = {"Return": ("↩", "Enter"), "Left": ("←", "←"), "Right": ("→", "→")}
+KEY_NAMES = {"Return": ("↩", "Enter"), "Left": ("←", "←"), "Right": ("→", "→"),
+             "bracketleft": ("[", "["), "bracketright": ("]", "]"),
+             "braceleft": ("⇧[", "Shift+["), "braceright": ("⇧]", "Shift+]")}
 
 # ボタンなどに出す表記。例: label("i") → Mac「⌘I」、Windows「Ctrl+I」 / label("Left", modifier=False) → 「←」
 def label(key, modifier=True):

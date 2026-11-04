@@ -123,7 +123,7 @@ warnings.filterwarnings(
 # [完了]23. 各画面にキーボード操作(ショートカット)を加える
 #     例: 1時間スタックの画面で、右矢印で1時間後、左矢印で1時間前に移る
 #     (shortcuts.py。Mac は Command、Windows は Ctrl との組み合わせ。一覧は README の「キーボード操作」)
-# 24. 波形表示(全拠点)の画面で、表示する時間の範囲を1分単位で微調整できるようにする
+# [完了]24. 波形表示(全拠点)の画面で、表示する時間の範囲を1分単位で微調整できるようにする
 #     基本は終わりの時刻を延ばす・縮める。S-P時間の試算で、前に入った大きな雑音を外したいときのため、
 #     始まりの時刻も動かせるようにする
 # 25. 洞爺駅の時刻表(etc/train_timetable.csv)の各行に、有効期間(開始日・終了日)を持たせる
@@ -928,7 +928,17 @@ class MantenUsuSeismographApp:
     if len(st) == 0:
       messagebox.showerror("エラー", "SACファイルを開くことができません。WINファイルからの変換に失敗した可能性があります。")
       return
-    open_waveform_window(self.root, st, title_str, return_to)
+    open_waveform_window(self.root, st, title_str, return_to, load_range=self.load_range_stream)
+
+  # 波形表示の画面で表示の範囲を広げたときに、その範囲の波形を用意して読み込む(TODO 24。履歴には残さない)
+  #   start_dt, end_dt ... 開始・終了の分(終了の分も含む。実行ボタンと同じ)
+  #   戻り値 ... Stream、用意できなければ None
+  def load_range_stream(self, start_dt, end_dt):
+    dest_dir = self.output_base / f"{start_dt:%Y%m%d%H%M}_{end_dt:%Y%m%d%H%M}"
+    if not self.ensure_sacs(start_dt, end_dt, dest_dir):
+      return None
+    st = read(str(dest_dir / win_pipeline.SAC_PATTERN))
+    return st if len(st) else None
 
   # Googleドライブから指定されたZIPファイルをダウンロードする
   #   戻り値 ... 成功したら True、失敗したら False
