@@ -35,9 +35,16 @@ MIN_LOG_AMP = -2.5
 MATCH_BEFORE_P = 40.0
 MATCH_AFTER_S = 30.0
 # 見込みの振幅がこれより小さい地震と対応したときは、たまたま時刻が合っただけかもしれないので「対応?」とする
-#   (2025/7〜2026/8 の記録で、見込みの振幅が -1 より小さい地震が候補と対応したのは、
-#    2025/7/18 03:43 の青森県東方沖 M2.9(震央距離 248km、-1.16)の1件だけだった)
-DOUBTFUL_LOG_AMP = -1.0
+#   (2025/7〜2026/8 の記録で、見込みの振幅が -1 より小さい地震と対応した6件を KBBY の連続波形画像で確かめると、
+#    -1.09〜-1.58 の4件は地震の揺れが写っていて、揺れの始まりも P波の見込みの -7〜+1秒だった。
+#    -2.16・-2.49 の2件は揺れが無く、揺れの始まりも36〜43秒遅れていた)
+DOUBTFUL_LOG_AMP = -1.6
+# 見込みの振幅がこれより小さいときは、揺れの始まりが P波の見込みの近く(ONSET_NEAR_P の範囲)でなければ「対応?」とする
+#   (見込みの振幅が大きい地震は、揺れの始まりが遅れていても、揺れの続きをとらえたものとみなす)
+ONSET_CHECK_LOG_AMP = -1.0
+# 揺れの始まり − P波の見込み [秒] がこの範囲なら、P波の近くとみなす
+#   (照合できた地震の揺れの始まりは、ほとんど P波の見込みの -10〜+3秒だった)
+ONSET_NEAR_P = (-10.0, 3.0)
 # 見込みの振幅がこれ以上なのに対応する候補が無い地震を、見逃した地震として挙げる
 #   (2025/7〜2026/8 の記録で、見込みの振幅が 0.5 以上の地震は、データのある拠点が3以上の時間なら約8割(72件中56件)が候補と対応した)
 MISSED_LOG_AMP = 0.5
@@ -150,9 +157,18 @@ def arrives_at(cand, q):
   return (q["p_time"] - timedelta(seconds=MATCH_BEFORE_P) <= cand["start"]
           <= q["s_time"] + timedelta(seconds=MATCH_AFTER_S))
 
+# 候補と地震 q の対応が疑わしいか(たまたま時刻が合っただけかもしれないか)
+#   見込みの振幅が DOUBTFUL_LOG_AMP より小さいとき、または ONSET_CHECK_LOG_AMP より小さく、
+#   揺れの始まりが P波の見込みの近く(ONSET_NEAR_P)でないとき
+def is_doubtful(cand, q):
+  if q["log_amp"] < DOUBTFUL_LOG_AMP:
+    return True
+  onset = (cand["start"] - q["p_time"]).total_seconds()
+  return q["log_amp"] < ONSET_CHECK_LOG_AMP and not ONSET_NEAR_P[0] <= onset <= ONSET_NEAR_P[1]
+
 # 候補ごとに、対応する震源リストの地震を探す
 #   cand["match"]   ... 対応した地震(到達見込みが合うもののうち、見込みの振幅が最も大きいもの)または None
-#   cand["doubtful"] ... 対応した地震の見込みの振幅が DOUBTFUL_LOG_AMP より小さい(対応が疑わしい)
+#   cand["doubtful"] ... 対応が疑わしい(is_doubtful)
 #   cand["others"]  ... ほかに、P波の到達見込みが候補の揺れの間に入る地震の数(余震が続くときなど)
 #   到達見込みが合う地震と、P波が候補の揺れの間に届く地震には q["matched"] = True を付ける
 #   (揺れが重なって候補が1つになった地震を、見逃した地震に数えないため)
@@ -166,7 +182,7 @@ def match_candidates(candidates, catalog):
     during = [q for q in near
               if cand["start"] - timedelta(seconds=MATCH_BEFORE_P) <= q["p_time"] <= cand["end"]]
     cand["match"] = max(hits, key=lambda q: q["log_amp"]) if hits else None
-    cand["doubtful"] = cand["match"] is not None and cand["match"]["log_amp"] < DOUBTFUL_LOG_AMP
+    cand["doubtful"] = cand["match"] is not None and is_doubtful(cand, cand["match"])
     cand["others"] = len({id(q) for q in hits + during} - {id(cand["match"])})
     for q in hits + during:
       q["matched"] = True

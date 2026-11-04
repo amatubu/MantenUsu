@@ -28,8 +28,8 @@ COLOR_JMA_TEXT = "#1f4e9c"   # 震源リストの地震の文字(貨物列車の
 NO_RMS_NOTE_Y = -0.034
 # 到達見込みを描く震源リストの地震の、見込みの振幅(log A)の下限
 #   照合に使う下限(jma_match.MIN_LOG_AMP)の地震まで描くと、揺れの見えない小さな地震で図が埋まるため、
-#   照合が疑わしいとする基準(jma_match.DOUBTFUL_LOG_AMP)以上にする
-MIN_DRAW_LOG_AMP = jma_match.DOUBTFUL_LOG_AMP
+#   揺れの始まりで照合を確かめる基準(jma_match.ONSET_CHECK_LOG_AMP)以上にする
+MIN_DRAW_LOG_AMP = jma_match.ONSET_CHECK_LOG_AMP
 
 
 def _day_start(dt):
