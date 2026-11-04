@@ -1499,7 +1499,7 @@ class MantenUsuSeismographApp:
   # --- 地震の候補の震源を求めるバッチ処理(UIなし) ---
   #   csv_path    ... 地震の候補の一覧(--detect-quakes の quake_candidates_*.csv。「候補」の列があれば印の付いた行だけ)
   #   save_images ... 候補ごとに確認用の画像(P波・S波の位置)も保存する
-  #   出力: batch_plots/quakes/locate/<一覧の名前>_locations.csv と _locations.png(震央の地図と断面図)
+  #   出力: batch_plots/quakes/locate/<一覧の名前>_locations.csv と _locations.png・.svg(震央の地図と断面図)
   def run_quake_location(self, csv_path, save_images=False):
     csv_path = Path(csv_path)
     log_message("=== 地震の候補の震源を求めるバッチ処理を開始します ===")

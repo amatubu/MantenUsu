@@ -11,12 +11,14 @@
 #   (保存した到着時刻に、ほかの機関の観測点(external_stations.py)があれば、それも使う。自動の検出には使わない)
 import csv
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import obspy
 from obspy.geodetics import gps2dist_azimuth, kilometers2degrees
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MultipleLocator
 
 import app_paths
 import gsi_tiles
@@ -375,7 +377,73 @@ def save_location_map(path, items, stations, proj, title):
   fig = plt.figure(figsize=(13, 10.5))
   draw_location_map(fig, items, stations, proj, title)
   fig.savefig(path, dpi=110)
+  # 拡大しても粗くならないように、同じ名前の SVG も保存する
+  fig.savefig(Path(path).with_suffix(".svg"))
   plt.close(fig)
+
+# 東西断面で、ほかの機関の観測点の名前を、断面の上の欄外に引き出し線で書く
+#   (外部の観測点は満点の拠点の近くに集まり、名前が重なって読めなくなるため)
+#   名前は東西の位置の順に並べ、隣と近すぎるときは横にずらす
+LABEL_FONTSIZE = 8
+# 保存する画像の右下に書く、番号の一覧の行数の上限
+LISTING_MAX = 13
+#   画面の大きさが変わると断面の幅が変わり、名前の間隔が足りなくなるので、align_sections からも呼んで書き直す
+def label_external_above(ax, external, proj, half_x):
+  for old in getattr(ax, "external_labels", []):
+    old.remove()
+  ax.external_labels = []
+  ax.external_label_args = (external, proj, half_x)
+  if not external:
+    return
+  marks = sorted((proj.to_xy(la, lo)[0], -el / 1000, nm) for nm, (la, lo, el) in external.items())
+  pos = [min(max((x + half_x) / (2 * half_x), 0.03), 0.97) for x, _z, _nm in marks]
+  # 名前どうしの最小の間隔(断面の幅に対する割合): いちばん長い名前の幅(1文字 フォントの大きさの約0.65倍)に余白を足したもの
+  width_pt = ax.get_position().width * ax.figure.get_figwidth() * 72
+  gap = (max(len(nm) for *_r, nm in marks) * LABEL_FONTSIZE * 0.65 + 8) / width_pt
+  for i in range(1, len(pos)):
+    pos[i] = max(pos[i], pos[i - 1] + gap)
+  over = pos[-1] - 0.97
+  if over > 0:
+    pos = [p - over for p in pos]
+  for (x, z, nm), p in zip(marks, pos):
+    ax.external_labels.append(ax.annotate(nm, (x, z), xytext=(p, 1.06), textcoords="axes fraction", fontsize=LABEL_FONTSIZE, ha="center", va="bottom",
+                color="dimgray", annotation_clip=False, zorder=6,
+                arrowprops=dict(arrowstyle="-", color="gray", lw=0.6, shrinkA=1, shrinkB=4)))
+
+# 断面図を地図に合わせる(地図は縦横の縮尺をそろえるので、図の縦横比によっては枠が縮むため)
+#   南北断面: 縦を地図と同じ位置・高さにする
+#   東西断面: 横を地図と同じ位置・幅にする
+#   深さの縮尺(1 km の長さ)は、2つの断面図でそろえる。地図と同じ縮尺にできればそうし、
+#   東西断面の高さ(ew_space: 下端の下限, 上端)や南北断面の幅が足りなければ、入る大きさまで縮める
+#   (そのときは、図の下の注意書きに地図との縮尺の比を書く)
+#   図の大きさが変わったとき(画面の大きさを変えたとき)も呼ぶ
+SECTION_GAP = 0.03
+# 地図と断面図の目盛りの間隔 [km](東西・南北・深さでそろえる)
+TICK_KM = 2.0
+def align_sections(axm, axe, axn, ew_space):
+  fig = axm.figure
+  axm.apply_aspect()
+  p = axm.get_position()
+  fig_w, fig_h = fig.get_size_inches()
+  map_scale = p.height * fig_h / abs(axm.get_ylim()[1] - axm.get_ylim()[0])   # 地図の 1 km の長さ [インチ]
+  depth_km = abs(axn.get_xlim()[1] - axn.get_xlim()[0])
+  bottom_min, top = ew_space
+  depth_scale = min(map_scale,
+                    (top - bottom_min) * fig_h / depth_km,                       # 東西断面の高さに入る
+                    (0.98 - (p.x1 + SECTION_GAP)) * fig_w / depth_km)            # 南北断面の幅が右に入る
+  axn.set_position([p.x1 + SECTION_GAP, p.y0, depth_km * depth_scale / fig_w, p.height])
+  height = depth_km * depth_scale / fig_h
+  axe.set_position([p.x0, top - height, p.width, height])
+  ratio = depth_scale / map_scale
+  axe.set_title("東西断面", fontsize=9, loc="left")
+  axn.set_title("南北断面", fontsize=9, loc="left")
+  # 図の下の注意書きに縮尺の比を書く(draw_location_map で覚えた文字と、比を入れる前の文)
+  if hasattr(axe, "section_note"):
+    text, template = axe.section_note
+    scale = "" if ratio > 0.99 else f"断面図の深さは、地図の {ratio:.2f} 倍の縮尺。"
+    text.set_text(template.format(scale=scale))
+  if hasattr(axe, "external_label_args"):
+    label_external_above(axe, *axe.external_label_args)
 
 # 震央の地図と断面図を fig に描く(画像の保存と、アプリの画面で共通)
 #   listing ... 右下に番号の一覧を書く(画面では一覧の表があるので書かない)
@@ -390,10 +458,18 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   half_x, half_y = max(half_x, half_y * MAP_HALF[0] / MAP_HALF[1]), max(half_y, half_x * MAP_HALF[1] / MAP_HALF[0])
   zmax = max([5.0] + [p[2] + 1 for p in points])
 
-  width = 0.62
+  # 地図の幅(南北断面の深さの縮尺を地図とそろえても、右に入るように少し狭くしている)
+  width = 0.60
   height = width * fig.get_figwidth() / fig.get_figheight() * half_y / half_x
+  # 横長の図では地図が上のタイトルにかからないよう、高さを抑える(縮尺をそろえるため、幅は自動で狭まる)
+  height = min(height, 0.53)
   axm = fig.add_axes([0.07, 0.40, width, height])
-  axe = fig.add_axes([0.07, 0.105, width, 0.22], sharex=axm)
+  # 東西断面の上には、ほかの機関の観測点の名前を引き出し線で書くので、少し空ける
+  #   画面(listing=False)は図が小さく、下の注意書きが3行になるので、東西断面を少し上げて低くする
+  #   東西断面の高さは、深さの縮尺を南北断面とそろえて align_sections で決める(ew_space: 下端の下限, 上端)
+  ew_space = (0.11, 0.305) if listing else (0.13, 0.32)
+  axe = fig.add_axes([0.07, ew_space[0], width, ew_space[1] - ew_space[0]], sharex=axm)
+  axe.ew_space = ew_space
   axn = fig.add_axes([0.07 + width + 0.03, 0.40, 0.25, height], sharey=axm)
   lat_s, lon_w = proj.to_latlon(-half_x, -half_y)
   lat_n, lon_e = proj.to_latlon(half_x, half_y)
@@ -410,16 +486,20 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   # 保存した到着時刻で使った、ほかの機関の観測点(灰色の三角で描く)
   external = {}
   for _cand, r in items:
-    external.update({nm: c for nm, c in r.get("external", {}).items() if nm not in stations})
+    # 到着時刻を計算に使ったものだけ(保存した到着時刻にあっても、計算から外した観測点は描かない)
+    external.update({nm: c for nm, c in r.get("external", {}).items()
+                     if nm not in stations and r.get("picks", {}).get(nm) is not None and nm not in r.get("excluded", [])})
 
   # 3つの図に同じものを描く(fx, fy で東・北・深さのどれを横軸・縦軸にするかを決める)
-  def plot_all(ax, fx, fy):
+  #   label_external ... ほかの機関の観測点の名前を書く(東西断面では、重ならないように欄外に引き出して書く)
+  def plot_all(ax, fx, fy, label_external=True):
     for nm, (la, lo, el) in {**stations, **external}.items():
       x, y = proj.to_xy(la, lo)
       z = -el / 1000
       ax.plot(fx(x, y, z), fy(x, y, z), "^", color="gray" if nm in external else "black", ms=9,
               markeredgecolor="white", zorder=5)
-      ax.annotate(nm, (fx(x, y, z), fy(x, y, z)), textcoords="offset points", xytext=(5, 4), fontsize=8, zorder=5)
+      if nm in stations or label_external:
+        ax.annotate(nm, (fx(x, y, z), fy(x, y, z)), textcoords="offset points", xytext=(5, 4), fontsize=8, zorder=5)
     x, y = proj.to_xy(*USU_SUMMIT[:2])
     z = -0.733   # 大有珠の標高 733 m
     ax.plot(fx(x, y, z), fy(x, y, z), "P", color="saddlebrown", ms=10, markeredgecolor="white", zorder=5)
@@ -433,7 +513,7 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
         ax.plot(fx(jx, jy, jz), fy(jx, jy, jz), "x", color="teal", ms=8, mew=2, zorder=6)
         ax.plot([fx(x, y, z), fx(jx, jy, jz)], [fy(x, y, z), fy(jx, jy, jz)], color="teal", lw=0.8, ls=":", zorder=5)
   plot_all(axm, lambda x, y, z: x, lambda x, y, z: y)
-  plot_all(axe, lambda x, y, z: x, lambda x, y, z: z)
+  plot_all(axe, lambda x, y, z: x, lambda x, y, z: z, label_external=False)
   plot_all(axn, lambda x, y, z: z, lambda x, y, z: y)
   for i, (x, y, _z) in enumerate(points, 1):
     axm.annotate(str(i), (x, y), textcoords="offset points", xytext=(4, 3), fontsize=7.5, color="darkred",
@@ -446,41 +526,48 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   axe.set_ylim(zmax, -1)
   axe.set_xlabel("東 [km]")
   axe.set_ylabel("深さ [km](海面下)")
-  axe.set_title("東西断面", fontsize=9, loc="left")
   axe.axhline(0, color="gray", lw=0.6)
   axn.set_xlim(-1, zmax)
   axn.set_xlabel("深さ [km](海面下)")
-  axn.set_title("南北断面", fontsize=9, loc="left")
   axn.axvline(0, color="gray", lw=0.6)
   plt.setp(axn.get_yticklabels(), visible=False)
   for ax in (axm, axe, axn):
     ax.grid(alpha=0.3)
+    # 目盛りの間隔をそろえる(地図と断面図は東西・南北の軸を共有しているので、深さの軸も含めて全部)
+    ax.xaxis.set_major_locator(MultipleLocator(TICK_KM))
+    ax.yaxis.set_major_locator(MultipleLocator(TICK_KM))
+  axe.external_label_args = (external, proj, half_x)
 
   handles = [Line2D([], [], marker="o", color="red", ls="", label=f"推定した震源(残差 {GOOD_RMS:g}秒未満)"),
              Line2D([], [], marker="o", color="none", markeredgecolor="red", ls="",
                     label=f"推定した震源(残差 {GOOD_RMS:g}秒以上)"),
              Line2D([], [], marker="x", color="teal", mew=2, ls="", label="気象庁の震源"),
              Line2D([], [], marker="^", color="black", ls="", label="拠点"),
-             *([Line2D([], [], marker="^", color="gray", ls="", label="ほかの機関の観測点(手直しで使用)")] if external else []),
+             # 画面(listing=False)は図が小さく凡例が切れるので、2行にする
+             *([Line2D([], [], marker="^", color="gray", ls="",
+                       label="ほかの機関の観測点" + ("(手直しで使用)" if listing else "\n(手直しで使用)"))] if external else []),
              Line2D([], [], marker="P", color="saddlebrown", ls="", label="有珠山 山頂(大有珠)")]
   fig.legend(handles=handles, loc="upper left", bbox_to_anchor=(0.07 + width + 0.03, 0.325), fontsize=8)
   # 番号の一覧(多いときは途中まで)
   lines = [f"{i:2d}. {cand['start']:%y/%m/%d %H:%M}  深さ"
              + depth_short(r["loc"]) + f"km  残差{r['loc']['rms']:.2f}秒"
              + (" ×" if cand["jma"] else "") for i, (cand, r) in enumerate(local, 1)]
-  if len(lines) > 24:
-    lines = lines[:23] + [f"  ほか {len(lines) - 23}件(一覧の CSV を参照)"]
+  #   凡例の下から、下の注意書きの上までに入る行数(LISTING_MAX)まで
+  if len(lines) > LISTING_MAX:
+    lines = lines[:LISTING_MAX - 1] + [f"  ほか {len(lines) - LISTING_MAX + 1}件(一覧の CSV を参照)"]
   if listing:
-    fig.text(0.07 + width + 0.03, 0.225, "\n".join(lines), fontsize=7, va="top", linespacing=1.15)
+    fig.text(0.07 + width + 0.03, 0.195, "\n".join(lines), fontsize=7, va="top", linespacing=1.15)
   others = len(items) - len(local)
-  fig.text(0.07, 0.005,
-           f"P波・S波の到着時刻から推定({manual_note(items)})。均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g})、"
-           f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。" + ("" if listing else "\n")
-           + "深さは海面からの深さ(拠点の高度を考慮)。\n"
-           + (f"番号は右下の一覧(× は気象庁の震源リストにあるもの)。" if listing else "番号は一覧の「番号」。")
-           + f"近い地震として震源が決まった {len(local)}件を表示"
-           + f"(残差が {MAX_LOCAL_RMS:g}秒を超えるものを含む)"
-           + (f"。遠い地震・決まらないもの {others}件は一覧の CSV を参照" if others else ""),
-           fontsize=8, va="bottom")
+  #   3行に分け、断面図の深さの縮尺の比は align_sections で短い2行目の後ろに入れる({scale})
+  template = (f"P波・S波の到着時刻から推定({manual_note(items)})。均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g})、"
+              f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。\n"
+              + "深さは海面からの深さ(拠点の高度を考慮)。{scale}\n"
+              + (f"番号は右下の一覧(× は気象庁の震源リストにあるもの)。" if listing else "番号は一覧の「番号」。")
+              + f"近い地震として震源が決まった {len(local)}件を表示"
+              + f"(残差が {MAX_LOCAL_RMS:g}秒を超えるものを含む)"
+              + (f"。遠い地震・決まらないもの {others}件は一覧の CSV を参照" if others else ""))
+  note = fig.text(0.07, 0.005, "", fontsize=8, va="bottom")
+  axe.section_note = (note, template)
+  align_sections(axm, axe, axn, ew_space)
   fig.suptitle(title, fontsize=12, x=0.07, ha="left")
   return dict(axes=(axm, axe, axn), local=local, points=points)

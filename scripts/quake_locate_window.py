@@ -71,8 +71,8 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   toolbar.update()
   canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-  # 図と表を作り直すときに変わるもの: 地図の番号・位置(結果ごと)、選んだ震源の印、表の行
-  view = {"number": {}, "position": {}, "marks": [], "rows": {}}
+  # 図と表を作り直すときに変わるもの: 地図の番号・位置(結果ごと)、選んだ震源の印、表の行、地図と断面図の軸
+  view = {"number": {}, "position": {}, "marks": [], "rows": {}, "axes": None}
 
   # 地図と断面図を描く(地図の番号は近い地震だけ。結果ごとに、地図での位置も覚えておく)
   def draw_figure():
@@ -83,7 +83,16 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     view["position"] = {id(r): p for (_cand, r), p in zip(drawn["local"], drawn["points"])}
     view["marks"] = [ax.plot([], [], "o", ms=16, mfc="none", mec=SELECT_COLOR, mew=2.5, zorder=8)[0]
                      for ax in drawn["axes"]]
+    view["axes"] = drawn["axes"]
     toolbar.update()   # ズームの履歴を消す(図を作り直したため)
+
+  # 画面の大きさを変えたら、断面図を地図に合わせ直す(地図は縦横の縮尺をそろえるため、枠の大きさが変わる)
+  def on_resize(_event):
+    if view["axes"]:
+      axm, axe, axn = view["axes"]
+      quake_locate.align_sections(axm, axe, axn, axe.ew_space)
+      canvas.draw_idle()
+  canvas.mpl_connect("resize_event", on_resize)
 
   # 表の1行の値
   def row_values(cand, r):

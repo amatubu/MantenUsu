@@ -112,7 +112,12 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
     st = add_external(st)
   # --- データ取得: 拠点ごとの上下動と水平動 ---
   traces = {tr.stats.station: tr for tr in st.select(channel="*U*")}
-  names = sorted(traces)
+  # 満点の拠点を上に、ほかの機関の観測点を下に並べる(それぞれ名前の順)
+  try:
+    external_names = set(external_stations.coords())
+  except OSError:
+    external_names = set()
+  names = sorted(traces, key=lambda nm: (nm in external_names, nm))
   horizontals = {nm: {c: st.select(station=nm, channel=f"*{c}*")[0] for c in "NE"
                       if st.select(station=nm, channel=f"*{c}*")}
                  for nm in names}
