@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from plot_common import NM_TO_CM, plot_components
 from log_common import log_message
+import shortcuts
 import app_paths
 import jma_match
 import pick_store
@@ -142,7 +143,8 @@ def detect_arrivals(tr_u, hor_data, df, params):
           "s_gap": s_gap}
 
 # 波形・CFT・推定結果を、スライダー付きのウィンドウで表示する
-def plot_ps_arrival_time(st):
+#   return_to ... 閉じたときに前に出す元の画面(shortcuts.return_focus_on_close)
+def plot_ps_arrival_time(st, return_to=None):
   # --- データ取得 ---
   tr_u = st.select(channel="*U*")[0]
   tr_n = st.select(channel="*N*")[0]
@@ -186,6 +188,7 @@ def plot_ps_arrival_time(st):
   # ==========================================
   # ウィンドウを準備
   fig = plt.figure(figsize=(15, 9))
+  shortcuts.return_focus_on_close(fig, return_to)
   # ウィンドウのタイトル(既定の「Figure 1」の代わり)
   if fig.canvas.manager is not None:
     fig.canvas.manager.set_window_title(

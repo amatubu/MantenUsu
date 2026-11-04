@@ -10,6 +10,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 import quake_locate
+import shortcuts
 from quake_features import USU_SUMMIT
 
 # 表の列: (見出し, 幅 [px], 揃え)
@@ -27,7 +28,8 @@ def fmt(v, spec):
 #   items   ... [(候補, 結果), ...](quake_locate.locate_all の結果)。手直しを反映すると、この中の結果を置き換える
 #   stations, proj ... 拠点の位置と平面座標
 #   title   ... 画面と図のタイトル
-#   on_open_event ... (候補, 結果, 反映する関数, 画面を出す直前に呼ぶ関数) を渡すと、その候補の震源推定の画面を開く関数
+#   on_open_event ... (候補, 結果, 反映する関数, 画面を出す直前に呼ぶ関数, この画面) を渡すと、その候補の震源推定の画面を開く関数
+#                     (この画面は、震源推定の画面を閉じたときに前に出すため)
 #                     反映する関数は、求め直した結果を渡すと、その行と図を更新する
 #   on_save ... 「一覧と図を保存」で呼ぶ関数(引数なし)
 #   on_revert ... (候補, 結果) を渡すと、保存した到着時刻を消して自動で求め直した結果を返す関数
@@ -162,7 +164,7 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
       state["opening"] = False
       win.config(cursor="")
     try:
-      on_open_event(cand, r, lambda new_r: replace(cand, new_r), ready)
+      on_open_event(cand, r, lambda new_r: replace(cand, new_r), ready, win)
     finally:
       ready()   # 画面を開かなかったとき(波形が足りないなど)
   tree.bind("<Double-1>", open_event)
@@ -198,9 +200,15 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     win.destroy()
   win.protocol("WM_DELETE_WINDOW", close)
 
-  ttk.Button(buttons, text="震源推定を開く", command=open_event).pack(side=tk.LEFT)
-  ttk.Button(buttons, text="自動に戻す", command=revert).pack(side=tk.LEFT, padx=(8, 0))
-  ttk.Button(buttons, text="一覧と図を保存", command=save).pack(side=tk.LEFT, padx=(8, 0))
+  #   ショートカット: 震源推定を開く ↩(Enter)、自動に戻す ⌘R、一覧と図を保存 ⌘S、閉じる ⌘W(Windows は Ctrl)
+  ttk.Button(buttons, text=shortcuts.with_label("震源推定を開く", "Return", modifier=False), command=open_event).pack(side=tk.LEFT)
+  ttk.Button(buttons, text=shortcuts.with_label("自動に戻す", "r"), command=revert).pack(side=tk.LEFT, padx=(8, 0))
+  ttk.Button(buttons, text=shortcuts.with_label("一覧と図を保存", "s"), command=save).pack(side=tk.LEFT, padx=(8, 0))
+  shortcuts.bind(win, "Return", open_event, modifier=False)
+  shortcuts.bind(win, "KP_Enter", open_event, modifier=False)
+  shortcuts.bind(win, "r", revert)
+  shortcuts.bind(win, "s", save)
+  shortcuts.bind(win, "w", close)
   ttk.Button(buttons, text="閉じる", command=close).pack(side=tk.RIGHT)
 
   draw_figure()

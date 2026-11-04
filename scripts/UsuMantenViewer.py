@@ -31,6 +31,7 @@ import quake_locate
 import pick_store
 from quake_locate_window import open_locate_window
 from hypocenter_window import plot_hypocenter
+import shortcuts
 from pathlib import Path
 import jma_match
 import jma_hypocenter
@@ -119,8 +120,9 @@ warnings.filterwarnings(
 #      ただし P波だけの震源で、S-P時間(約2.2秒)が示す距離(約9 km)とは合わず、気象庁の火山性地震の震源分布にも
 #      南西麓の地震は無い。S波は目で見ても読み取れず、決めきれないので、誤差が大きい可能性が高い例として残す。
 #      6/13 22:35:35 は外部の観測点を加えると山頂の東 約0.4 km・ごく浅い所(-0.2 km より浅い)に決まり、有珠山付近の地震として加えた)
-# 23. 各画面にキーボード操作(ショートカット)を加える
+# [完了]23. 各画面にキーボード操作(ショートカット)を加える
 #     例: 1時間スタックの画面で、右矢印で1時間後、左矢印で1時間前に移る
+#     (shortcuts.py。Mac は Command、Windows は Ctrl との組み合わせ。一覧は README の「キーボード操作」)
 # 24. 波形表示(全拠点)の画面で、表示する時間の範囲を1分単位で微調整できるようにする
 #     基本は終わりの時刻を延ばす・縮める。S-P時間の試算で、前に入った大きな雑音を外したいときのため、
 #     始まりの時刻も動かせるようにする
@@ -283,7 +285,7 @@ class MantenUsuSeismographApp:
     # ボタンの定義
     btn_run = tk.Button(
       panel,
-      text = "抽出・変換・プロット実行 (自動判定)",    # ボタンに表示されるラベル
+      text = shortcuts.with_label("抽出・変換・プロット実行 (自動判定)", "Return"),    # ボタンに表示されるラベル
       font = ("sans-serif", 11, "bold"),
       bg = "#4CAF50",
       fg = "white",
@@ -291,6 +293,9 @@ class MantenUsuSeismographApp:
       command = self.execute_pipeline,  # ボタンが押された際に実行されるメソッド
     )
     btn_run.pack(fill=tk.X, ipady=4, pady=(0, 15))
+    # ⌘↩(Windows は Ctrl+Enter)でも実行する(日時の欄に入力したまま押せる)
+    shortcuts.bind(self.root, "Return", self.execute_pipeline)
+    shortcuts.bind(self.root, "KP_Enter", self.execute_pipeline)
 
     # 5. 履歴セクション
     # ラベル
@@ -389,10 +394,11 @@ class MantenUsuSeismographApp:
     ).pack(anchor="w", pady=(4, 2))
     tk.Button(
       panel,
-      text="候補の一覧(CSV)を選んで震源を表示",
+      text=shortcuts.with_label("候補の一覧(CSV)を選んで震源を表示", "o"),
       font=("sans-serif", 9),
       command=self.open_quake_locations,
     ).pack(fill=tk.X, pady=(0, 4))
+    shortcuts.bind(self.root, "o", self.open_quake_locations)
 
     # ==========================================
     # 区切り線 2 (スタック機能 と メンテナンス機能 の間)
@@ -814,6 +820,8 @@ class MantenUsuSeismographApp:
                          show_error=lambda msg: messagebox.showerror("エラー", msg),
                          on_compare=self.compare_from_stack,
                          overlays=self.make_overlays())
+    # 閉じたら(⌘W など)メイン画面を前に出す(Matplotlib の図は別の Tk なので、キーボードの入力が戻らないため)
+    shortcuts.return_focus_on_close(window.fig, self.root)
     window.show()
 
   # 1時間スタック画面の右クリックメニューから、指定期間の波形表示(全拠点)を開く
@@ -1465,7 +1473,8 @@ class MantenUsuSeismographApp:
     # 候補の震源推定の画面を開く(同じ範囲の波形。遠い地震は S波を探す範囲を広げる)
     #   画面で「保存して一覧に反映」を押すと、保存した到着時刻から震源を求め直して、一覧の行と図を更新する(apply)
     #   ready ... 画面を出す直前に呼ぶ(波形を読み込む間にたまったクリックを捨てる。quake_locate_window.py)
-    def open_event(cand, r, apply, ready):
+    #   parent ... 一覧の画面(震源推定の画面を閉じたら前に出す)
+    def open_event(cand, r, apply, ready, parent):
       st = event_stream(cand)
       ready()
       if len({tr.stats.station for tr in st}) < 3:
@@ -1473,7 +1482,8 @@ class MantenUsuSeismographApp:
         return
       def on_apply(_path):
         apply(quake_locate.locate_candidate(st, cand, stations, proj))
-      plot_hypocenter(st, overrides={"s_search": r.get("s_search", quake_locate.LOCAL_S_SEARCH)}, on_apply=on_apply)
+      plot_hypocenter(st, overrides={"s_search": r.get("s_search", quake_locate.LOCAL_S_SEARCH)}, on_apply=on_apply,
+                      return_to=parent)
 
     # 保存した到着時刻を消して、自動の検出で求め直す
     def revert(cand, r):

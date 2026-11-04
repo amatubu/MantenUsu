@@ -2,6 +2,7 @@ from numpy.fft import fft, ifft, fftfreq
 import numpy as np
 import matplotlib.pyplot as plt
 from plot_common import NM_TO_CM, plot_components
+import shortcuts
 
 # 計測震度から気象庁震度階級へ変換
 #   I ... 計測震度
@@ -164,9 +165,11 @@ def plot_three_components( ax, stream_obj, title, ylabel ):
 
 # 算出された震度情報、オリジナルの波形データ、加速度データ、フィルタ後の波形データ等を表示する
 #   result ... calc_jma_intensity が返す辞書
-def plot_jma_analysis(result):
+#   return_to ... 閉じたときに前に出す元の画面(shortcuts.return_focus_on_close)
+def plot_jma_analysis(result, return_to=None):
   # 3行2列のサブプロット（グリッド）を作成
   fig, axes = plt.subplots(3, 2, figsize=(15, 9))
+  shortcuts.return_focus_on_close(fig, return_to)
   # ウィンドウのタイトル(既定の「Figure 1」の代わり)
   if fig.canvas.manager is not None:
     fig.canvas.manager.set_window_title(
@@ -225,9 +228,10 @@ def plot_jma_analysis(result):
 # 震度推定画面を表示
 #   stream ... 波形データ(3要素)
 #   戻り値  ... 計測震度と気象庁震度階級の組(タプル)
-def analyze_jma_scale(stream):
+#   return_to ... 閉じたときに前に出す元の画面
+def analyze_jma_scale(stream, return_to=None):
   result = calc_jma_intensity(stream)
-  plot_jma_analysis(result)
+  plot_jma_analysis(result, return_to)
   return result["intensity"], result["scale"]
 
 # 単体テスト

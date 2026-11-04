@@ -26,6 +26,7 @@ import jma_match
 import pick_store
 import external_stations
 import magnitude
+import shortcuts
 from obspy.geodetics import gps2dist_azimuth
 
 # 設定ファイル(P波・S波検出とは別に保存する)
@@ -107,7 +108,8 @@ def add_external(st):
 #                 ボタンは「保存して一覧に反映」になる
 #   external  ... ほかの機関の観測点(external_stations.py)の波形が v-net フォルダにあれば、拠点に加える
 #                 (加えた観測点も、右クリックで計算から外せる。外したときと比べて、震源がどう変わるかを確かめられる)
-def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
+#   return_to ... 閉じたときに前に出す元の画面(shortcuts.return_focus_on_close)
+def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=None):
   if external:
     st = add_external(st)
   # --- データ取得: 拠点ごとの上下動と水平動 ---
@@ -161,6 +163,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
   # ==========================================
   #   結果の欄の行が多いので、縦を少し長くしている
   fig = plt.figure(figsize=(15, 10))
+  shortcuts.return_focus_on_close(fig, return_to)
   if fig.canvas.manager is not None:
     fig.canvas.manager.set_window_title(f"震源推定 - {', '.join(names)} ({start_str})")
   # グラフ領域の左余白と幅、グラフの間隔と下余白(グラフの縦幅は拠点数から決める)
@@ -800,6 +803,13 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
     fit_ylim()
     fig.canvas.draw_idle()
   btn_comp.on_clicked(toggle_comp)
+
+  # --- キーボード操作: ⌘S 到着時刻を保存(一覧に反映)、U 上下動(P波)、H 水平動(S波)、⌘W 閉じる(Windows は Ctrl) ---
+  if hasattr(fig.canvas, "get_tk_widget"):
+    key_win = shortcuts.figure_window(fig)
+    shortcuts.bind(key_win, "s", lambda: save_picks(None))
+    shortcuts.bind(key_win, "u", lambda: state["horizontal"] and toggle_comp(None), modifier=False)
+    shortcuts.bind(key_win, "h", lambda: state["horizontal"] or toggle_comp(None), modifier=False)
 
   # --- ウィンドウを閉じるとき、最後のパラメータを保存 ---
   def on_close(_event):

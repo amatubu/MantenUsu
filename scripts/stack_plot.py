@@ -16,6 +16,7 @@ from plot_common import NM_TO_CM, get_component_color
 from log_common import log_message
 import app_paths
 import external_stations
+import shortcuts
 
 STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
@@ -262,7 +263,7 @@ class StackWindow:
     frame = ttk.Frame(canvas_widget.master, padding=(10, 6))
     # 図より先に場所を取るので、ウィンドウを小さくしても操作エリアは隠れない
     frame.pack(side=tk.BOTTOM, fill=tk.X, before=canvas_widget)
-    ttk.Button(frame, text="画像を保存", command=self.save_image).pack(side=tk.LEFT)
+    ttk.Button(frame, text=shortcuts.with_label("画像を保存", "s"), command=self.save_image).pack(side=tk.LEFT)
     ttk.Separator(frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=12)
 
     # 防災科研のページの連続波形画像(表示中の1時間・成分のもの)をブラウザで開く
@@ -272,10 +273,30 @@ class StackWindow:
     self._vnet_combo.current(StackWindow.vnet_index)
     self._vnet_combo.bind("<<ComboboxSelected>>", self._on_vnet_selected)
     self._vnet_combo.pack(side=tk.LEFT, padx=(6, 0))
-    ttk.Button(frame, text="開く", command=self.open_vnet_image).pack(side=tk.LEFT, padx=(6, 0))
+    ttk.Button(frame, text=shortcuts.with_label("開く", "g"), command=self.open_vnet_image).pack(side=tk.LEFT, padx=(6, 0))
     # 開く画像の時間と成分(表示に追従する)
     self._vnet_info = ttk.Label(frame, text="", foreground="#555555")
     self._vnet_info.pack(side=tk.LEFT, padx=(8, 0))
+    self._bind_keys(canvas_widget.winfo_toplevel(), frame)
+
+  # キーボード操作(ショートカット)を割り当て、操作エリアの右に一覧を出す
+  #   成分 U・N・E と、1時間前・後(←・→)は修飾キーなし。重ね表示の「地震」は ⌘E、「列車」は ⌘T(Windows は Ctrl)
+  #   ⌘W(Ctrl+W)で閉じるのは Matplotlib の標準の操作
+  OVERLAY_KEYS = {"地震": "e", "列車": "t"}
+  def _bind_keys(self, win, frame):
+    for comp in self.comps:
+      shortcuts.bind(win, comp.lower(), lambda c=comp: self.set_comp(c), modifier=False)
+    shortcuts.bind(win, "Left", lambda: self.move_hour(-1), modifier=False)
+    shortcuts.bind(win, "Right", lambda: self.move_hour(+1), modifier=False)
+    shortcuts.bind(win, "s", self.save_image)
+    shortcuts.bind(win, "g", self.open_vnet_image)
+    hints = [f"{'・'.join(self.comps)} 成分", f"{shortcuts.label('Left', False)}・{shortcuts.label('Right', False)} 1時間前・後"]
+    for ov in self.overlays:
+      key = self.OVERLAY_KEYS.get(ov.name)
+      if key:
+        shortcuts.bind(win, key, lambda o=ov: self.toggle_overlay(o))
+        hints.append(f"{shortcuts.label(key)} {ov.name}")
+    ttk.Label(frame, text="キー: " + "  ".join(hints), foreground="#555555").pack(side=tk.RIGHT)
 
   # 連続波形画像の観測点の、選ぶ欄に出す名前(例: KBBY 気象庁 北屏風山)
   @staticmethod

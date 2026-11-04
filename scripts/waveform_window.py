@@ -11,6 +11,7 @@ from jma_intensity import analyze_jma_scale
 from plot_common import NM_TO_CM, get_component_color
 from ps_picker import plot_ps_arrival_time
 from hypocenter_window import plot_hypocenter
+import shortcuts
 
 # 成分の並び順: U(上下)、N(南北)、E(東西)
 COMP_ORDER = ["U", "N", "E"]
@@ -182,20 +183,22 @@ def open_waveform_window(parent, st, title_str, return_to=None):
     plt.close(fig)      # Matplotlibのグラフをメモリから破棄する
     wave_win.destroy()  # ウィンドウを破棄する
 
-    # 戻り先があれば前面に出す。戻り先(Matplotlibのウィンドウ)はメインとは別の Tk なので、
-    # 閉じた直後に Mac がメインウィンドウを前面にする。その後にもう一度前面に出し直す
-    if return_to is not None:
-      def bring_back():
-        try:
-          if return_to.winfo_exists():
-            return_to.lift()
-            return_to.focus_force()
-        except tk.TclError:
-          pass  # 戻り先のウィンドウが既に閉じられている
-      bring_back()
-      parent.after(100, bring_back)
+    # 戻り先(無ければ開いた元のメイン画面)を前面に出して、キーボードの入力が届くようにする。
+    # 戻り先(Matplotlibのウィンドウ)はメインとは別の Tk なので、閉じた直後に Mac がメインウィンドウを前面にする。
+    # その後にもう一度前面に出し直す
+    target = return_to if return_to is not None else parent
+    def bring_back():
+      try:
+        if target.winfo_exists():
+          target.lift()
+          target.focus_force()
+      except tk.TclError:
+        pass  # 戻り先のウィンドウが既に閉じられている
+    bring_back()
+    parent.after(100, bring_back)
 
   wave_win.protocol("WM_DELETE_WINDOW", on_close)
+  shortcuts.bind(wave_win, "w", on_close)   # ⌘W(Windows は Ctrl+W)で閉じる
 
   # 1. ウィンドウ内のキャンバスを取得
   canvas = FigureCanvasTkAgg(fig, master=wave_win)
@@ -241,17 +244,25 @@ def open_waveform_window(parent, st, title_str, return_to=None):
     analyze(station_st)
 
   # 「震度推定」ボタン・「P波・S波検出」ボタン
-  ttk.Button(control_frame, text="震度推定",
-             command=lambda: run_for_station(analyze_jma_scale)).pack(side=tk.LEFT, padx=(0, 10))
-  ttk.Button(control_frame, text="P波・S波検出",
-             command=lambda: run_for_station(plot_ps_arrival_time)).pack(side=tk.LEFT, padx=(0, 10))
+  #   ショートカット: 震度推定 ⌘I、P波・S波検出 ⌘P、震源推定 ⌘L(Windows は Ctrl)
+  #   開いた画面を閉じたら、この画面を前に出す(return_to。ショートカットが続けて効くように)
+  def intensity():
+    run_for_station(lambda station_st: analyze_jma_scale(station_st, return_to=wave_win))
+  def ps_arrival():
+    run_for_station(lambda station_st: plot_ps_arrival_time(station_st, return_to=wave_win))
+  def hypocenter():
+    plot_hypocenter(ordered_st, return_to=wave_win)
+  ttk.Button(control_frame, text=shortcuts.with_label("震度推定", "i"), command=intensity).pack(side=tk.LEFT, padx=(0, 10))
+  ttk.Button(control_frame, text=shortcuts.with_label("P波・S波検出", "p"), command=ps_arrival).pack(side=tk.LEFT, padx=(0, 10))
+  shortcuts.bind(wave_win, "i", intensity)
+  shortcuts.bind(wave_win, "p", ps_arrival)
   # 「震源推定」ボタン(3拠点以上のとき。全拠点の波形を使う)
   #   P波だけでは4拠点が必要だが、S波の到着時刻も使うので3拠点でも震源を求められる
   # 上の2つは選んだ拠点についての処理なので、縦の区切り線で分ける
   if len(stations) >= HYPOCENTER_MIN_STATIONS:
     ttk.Separator(control_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=(10, 20))
-    ttk.Button(control_frame, text="震源推定",
-               command=lambda: plot_hypocenter(ordered_st)).pack(side=tk.LEFT, padx=(0, 10))
+    ttk.Button(control_frame, text=shortcuts.with_label("震源推定", "l"), command=hypocenter).pack(side=tk.LEFT, padx=(0, 10))
+    shortcuts.bind(wave_win, "l", hypocenter)
 
   # 「2x2 / 縦に並べる」切り替えボタン(4拠点のときだけ)。押すと同じ図に描き直す
   if can_grid:
