@@ -17,6 +17,7 @@ CORRECTED_PREFIX = "corrected_"  # チャンネル番号を読み替えたWINフ
 SAC_PATTERN = "*_sac*"           # SACファイル(拠点名.成分.拠点ID_sac)
 CHUNK_DIR_PREFIX = "chunks_"     # 長い期間を分けて変換するときの作業フォルダ(chunks_拠点ID)
 APPLEDOUBLE_PREFIX = "._"        # Mac が外付けディスクなどに作る付随ファイル(中身は WIN や ZIP ではない)
+CHANNEL_TABLE = "manten_ch.tbl"  # チャンネル表(etc にあるもの。変換するときに出力先フォルダへコピーする)
 
 # win2sac_32 は約8000秒(2時間13分20秒)より長いWINファイルを、何も出力せずに終える。
 # そのため、これより長い期間はこの分数ずつに分けて変換し、あとでつなぐ(WINファイルは1分に1つ)
@@ -45,6 +46,24 @@ def find_raw_wins(dest_dir):
 # フォルダ内のSACファイル
 def find_sacs(dest_dir):
   return [p for p in dest_dir.glob(SAC_PATTERN) if not p.name.startswith(APPLEDOUBLE_PREFIX)]
+
+# フォルダ内のSACファイルのうち、今のチャンネル表で変換したもの
+#   チャンネル表の感度・ゲインが変わると振幅の換算が変わるので、変換したときにコピーしたチャンネル表と
+#   etc のチャンネル表を比べ、違えば(コピーが無いときも)SACと途中のファイルを消して空のリストを返す
+#   (結合前のWINファイルは残すので、ZIPから取り出し直さずに変換し直せる)
+def find_current_sacs(dest_dir, etc_dir):
+  sacs = find_sacs(dest_dir)
+  if not sacs:
+    return sacs
+  used_tbl = dest_dir / CHANNEL_TABLE
+  if used_tbl.exists() and used_tbl.read_bytes() == (etc_dir / CHANNEL_TABLE).read_bytes():
+    return sacs
+  log_message(f"チャンネル表が変わったため、SACファイルを変換し直します: {dest_dir.name}")
+  for path in sacs + [p for p in find_wins(dest_dir) if not is_raw_win(p)]:
+    path.unlink(missing_ok=True)
+  for chunk_dir in dest_dir.glob(f"{CHUNK_DIR_PREFIX}*"):
+    shutil.rmtree(chunk_dir, ignore_errors=True)
+  return []
 
 # OSに合わせた外部ツールのパス(Windowsなら .exe を付ける)
 def tool_path(tools_dir, name):
@@ -172,7 +191,7 @@ def convert_wins_to_sacs(dest_dir, tools_dir, etc_dir):
     raise PipelineError("tools または etc 内に必要な実行ファイル/設定が不足しています。")
 
   # チャンネル定義ファイル(win.prm から参照される)を出力先フォルダにコピーする
-  manten_tbl_path = etc_dir / "manten_ch.tbl"
+  manten_tbl_path = etc_dir / CHANNEL_TABLE
   shutil.copy2(manten_tbl_path, dest_dir / manten_tbl_path.name)
 
   for station_id, files in group_raw_wins(dest_dir).items():

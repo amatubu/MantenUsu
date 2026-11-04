@@ -1,22 +1,29 @@
 # stack_plot.py
 # 1時間スタック波形(1分ごとに60段に並べた図)の計算と描画
 import sys
+import webbrowser
 import tkinter as tk
+from tkinter import ttk, filedialog
 import numpy as np
 import matplotlib.pyplot as plt
 from obspy import UTCDateTime
 from datetime import timedelta
+from matplotlib.figure import Figure
 from matplotlib.widgets import Button
 from matplotlib.patches import Rectangle
 from matplotlib.transforms import Bbox, TransformedBbox
 from plot_common import NM_TO_CM, get_component_color
 from log_common import log_message
+import app_paths
+import external_stations
 
 STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
 COMP_ORDER = ["U", "N", "E"]   # 成分の並び順
 
 COMPARE_MINUTES = [1, 2, 3, 4, 5, 10, 15, 20, 30]   # 右クリックメニューで選べる比較表示の長さ(分)
+
+SAVE_DPI = 150   # 「画像を保存」の解像度(バッチ処理の画像と同じ)
 
 # ボタンの状態ごとの色: (通常の色, マウスが乗ったときの色)
 BTN_COLORS = {
@@ -76,8 +83,10 @@ def add_label(ax, t, text, color):
 # 速く描けるよう、1つの軸に60本の線を並べる。i 分目の段は y = i を中心に描く(上が00分)
 class StackFigure:
   # for_screen ... True: 画面表示用(上部に前後ボタン用の余白) / False: 画像保存用
+  #   画像保存用はウィンドウを作らない図にする(1時間スタックの画面から保存するときに、余計なウィンドウを開かないため)
   def __init__(self, for_screen=True):
-    self.fig = plt.figure(figsize=(8.5, 10.0))   # 60本並べるため、ある程度の縦の高さを確保
+    figsize = (8.5, 10.0)   # 60本並べるため、ある程度の縦の高さを確保
+    self.fig = plt.figure(figsize=figsize) if for_screen else Figure(figsize=figsize)
 
     if for_screen:
       # 画面用: 上部に「前後1時間」ボタンを置くので余白を広く取り、その左に最大振幅を表示
@@ -162,6 +171,9 @@ class StackFigure:
 #   overlays      ... 重ね表示のリスト。1つごとにトグルボタンを作り、色の説明は「凡例」ボタンで出す
 #                     (持つものは stack_overlays.py を参照)
 class StackWindow:
+  # 連続波形画像を開く観測点(external_stations.IMAGE_STATIONS の番号)。画面を閉じても次の画面で使う
+  vnet_index = next(i for i, st in enumerate(external_stations.IMAGE_STATIONS) if st[0] == "V.KBBY")
+
   def __init__(self, start_dt, station, comp, load_stream, channels,
                log=log_message, show_error=log_message, on_compare=None, overlays=()):
     # 表示中の状態(時刻・拠点・成分)
@@ -191,8 +203,9 @@ class StackWindow:
     # 表示中の1時間にデータがある (拠点名(小文字), 成分(大文字)) の集合
     self.available = set()
 
-    # 60段の図を作る(画面表示用)
-    self.stack = StackFigure()
+    # 60段の図を作る(画面表示用)。Matplotlib の標準のツールバーは出さず、下に操作エリアを作る
+    with plt.rc_context({"toolbar": "None"}):
+      self.stack = StackFigure()
     self.fig = self.stack.fig
 
     # グラフ上部右側に「前の1時間」「次の1時間」ボタンを配置
@@ -235,8 +248,81 @@ class StackWindow:
     if on_compare is not None:
       self.fig.canvas.mpl_connect("button_press_event", self._on_right_click)
 
+    # 図の下の操作エリア(画像の保存、防災科研のページの連続波形画像)
+    self._vnet_info = None
+    if hasattr(self.fig.canvas, "get_tk_widget"):
+      self._make_controls()
+
     # ボタンなどが回収されないよう、図からこのウィンドウを参照しておく
     self.fig._stack_window = self
+
+  # 図の下に操作エリアを作る(ほかの画面と同じく ttk のボタンを横に並べる)
+  def _make_controls(self):
+    canvas_widget = self.fig.canvas.get_tk_widget()
+    frame = ttk.Frame(canvas_widget.master, padding=(10, 6))
+    # 図より先に場所を取るので、ウィンドウを小さくしても操作エリアは隠れない
+    frame.pack(side=tk.BOTTOM, fill=tk.X, before=canvas_widget)
+    ttk.Button(frame, text="画像を保存", command=self.save_image).pack(side=tk.LEFT)
+    ttk.Separator(frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=12)
+
+    # 防災科研のページの連続波形画像(表示中の1時間・成分のもの)をブラウザで開く
+    ttk.Label(frame, text="v-net の連続波形画像:").pack(side=tk.LEFT)
+    names = [self._vnet_label(st) for st in external_stations.IMAGE_STATIONS]
+    self._vnet_combo = ttk.Combobox(frame, values=names, state="readonly", width=26)
+    self._vnet_combo.current(StackWindow.vnet_index)
+    self._vnet_combo.bind("<<ComboboxSelected>>", self._on_vnet_selected)
+    self._vnet_combo.pack(side=tk.LEFT, padx=(6, 0))
+    ttk.Button(frame, text="開く", command=self.open_vnet_image).pack(side=tk.LEFT, padx=(6, 0))
+    # 開く画像の時間と成分(表示に追従する)
+    self._vnet_info = ttk.Label(frame, text="", foreground="#555555")
+    self._vnet_info.pack(side=tk.LEFT, padx=(8, 0))
+
+  # 連続波形画像の観測点の、選ぶ欄に出す名前(例: KBBY 気象庁 北屏風山)
+  @staticmethod
+  def _vnet_label(st):
+    code, _org, _net, _area, desc = st
+    return f"{code[2:]}  {desc}"
+
+  # 選んだ観測点を覚えておく(次に開く1時間スタックの画面でも同じものを選ぶ)
+  def _on_vnet_selected(self, _event):
+    StackWindow.vnet_index = self._vnet_combo.current()
+
+  # 選んだ観測点の、表示中の1時間・成分の連続波形画像をブラウザで開く
+  def open_vnet_image(self):
+    code = external_stations.IMAGE_STATIONS[self._vnet_combo.current()][0]
+    url = external_stations.image_url(code, self.dt, self.comp)
+    self.log(f"v-net の連続波形画像を開きます: {code} {self.dt:%Y/%m/%d %H}時 {self.comp}  {url}")
+    webbrowser.open(url)
+
+  # 「画像を保存」: 表示中の1時間を、バッチ処理と同じ形の画像にして保存する
+  #   オンにしている重ね表示と、横軸の拡大は今の表示のまま。上のボタンは入れない
+  def save_image(self):
+    trace = find_trace(self._stream, self.station, self.comp) if self._stream is not None else None
+    if trace is None:
+      self.show_error("保存できる波形がありません。")
+      return
+    out_dir = app_paths.BATCH_PLOTS_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = filedialog.asksaveasfilename(
+      parent=self.fig.canvas.get_tk_widget().winfo_toplevel(), title="画像を保存",
+      initialdir=str(out_dir), initialfile=f"stack_{self.dt:%Y%m%d_%H}_{self.station}_{self.comp}.png",
+      defaultextension=".png", filetypes=[("PNG", "*.png"), ("PDF", "*.pdf"), ("SVG", "*.svg")])
+    if not path:
+      return
+    # stack_overlays は stack_plot を使う train_day_plot を読み込むので、ここで読み込む
+    from stack_overlays import draw_on_image
+    stack = StackFigure(for_screen=False)
+    stack.render(trace, self.dt, self.station, self.comp)
+    stack.ax.set_xlim(self.stack.ax.get_xlim())
+    active = [ov for ov in self.overlays if ov.name in self._overlay_on]
+    if active:
+      draw_on_image(stack, active, self.dt, self.station, log=self.log)
+    try:
+      stack.fig.savefig(path, dpi=SAVE_DPI)
+    except Exception as e:
+      self.show_error(f"画像を保存できませんでした: {e}")
+      return
+    self.log(f"画像を保存しました: {path}")
 
   # 横一列のボタンを作って、{名前: Button} を返す
   def _make_button_row(self, names, y, width, on_click, height=0.02):
@@ -389,6 +475,8 @@ class StackWindow:
     if self.fig.canvas.manager is not None:
       self.fig.canvas.manager.set_window_title(
         f"1時間スタック波形 - {self.station}.{self.comp} ({self.dt.strftime('%Y/%m/%d %H:00')})")
+    if self._vnet_info is not None:
+      self._vnet_info.config(text=f"{self.dt:%Y/%m/%d %H}時・{self.comp}")
     self._refresh_buttons()
     self.log(f"スタック波形プロット完了: {self.station}.{self.comp} "
              f"({self.dt.strftime('%Y/%m/%d %H:00')})")

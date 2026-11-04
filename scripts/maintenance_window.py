@@ -133,13 +133,21 @@ class MaintenanceWindow:
       chk = ttk.Checkbutton(row, text=text, variable=var)
       chk.pack(side=tk.LEFT, padx=(0, 10))
       self.busy_widgets.append(chk)
+    # 外部の観測点で確かめる60分の一覧(quake_loose.py)
+    self.var_vnet = tk.BooleanVar(value=False)
+    chk = ttk.Checkbutton(det, variable=self.var_vnet,
+                          text="外部の観測点で確かめるため、v-net からダウンロードする60分の一覧も作る(列車の判定に波形を読みます)")
+    chk.pack(anchor="w", pady=(4, 0))
+    self.busy_widgets.append(chk)
     ttk.Label(det, foreground="#666666", justify=tk.LEFT,
               text="期間を空けると daily_zips の最初の日から最後の日までです。RMS を保存済みの日はそれを使い、\n"
                    "まだの日だけ波形から計算します(1日あたり数十秒〜数分)。daily_zips に ZIP が無い日は飛ばします。\n"
-                   "結果(候補の一覧・見逃し?の一覧)は batch_plots/quakes に保存し、1時間スタック画面の「地震」でも使います。"
+                   "結果(候補の一覧・見逃し?の一覧)は batch_plots/quakes に保存し、1時間スタック画面の「地震」でも使います。\n"
+                   "ダウンロードする60分の一覧は vnet_download_<期間>.csv(v-net フォルダに取得済みの時間は「済」)、\n"
+                   "取得済みの候補は vnet_locate_<期間>.csv(「候補の一覧(CSV)を選んで震源を表示」で開けます)です。"
               ).pack(anchor="w", pady=(8, 0))
     if app is None:
-      for w in self.busy_widgets[-4:]:
+      for w in self.busy_widgets[-5:]:
         w.config(state=tk.DISABLED)
 
     # --- キャッシュ ---
@@ -389,7 +397,7 @@ class MaintenanceWindow:
       return
     add_history = self.var_history.get()
     args = dict(start_date=texts[0] or None, end_date=texts[1] or None, save_images=self.var_images.get(),
-                overwrite=self.var_overwrite.get())
+                overwrite=self.var_overwrite.get(), loose=self.var_vnet.get())
 
     def work(log, cancelled, progress):
       # 別スレッドではダウンロードの画面を出せないので、手元の ZIP だけを使う

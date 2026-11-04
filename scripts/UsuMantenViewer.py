@@ -14,7 +14,6 @@ import numpy as np
 from obspy import read, Stream         # SACファイルの読み込み
 from obspy import UTCDateTime as obspy_time
 import matplotlib.pyplot as plt        # グラフ表示ツール
-from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
 
 from plot_common import setup_japanese_font
 from log_common import log_message, set_console, set_log_widget
@@ -27,6 +26,7 @@ from drive_downloader import load_folder_id, download_file_from_drive, DriveFile
 from hypocenter import load_stations, LocalProjection
 import quake_detect
 import quake_features
+import quake_loose
 import quake_locate
 import pick_store
 from quake_locate_window import open_locate_window
@@ -109,6 +109,17 @@ warnings.filterwarnings(
 #     あわせて、2026/6/13 22:35:35 の揺れ(17件の 22:27 の8分後)も確かめる。Hokudai 57倍・Mimatsu 41倍だが
 #     Bamba・Nizaemn は2倍で候補にならない。山頂の南南西 約1.8 km・深さ 2.9 km に決まり(到着時刻6つ)、
 #     揺れの形も17件と同じなので、山頂の近くの、17件よりさらに小さな地震とみられる
+# 23. 各画面にキーボード操作(ショートカット)を加える
+#     例: 1時間スタックの画面で、右矢印で1時間後、左矢印で1時間前に移る
+# 24. 波形表示(全拠点)の画面で、表示する時間の範囲を1分単位で微調整できるようにする
+#     基本は終わりの時刻を延ばす・縮める。S-P時間の試算で、前に入った大きな雑音を外したいときのため、
+#     始まりの時刻も動かせるようにする
+# 25. 洞爺駅の時刻表(etc/train_timetable.csv)の各行に、有効期間(開始日・終了日)を持たせる
+#     ダイヤ改正で時刻が変わるため、観測期間(2025/7〜)の途中の改正前後で正しい時刻と照合できるようにする
+#     (入力用の etc/train_timetable_template.xlsx と、時刻表を読む処理(列車の照合・重ね表示・メンテナンスの絞り込み)も合わせる)
+# 26. 震源が決まった地震のマグニチュード(M)を推測する
+#     揺れの最大振幅と震源距離から求める。坪井の式は遠くの大きな地震向けなので、近くの小さな地震に合わせて、
+#     気象庁の震源リストと対応した地震の M で係数と拠点ごとの補正を合わせ直す
 
 # クラス定義
 class MantenUsuSeismographApp:
@@ -692,8 +703,8 @@ class MantenUsuSeismographApp:
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     # --- キャッシュチェック (Smart Caching) ---
-    # フォルダ内にSACファイルがあるかどうかを確認
-    existing_sacs = win_pipeline.find_sacs(dest_dir)
+    # フォルダ内にSACファイルがあるかどうかを確認(今のチャンネル表で変換したものだけ使う)
+    existing_sacs = win_pipeline.find_current_sacs(dest_dir, self.etc_dir)
 
     if existing_sacs:
       # 既存のSACファイルがある場合はそれを利用して波形を描画
@@ -734,8 +745,8 @@ class MantenUsuSeismographApp:
   #   戻り値            ... 用意できたら True、失敗したら False
   def ensure_sacs(self, start_dt, end_dt, dest_dir, show_dialog=True):
     dest_dir.mkdir(parents=True, exist_ok=True)
-    # すでにSACがあれば何もしない
-    if win_pipeline.find_sacs(dest_dir):
+    # すでにSACがあれば何もしない(今のチャンネル表で変換したものだけ使う)
+    if win_pipeline.find_current_sacs(dest_dir, self.etc_dir):
       return True
     # 結合前のWINがなければZIPから抽出
     if not win_pipeline.find_raw_wins(dest_dir):
@@ -786,20 +797,13 @@ class MantenUsuSeismographApp:
 
   # 1時間分のスタック波形を表示する
   def plot_stack_waveforms(self, start_dt, station_name, comp_name):
-    # ツールバーから「保存」以外のボタン(ズーム・パン等)を外す。この窓の作成中だけ有効にする
-    original_items = NavigationToolbar2Tk.toolitems
-    NavigationToolbar2Tk.toolitems = [t for t in original_items if t[0] == "Save"]
-    overlays = self.make_overlays()
-    try:
-      window = StackWindow(start_dt, station_name, comp_name,
-                           load_stream=self.load_stack_stream,
-                           channels=self.load_channel_options(),
-                           log=log_message,
-                           show_error=lambda msg: messagebox.showerror("エラー", msg),
-                           on_compare=self.compare_from_stack,
-                           overlays=overlays)
-    finally:
-      NavigationToolbar2Tk.toolitems = original_items
+    window = StackWindow(start_dt, station_name, comp_name,
+                         load_stream=self.load_stack_stream,
+                         channels=self.load_channel_options(),
+                         log=log_message,
+                         show_error=lambda msg: messagebox.showerror("エラー", msg),
+                         on_compare=self.compare_from_stack,
+                         overlays=self.make_overlays())
     window.show()
 
   # 1時間スタック画面の右クリックメニューから、指定期間の波形表示(全拠点)を開く
@@ -1159,6 +1163,8 @@ class MantenUsuSeismographApp:
   #   add_history ... 候補の期間を履歴(history.json)に追加する
   #   save_images ... 候補ごとに確認用の波形の画像を保存する
   #   overwrite   ... 画像を上書きする
+  #   loose       ... 外部の観測点で確かめる60分の一覧も作る(基準をゆるめた候補から、震源リストと照合できたもの・
+  #                   列車の揺れとみられるものを除く。quake_loose.py)
   #   cancelled   ... 中止するときに True を返す関数(日・候補の区切りで止める)
   #   on_progress ... 進み具合 (何番目, 全体の数, 今していること) を受け取る関数(数の無い段階は 0, 0)
   #   戻り値 ... 地震の候補のリスト(期間の指定が誤っているときや、中止したときは None)
@@ -1166,7 +1172,7 @@ class MantenUsuSeismographApp:
   #   戻り値を add_candidates_to_history に渡す)
   #   (保存した RMS を計算し直すときは、output/quake_rms を削除する)
   def run_quake_detection(self, start_date=None, end_date=None, add_history=False, save_images=False,
-                          overwrite=False, cancelled=lambda: False, on_progress=None):
+                          overwrite=False, loose=False, cancelled=lambda: False, on_progress=None):
     zip_days = jma_hypocenter.zip_days()
     try:
       start_day = datetime.strptime(start_date, "%Y%m%d") if start_date else zip_days[0]
@@ -1353,7 +1359,19 @@ class MantenUsuSeismographApp:
     quake_detect.write_missed_csv(missed_path, missed, names)
     log_message(f"見逃し?の一覧: {missed_path}")
 
-    # --- 6. 履歴(指定期間の波形表示で、あとから見られるようにする) ---
+    # --- 6. 外部の観測点で確かめる60分の一覧(ゆるめた基準の候補から) ---
+    if loose:
+      timetable_path = self.etc_dir / "train_timetable.csv"
+      train = (TrainOverlay(timetable_path, lambda dt: self.load_hour_stream(dt, vertical_only=True))
+               if timetable_path.exists() else None)
+      result = quake_loose.run(start_day, rms, candidates, catalog, train,
+                               out_dir, period, names,
+                               cancelled=cancelled, on_progress=on_progress)
+      if result is None:
+        log_message("=== 地震の候補を探す処理を中止しました(外部の観測点で確かめる一覧は保存していません) ===")
+        return None
+
+    # --- 7. 履歴(指定期間の波形表示で、あとから見られるようにする) ---
     if add_history:
       self.add_candidates_to_history(candidates)
 
@@ -1522,6 +1540,8 @@ def main():
   parser.add_argument("--locate-quakes", metavar="CSV",
                       help="UIを起動せず、地震の候補の一覧(CSV)から候補ごとに震源を求める")
   parser.add_argument("--history", action="store_true", help="地震の候補の期間を履歴に追加する (--detect-quakes 用)")
+  parser.add_argument("--vnet-list", action="store_true",
+                      help="外部の観測点で確かめるため、v-net からダウンロードする60分の一覧も作る (--detect-quakes 用)")
   parser.add_argument("--images", action="store_true",
                       help="地震の候補の確認用の画像を保存する (--detect-quakes・--locate-quakes 用)")
   parser.add_argument("--channel", "-c", type=str, default="Hokudai.U", help="対象チャンネル名 (例: Hokudai.U または U)")
@@ -1556,7 +1576,8 @@ def main():
       end_date=args.end_date,
       add_history=args.history,
       save_images=args.images,
-      overwrite=args.overwrite
+      overwrite=args.overwrite,
+      loose=args.vnet_list
     )
     root.destroy()
   elif args.batch:

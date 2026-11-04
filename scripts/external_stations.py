@@ -29,6 +29,21 @@ COMPONENTS = ("U", "N", "E")
 VELOCITY_UNIT = "m/s"
 # WIN32 形式のファイルのヘッダーの長さ
 WIN32_HEADER_SIZE = 4
+# 防災科研のページで連続波形画像(1時間ごと。1段が1分)を見られる、有珠山の観測点
+#   1時間スタックの画面のリンクと、外部の観測点で確かめる一覧(quake_loose.py)で使う
+#   (WIN の観測点コード, 機関の番号, 網の番号, 地域の番号, 画面に出す説明)
+#   気象庁の V.USHU(東有珠大平通)は傾斜計だけで、地震計の画像が無いので入れない
+IMAGE_STATIONS = [
+  ("N.USSV", "01", "05", "010503", "防災科研 有珠山壮瞥"),
+  ("N.USOV", "01", "05", "010503", "防災科研 有珠山大平(地中)"),
+  ("N.USIV", "01", "05", "010503", "防災科研 有珠山泉の沢"),
+  ("V.USSW", "03", "02", "030207", "気象庁 昭和新山南麓"),
+  ("V.USUA", "03", "02", "030207", "気象庁 有珠南山麓"),
+  ("V.KBBY", "03", "02", "030207", "気象庁 北屏風山"),
+  ("V.ATIK", "03", "02", "030207", "気象庁 虻田泉北"),
+]
+IMAGE_URL = ("https://www.vnet.bosai.go.jp/strace/view.php?orgid={org}&netid={net}&stcd={code}"
+             "&tm={t:%Y%m%d%H}&comp={comp}&type=1H&area={area}")
 
 
 # 観測点の一覧。戻り値 ... {画面で使う名前: {"code": WIN の観測点コード, "coords": (緯度, 経度, 標高[m])}}
@@ -47,6 +62,14 @@ def load_config(path=CONFIG_FILE):
 # 観測点の位置。戻り値 ... {画面で使う名前: (緯度, 経度, 標高[m])}(hypocenter.load_stations と同じ形)
 def coords(path=CONFIG_FILE):
   return {name: st["coords"] for name, st in load_config(path).items()}
+
+# 連続波形画像のページの URL(時刻は日本時間。その時刻を含む1時間の画像)
+#   code ... WIN の観測点コード(IMAGE_STATIONS のもの) / t ... 日時(datetime) / comp ... 成分(U・N・E)
+def image_url(code, t, comp="U"):
+  for c, org, net, area, _desc in IMAGE_STATIONS:
+    if c == code:
+      return IMAGE_URL.format(org=org, net=net, code=code, t=t, comp=comp, area=area)
+  raise ValueError(f"連続波形画像の観測点にありません: {code}")
 
 # v-net フォルダの ZIP と、その期間。戻り値 ... [(ZIP のパス, 開始, 終了), ...]
 def data_files():

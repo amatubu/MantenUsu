@@ -142,7 +142,8 @@ class TrainOverlay:
       return False, f"時刻表がありません({self.timetable_path.name})"
     return True, ""
 
-  def _analyze(self, t0, station):
+  # 表示する1時間(t0 から)の揺れと、その前後の時刻表(地震の候補を外部の観測点で確かめる処理(quake_loose.py)でも使う)
+  def analyze_hour(self, t0, station):
     key = (t0, station)
     if key in self._hours:
       return self._hours[key]
@@ -172,7 +173,7 @@ class TrainOverlay:
     return self._hours[key]
 
   def draw(self, ax, t0, station, active):
-    events, timetable = self._analyze(t0, station)
+    events, timetable = self.analyze_hour(t0, station)
     base = (t0 - _day_start(t0)).total_seconds()
     # 地震の重ね表示もオンなら、地震はそちらに任せる(同じ揺れに2つの帯と文字が重なるため)
     quakes = QuakeOverlay.name not in active

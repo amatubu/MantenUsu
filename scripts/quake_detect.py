@@ -243,23 +243,26 @@ def moving_max(values, margin):
 #   rms       ... {拠点名: 期間全体の RMS の配列}(長さは日数 × WINDOWS_PER_DAY)
 #   戻り値 ... (候補のリスト, 期間の情報)
 #     候補 ... {"start", "end", "peak"(datetime), "ratios"({拠点名: 区間での最大の倍率}),
-#              "over"(QUAKE_RATIO 倍を超えた拠点数), "available"(データのある拠点数), "max_ratio"}
+#              "over"(quake_ratio 倍を超えた拠点数), "available"(データのある拠点数), "max_ratio"}
 #     期間の情報 ... {"names", "ratio"(拠点 × 窓の倍率), "available"(窓ごとのデータのある拠点数),
 #                    "start_day"}(見逃した地震の確認に使う)
-def find_candidates(start_day, rms):
+#   quake_ratio・hokudai_others_ratio・hokudai_others ... 基準(省略すると今の基準。
+#     外部の観測点で確かめる時間を選ぶときは、ゆるめた基準で呼ぶ(quake_loose.py))
+def find_candidates(start_day, rms, quake_ratio=QUAKE_RATIO, hokudai_others_ratio=HOKUDAI_OTHERS_RATIO,
+                    hokudai_others=HOKUDAI_OTHERS):
   names = sorted(rms)
   ratio = np.array([rms[nm] / noise_level(rms[nm]) for nm in names])
   half = int(QUAKE_MARGIN / RMS_WINDOW)
   peaks = np.array([moving_max(r, half) for r in ratio])
   available = np.isfinite(peaks).sum(axis=0)
-  over = (np.nan_to_num(peaks, nan=0) >= QUAKE_RATIO).sum(axis=0)
+  over = (np.nan_to_num(peaks, nan=0) >= quake_ratio).sum(axis=0)
   by_stations = (available >= QUAKE_MIN_STATIONS) & (over >= QUAKE_MIN_STATIONS)
   by_hokudai = np.zeros_like(by_stations)
   if HOKUDAI in names:
     i = names.index(HOKUDAI)
     others = np.delete(np.nan_to_num(peaks, nan=0), i, axis=0)
     by_hokudai = ((available >= QUAKE_MIN_STATIONS) & (np.nan_to_num(peaks[i], nan=0) >= HOKUDAI_RATIO)
-                  & ((others >= HOKUDAI_OTHERS_RATIO).sum(axis=0) >= HOKUDAI_OTHERS))
+                  & ((others >= hokudai_others_ratio).sum(axis=0) >= hokudai_others))
   flagged = by_stations | by_hokudai
 
   # 続いている窓をまとめる
@@ -276,7 +279,7 @@ def find_candidates(start_day, rms):
     median = np.nanmedian(ratio, axis=0)
   median = np.nan_to_num(median, nan=0)
   score = np.nansum(np.log10(np.clip(np.nan_to_num(ratio, nan=1), 1, None)), axis=0)
-  raw_count = (np.nan_to_num(ratio, nan=0) >= QUAKE_RATIO).sum(axis=0)
+  raw_count = (np.nan_to_num(ratio, nan=0) >= quake_ratio).sum(axis=0)
 
   spans = []
   for k0, k1 in runs:
@@ -312,7 +315,7 @@ def find_candidates(start_day, rms):
       "end": start_day + timedelta(seconds=(b + 1) * RMS_WINDOW),
       "peak": start_day + timedelta(seconds=(p + 0.5) * RMS_WINDOW),
       "ratios": ratios,
-      "over": sum(v >= QUAKE_RATIO for v in ratios.values()),
+      "over": sum(v >= quake_ratio for v in ratios.values()),
       "available": int(available[a:b + 1].max()),
       "max_ratio": max(ratios.values()) if ratios else 0.0,
       # 3拠点の基準で見つかったか、Hokudai の例外だけで見つかったか
