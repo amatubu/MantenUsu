@@ -27,7 +27,7 @@ def fmt(v, spec):
 #   items   ... [(候補, 結果), ...](quake_locate.locate_all の結果)。手直しを反映すると、この中の結果を置き換える
 #   stations, proj ... 拠点の位置と平面座標
 #   title   ... 画面と図のタイトル
-#   on_open_event ... (候補, 結果, 反映する関数) を渡すと、その候補の震源推定の画面を開く関数
+#   on_open_event ... (候補, 結果, 反映する関数, 画面を出す直前に呼ぶ関数) を渡すと、その候補の震源推定の画面を開く関数
 #                     反映する関数は、求め直した結果を渡すと、その行と図を更新する
 #   on_save ... 「一覧と図を保存」で呼ぶ関数(引数なし)
 #   on_revert ... (候補, 結果) を渡すと、保存した到着時刻を消して自動で求め直した結果を返す関数
@@ -36,7 +36,8 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   win.title(f"地震の候補の震源 - {title}")
   win.geometry("1560x900")
   # 手直しを反映したあと、一覧と図を保存していないか
-  state = {"unsaved": False}
+  #   opening ... 震源推定の画面を開いている途中(波形の読み込み中)
+  state = {"unsaved": False, "opening": False}
 
   # --- 左: 結果の表と操作 ---
   left = ttk.Frame(win, padding=8)
@@ -132,11 +133,29 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     fill_table(k)
     on_select()
 
+  # 震源推定の画面を開く
+  #   波形の読み込みに数秒かかる間のクリック(ダブルクリックの続きなど)がたまり、開いたあとに処理されて
+  #   同じ画面がいくつも開いていたので、開いている途中のクリックは捨てる
+  #   (on_open_event は、画面を出す直前に ready() を呼ぶ。たまったクリックをここで処理して捨ててから受け付けに戻す)
   def open_event(_event=None):
+    if state["opening"]:
+      return
     k = selected_index()
-    if k is not None:
-      cand, r = items[k]
-      on_open_event(cand, r, lambda new_r: replace(cand, new_r))
+    if k is None:
+      return
+    cand, r = items[k]
+    state["opening"] = True
+    win.config(cursor="watch")
+    def ready():
+      if not state["opening"] or not win.winfo_exists():
+        return
+      win.update()
+      state["opening"] = False
+      win.config(cursor="")
+    try:
+      on_open_event(cand, r, lambda new_r: replace(cand, new_r), ready)
+    finally:
+      ready()   # 画面を開かなかったとき(波形が足りないなど)
   tree.bind("<Double-1>", open_event)
 
   # 選んだ候補の保存した到着時刻を消し、自動の検出で求め直す

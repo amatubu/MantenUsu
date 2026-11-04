@@ -1454,8 +1454,10 @@ class MantenUsuSeismographApp:
 
     # 候補の震源推定の画面を開く(同じ範囲の波形。遠い地震は S波を探す範囲を広げる)
     #   画面で「保存して一覧に反映」を押すと、保存した到着時刻から震源を求め直して、一覧の行と図を更新する(apply)
-    def open_event(cand, r, apply):
+    #   ready ... 画面を出す直前に呼ぶ(波形を読み込む間にたまったクリックを捨てる。quake_locate_window.py)
+    def open_event(cand, r, apply, ready):
       st = event_stream(cand)
+      ready()
       if len({tr.stats.station for tr in st}) < 3:
         messagebox.showwarning("警告", "3拠点以上の波形がありません。")
         return
