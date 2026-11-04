@@ -289,26 +289,69 @@ def detect_events(times, rms, noise):
     ev["end"] += RMS_WINDOW / 2
   return events
 
-# 時刻表のCSV(時刻,ラベル)を読む。戻り値 ... [(日の始まりからの秒, ラベル), ...]
-#   3列目以降(etc/train_timetable_template.xlsx の種別・列車名など)は使わない
+# 時刻表の有効期間の列の見出しと、見出しの行が無いときの列の位置(時刻,ラベル,種別,列車名,方面,メモ のあと)
+#   ダイヤ改正で時刻が変わった列車は、前の時刻の行に終了日を、新しい時刻の行に開始日を入れる
+#   空欄は「その日まで(から)ずっと有効」とみなす(両方空欄なら全期間で有効)
+VALID_FROM_HEADER, VALID_UNTIL_HEADER = "有効開始日", "有効終了日"
+VALID_FROM_COLUMN, VALID_UNTIL_COLUMN = 6, 7
+
+# 時刻表のCSVの各行を読む
+#   戻り値 ... [(日の始まりからの秒, ラベル, 有効開始日(date または None), 有効終了日(date または None)), ...]
+#   3〜6列目(etc/train_timetable_template.xlsx の種別・列車名・方面・メモ)は使わない
 #   Excel の「CSV UTF-8」と、ふつうの「CSV」(Shift_JIS)のどちらでも読める
-def load_timetable(path):
+def load_timetable_rows(path):
   try:
     with open(path, encoding="utf-8-sig") as f:
       rows = list(csv.reader(f))
   except UnicodeDecodeError:
     with open(path, encoding="cp932") as f:
       rows = list(csv.reader(f))
+  col_from, col_until = VALID_FROM_COLUMN, VALID_UNTIL_COLUMN
   entries = []
   for row in rows:
     if not row or not row[0].strip():
       continue
     t = parse_time(row[0].strip())
     if t is None:
-      continue  # 見出しの行など
+      # 見出しの行: 有効期間の列の位置を見出しの名前から決める
+      cells = [c.strip() for c in row]
+      if VALID_FROM_HEADER in cells:
+        col_from = cells.index(VALID_FROM_HEADER)
+      if VALID_UNTIL_HEADER in cells:
+        col_until = cells.index(VALID_UNTIL_HEADER)
+      continue
     label = row[1].strip() if len(row) > 1 else ""
-    entries.append((t.hour * 3600 + t.minute * 60 + t.second, label))
+    valid_from = parse_valid_date(row[col_from]) if len(row) > col_from else None
+    valid_until = parse_valid_date(row[col_until]) if len(row) > col_until else None
+    entries.append((t.hour * 3600 + t.minute * 60 + t.second, label, valid_from, valid_until))
   return entries
+
+# その日に有効な時刻表。戻り値 ... [(日の始まりからの秒, ラベル), ...]
+#   day ... 日(date または datetime)
+def timetable_on(rows, day):
+  d = day.date() if isinstance(day, datetime) else day
+  return [(t, label) for t, label, valid_from, valid_until in rows
+          if (valid_from is None or valid_from <= d) and (valid_until is None or d <= valid_until)]
+
+# 時刻表のCSVを読む。戻り値 ... [(日の始まりからの秒, ラベル), ...]
+#   day ... その日に有効な行だけにする(None なら有効期間を見ずに全部)
+def load_timetable(path, day=None):
+  rows = load_timetable_rows(path)
+  if day is None:
+    return [(t, label) for t, label, _from, _until in rows]
+  return timetable_on(rows, day)
+
+# 「2026/3/14」「2026-03-14」「2026/03/14 0:00:00」(Excel の表示)を日付にする。空欄や日付でなければ None
+def parse_valid_date(text):
+  text = (text or "").strip()
+  if not text:
+    return None
+  for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+    try:
+      return datetime.strptime(text, fmt).date()
+    except ValueError:
+      pass
+  return None
 
 # 「6:12」「06:12」「06:12:00」を時刻にする。時刻でなければ None
 def parse_time(text):
@@ -635,7 +678,7 @@ def main():
     log_message("  波形がありません")
     return
 
-  timetable = load_timetable(args.timetable) if args.timetable else []
+  timetable = load_timetable(args.timetable, day) if args.timetable else []
   res = analyze(traces, args.station, day, timetable if args.timetable else None)
   times, rms, noise, events, matches = res["times"], res["rms"], res["noise"], res["events"], res["matches"]
   quakes = [ev for ev in events if ev["quake"]]

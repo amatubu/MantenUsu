@@ -148,7 +148,7 @@ class TrainOverlay:
     if key in self._hours:
       return self._hours[key]
     if self._timetable is None:
-      self._timetable = train_day_plot.load_timetable(self.timetable_path)
+      self._timetable = train_day_plot.load_timetable_rows(self.timetable_path)
     self.log(f"列車の揺れを調べています: {t0:%Y/%m/%d %H}時台(前後1時間を含む)")
     st = None
     for h in (-1, 0, 1):
@@ -163,10 +163,12 @@ class TrainOverlay:
     if station not in traces:
       raise RuntimeError(f"{station} の上下動がありません")
     # 秒の基準は表示する時間の日の始まり。前後の日の時刻表も、その日の秒に直して加える
+    #   (時刻表は、それぞれの日に有効な行だけを使う。ダイヤ改正の前後で時刻が変わるため)
     day = _day_start(t0)
     lo = (t0 - day).total_seconds() - 3600
     hi = lo + 3 * 3600
-    timetable = [(t + k * 86400, label) for k in (-1, 0, 1) for t, label in self._timetable
+    timetable = [(t + k * 86400, label) for k in (-1, 0, 1)
+                 for t, label in train_day_plot.timetable_on(self._timetable, day + timedelta(days=k))
                  if lo <= train_day_plot.expected_time(t + k * 86400, label) < hi]
     res = train_day_plot.analyze(traces, station, day, timetable)
     self._hours[key] = (res["events"], timetable)
