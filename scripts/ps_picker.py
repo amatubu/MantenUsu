@@ -19,7 +19,7 @@ from hypocenter import load_stations
 # 設定ファイル・プリセット
 # ==========================================
 # カレントディレクトリ基準(./output と同じ扱い)
-SETTINGS_FILE = app_paths.ETC_DIR / "ps_picker_params.json"
+SETTINGS_FILE = app_paths.PS_PICKER_SETTINGS
 
 # スライダー定義: (キー, 表示名, 最小, 最大, 刻み)
 SLIDER_SPECS = [

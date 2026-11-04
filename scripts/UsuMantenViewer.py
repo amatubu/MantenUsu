@@ -58,7 +58,7 @@ warnings.filterwarnings(
 # [完了]9. キャッシュ整理処理で、WINファイルのみ、結合前WINファイルのみなどのオプション追加
 # [完了]10. P波、S波の到着時刻計算
 # [完了]11. 震源位置、地震発生時刻の推測(4拠点のP波到着時刻から。遠い地震は到来方向のみ。配置図の背景に地理院タイル)
-# 12. 変更しないファイルと、使っているうちに作られる・変わるファイルの置き場所を分ける
+# [完了]12. 変更しないファイルと、使っているうちに作られる・変わるファイルの置き場所を分ける
 #     変更しないもの(動作に必須のものを含む): tools、service_account、etc の設定ファイル(win.prm、*.ch、*.tbl)
 #       → アプリと一緒に置く(今と同じ)
 #     ユーザーの操作で作られる・変わるもの: etc/ps_picker_params.json、etc/hypocenter_params.json、output(キャッシュ・history.json・picks)、
@@ -67,6 +67,9 @@ warnings.filterwarnings(
 #          Windows は %APPDATA%\UsuMantenViewer や %LOCALAPPDATA%\UsuMantenViewer)
 #     場所は app_paths.py でまとめて決める。アプリを .app の中や Program Files など、
 #     書き込めない場所に置けるようになり、アプリを入れ替えても設定やキャッシュが残る
+#     (結果: app_paths.py で、アプリに付く物・ユーザーの設定・データフォルダ(設定で変更可)・キャッシュに分けた。
+#      picks と履歴は output からユーザーの設定へ移し、前の版のプロジェクトのフォルダのデータはそのまま使う。
+#      メンテナンス画面の「置き場所」でデータフォルダの変更と鍵の取り込み、pack_data.py の --unpack で移行)
 # [完了]13. 地震らしい波形の自動検出(--detect-quakes。2〜20 Hz で3拠点以上が同時に大きく揺れたものを、
 #     指定した期間から地震の候補として一覧にする。履歴への追加・確認用の画像はオプション)
 # [完了]14. S-P時間と到来方向を組み合わせた震源推定(震源推定の画面で、近い地震として位置が決まらないとき、
@@ -170,7 +173,7 @@ class MantenUsuSeismographApp:
     self.folder_config_file = self.service_account_dir / "folder_config.json"
     self.target_folder_id = load_folder_id(self.folder_config_file)
     # 履歴を格納するファイル(JSON)
-    self.history_file = self.output_base / "history.json"
+    self.history_file = app_paths.HISTORY_FILE   # ユーザーの設定に置く(キャッシュの output とは分ける)
     # 手元に無い日のZIPを Googleドライブからダウンロードするか(ダウンロードの画面を出せない別スレッドの処理では False にする)
     self.allow_download = True
 
@@ -556,6 +559,7 @@ class MantenUsuSeismographApp:
   #   history_list ... 履歴のリスト
   def save_history_data(self, history_list):
     try:
+      self.history_file.parent.mkdir(parents=True, exist_ok=True)
       with open(self.history_file, "w", encoding="utf-8") as f:
         # 履歴のリストをJSONとして出力
         json.dump(

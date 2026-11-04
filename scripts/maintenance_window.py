@@ -9,12 +9,14 @@
 #   (log_message を別スレッドから呼んだときも、log_common が溜めておき、画面側の flush_pending で書く)
 import gc
 import os
+import shutil
 import subprocess
 import sys
 import threading
+from pathlib import Path
 import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import app_paths
 import cache_manager
@@ -73,7 +75,7 @@ class MaintenanceWindow:
     self.win = win
     win.title("メンテナンス")
     win.resizable(False, False)
-    win.transient(parent)
+    # transient(親の付属の画面)にはしない: Mac で別のディスプレイなどへ動かすと、親の無い側で隠れて見えなくなるため
     win.protocol("WM_DELETE_WINDOW", self.close)
 
     frame = ttk.Frame(win, padding=15)
@@ -191,6 +193,33 @@ class MaintenanceWindow:
     ttk.Label(ext, foreground="#666666", justify=tk.LEFT,
               text="ZIP は防災科研のページなどからダウンロードし、v-net フォルダにそのまま置きます。\n"
                    "変換は、波形を表示するときにも自動で行います(観測点の設定を変えたときは、変換済みの SAC を消してください)。"
+              ).pack(anchor="w", pady=(8, 0))
+
+    # --- データの置き場所(TODO 12。app_paths.py) ---
+    loc = page("置き場所")
+    ttk.Label(loc, text="ファイルの置き場所", font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(0, 6))
+    grid = ttk.Frame(loc)
+    grid.pack(fill=tk.X)
+    self.lbl_data_dir = None
+    rows = [("データフォルダ", app_paths.DATA_DIR, "daily_zips・output(キャッシュ)・v-net・jma_hypocenter・batch_plots。大きくなります"),
+            ("ユーザーの設定", app_paths.USER_DIR, "画面の設定・履歴・手で直した到着時刻・時刻表・Googleドライブの鍵・etc の上書き"),
+            ("アプリに付く物", app_paths.BUNDLE_DIR, "tools・etc の初期値(変更しないもの)")]
+    for i, (name, path, note) in enumerate(rows):
+      ttk.Label(grid, text=name + ":", font=("sans-serif", 10, "bold")).grid(row=2 * i, column=0, sticky="w", padx=(0, 8))
+      lbl = ttk.Label(grid, text=str(path))
+      lbl.grid(row=2 * i, column=1, sticky="w")
+      ttk.Button(grid, text="開く", command=lambda p=path: self.open_folder(p)).grid(row=2 * i, column=2, padx=(8, 0))
+      ttk.Label(grid, text=note, foreground="#666666").grid(row=2 * i + 1, column=1, sticky="w", pady=(0, 6))
+      if i == 0:
+        self.lbl_data_dir = lbl
+    row = ttk.Frame(loc)
+    row.pack(fill=tk.X, pady=(6, 0))
+    ttk.Button(row, text="データフォルダを変える…", command=self.change_data_dir).pack(side=tk.LEFT)
+    ttk.Button(row, text="Googleドライブの鍵ファイルを取り込む…", command=self.import_key).pack(side=tk.LEFT, padx=(8, 0))
+    ttk.Label(loc, foreground="#666666", justify=tk.LEFT,
+              text="データフォルダを変えたときは、アプリを開き直すと新しい場所を使います(今のデータは移しません。\n"
+                   "必要なら、今のデータフォルダの中身を新しい場所へ移してください)。\n"
+                   "鍵ファイル(manten_usu_downloader.json・folder_config.json)は、ユーザーの設定の service_account にコピーします。"
               ).pack(anchor="w", pady=(8, 0))
 
     # --- 実行ログ(メイン画面の実行ログと同じもの。メイン画面が隠れていても見えるように) ---
@@ -445,6 +474,41 @@ class MaintenanceWindow:
         messagebox.showerror("エラー", f"削除中にエラーが発生しました:\n{e}", parent=self.win)
 
   # --- ほかの機関の観測点 ---
+  # フォルダを Finder・エクスプローラーで開く(無ければ作る)
+  def open_folder(self, path):
+    try:
+      Path(path).mkdir(parents=True, exist_ok=True)
+    except OSError:
+      pass
+    open_path(path)
+
+  # データフォルダを変える(次に起動したときから使う)
+  def change_data_dir(self):
+    new = filedialog.askdirectory(parent=self.win, title="データフォルダを選んでください",
+                                  initialdir=str(app_paths.DATA_DIR.parent if app_paths.DATA_DIR.exists() else Path.home()))
+    if not new or Path(new) == app_paths.DATA_DIR:
+      return
+    if not messagebox.askyesno("データフォルダを変える",
+                               f"データフォルダを次の場所に変えます。\n{new}\n\n"
+                               "アプリを開き直すと、新しい場所を使います。今のデータは移しません。よろしいですか?", parent=self.win):
+      return
+    app_paths.set_data_dir(new)
+    log_message(f"データフォルダを変えました(開き直すと使います): {new}")
+    self.lbl_data_dir.config(text=f"{app_paths.DATA_DIR}  → 開き直すと {new}")
+
+  # Googleドライブの鍵ファイル(と、フォルダの設定)を、ユーザーの設定にコピーする
+  def import_key(self):
+    paths = filedialog.askopenfilenames(parent=self.win, title="鍵ファイルを選んでください(複数選べます)",
+                                        filetypes=[("JSON", "*.json"), ("すべて", "*")])
+    if not paths:
+      return
+    dest = app_paths.USER_SERVICE_ACCOUNT_DIR
+    dest.mkdir(parents=True, exist_ok=True)
+    for p in paths:
+      shutil.copy2(p, dest / Path(p).name)
+      log_message(f"鍵ファイルを取り込みました: {dest / Path(p).name}")
+    messagebox.showinfo("鍵ファイル", f"{len(paths)}個のファイルを取り込みました。\n{dest}", parent=self.win)
+
   def open_data_dir(self):
     external_stations.DATA_DIR.mkdir(parents=True, exist_ok=True)
     open_path(external_stations.DATA_DIR)

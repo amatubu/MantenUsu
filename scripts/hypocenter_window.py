@@ -30,7 +30,7 @@ import shortcuts
 from obspy.geodetics import gps2dist_azimuth
 
 # 設定ファイル(P波・S波検出とは別に保存する)
-SETTINGS_FILE = app_paths.ETC_DIR / "hypocenter_params.json"
+SETTINGS_FILE = app_paths.HYPOCENTER_SETTINGS
 
 # スライダー定義: (キー, 表示名, 最小, 最大, 刻み)
 SLIDER_SPECS = [

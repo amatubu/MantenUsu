@@ -15,7 +15,7 @@ from datetime import datetime
 import app_paths
 from log_common import log_message
 
-PICKS_DIR = app_paths.OUTPUT_DIR / "picks"
+PICKS_DIR = app_paths.PICKS_DIR   # ユーザーの設定に置く(作り直せないので、キャッシュの output とは分ける)
 VERSION = 1
 NAME_FORMAT = "%Y%m%d_%H%M%S"
 

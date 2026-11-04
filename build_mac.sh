@@ -62,6 +62,20 @@ OPTS=(--onedir --noconfirm --name "$NAME" --debug noarchive
 if [ "$MODE" = app ]; then
   OPTS+=(--windowed)   # .app を作る(ターミナルを開かずに起動する)
 fi
+# アプリに付く物(tools と etc の初期値)をアプリの中に入れる(app_paths.py の BUNDLE_DIR)
+#   etc は Git で管理している設定ファイルだけ(時刻表や画面の設定は、各自のユーザーの設定に置く)
+STAGE="build_res"
+rm -rf "$STAGE"
+mkdir -p "$STAGE/etc"
+cp ../etc/*.ch ../etc/*.tbl ../etc/win.prm ../etc/external_stations.txt ../etc/train_timetable_template.xlsx "$STAGE/etc/"
+OPTS+=(--add-data "$STAGE/etc:etc")
+for tool in win2sac_32 wchch_32; do
+  if [ -f "../tools/$tool" ]; then
+    OPTS+=(--add-binary "../tools/$tool:tools")
+  else
+    echo "注意: tools/$tool がありません(アプリに入れずに続けます)"
+  fi
+done
 "$PYTHON" -m PyInstaller "${OPTS[@]}" "$NAME.py"
 
 # --- 配布用フォルダを作る(アプリの横に etc などを置く) ---
@@ -73,12 +87,9 @@ if [ "$MODE" = app ]; then
 else
   ditto "dist/$NAME" "$RELEASE"                 # 実行ファイルと _internal フォルダ
 fi
-ditto ../etc "$RELEASE/etc"
-ditto ../service_account "$RELEASE/service_account"
-ditto ../tools "$RELEASE/tools"
-mkdir -p "$RELEASE/output"
-if [ -f ../output/history.json ]; then
-  cp ../output/history.json "$RELEASE/output/"
+# Googleドライブの鍵は、アプリの横の service_account にも置ける(メンテナンス画面で取り込むと、ユーザーの設定に入る)
+if [ -d ../service_account ]; then
+  ditto ../service_account "$RELEASE/service_account"
 fi
 
 # --- zip にまとめる(ditto は .app のリンクや属性を保ったまま圧縮できる) ---

@@ -20,7 +20,7 @@ from win_pipeline import tool_path
 from log_common import log_message
 
 CONFIG_FILE = app_paths.ETC_DIR / "external_stations.txt"
-DATA_DIR = app_paths.PROJECT_DIR / "v-net"
+DATA_DIR = app_paths.VNET_DIR
 CACHE_DIR = app_paths.OUTPUT_DIR / "vnet"
 # ZIP の名前(開始の日時と分数)
 ZIP_RE = re.compile(r"_(\d{12})_(\d+)\.zip$")

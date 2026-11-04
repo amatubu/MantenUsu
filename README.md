@@ -160,7 +160,7 @@ python3 scripts/UsuMantenViewer.py --locate-quakes batch_plots/quakes/quake_cand
  ┣ 📁 tools/                # win2sac_32・wchch_32 などの外部ツール(Git の管理外)
  ┣ 📁 service_account/      # Googleドライブの鍵と設定(Git の管理外)
  ┣ 📁 daily_zips/           # 日ごとのZIPファイル(Git の管理外)
- ┣ 📁 output/               # キャッシュ・履歴・保存した到着時刻(picks)(Git の管理外)
+ ┣ 📁 output/               # キャッシュ(Git の管理外。履歴と到着時刻(picks)は、今はユーザーの設定に置く)
  ┣ 📁 batch_plots/          # バッチ処理で保存した画像(Git の管理外)
  ┣ 📁 jma_hypocenter/       # 気象庁の震源リスト(日ごとのCSV、Git の管理外)
  ┣ 📁 v-net/                # ほかの機関の観測点の波形の ZIP(Git の管理外)
@@ -176,6 +176,22 @@ python3 scripts/UsuMantenViewer.py --locate-quakes batch_plots/quakes/quake_cand
  ┣ 📜 windows.md            # Windows の構築・ビルド手順
  ┗ 📜 mac.md                # Mac の構築・ビルド手順
 ```
+
+### ファイルの置き場所
+
+アプリが使うファイルは、次の4か所に分けて置きます（`scripts/app_paths.py`）。今の場所は、メンテナンス画面の「置き場所」タブで確かめられます。
+
+| 種類 | 中身 | Mac | Windows |
+|---|---|---|---|
+| アプリに付く物（変更しない） | `tools`、`etc` の初期値（win.prm・*.ch・*.tbl・external_stations.txt） | 開発中はプロジェクトのフォルダ、ビルドしたアプリは `.app` の中 | 開発中はプロジェクトのフォルダ、ビルドしたアプリは exe の横の `_internal` |
+| ユーザーの設定（小さい・作り直せない） | 画面の設定（`ps_picker_params.json`・`hypocenter_params.json`）、実行履歴（`history.json`）、手で直した到着時刻（`picks`）、洞爺駅の時刻表（`etc/train_timetable.csv`）、Googleドライブの鍵（`service_account`）、`etc` の上書き、データフォルダの設定（`settings.json`） | `~/Library/Application Support/UsuMantenViewer` | `%APPDATA%\UsuMantenViewer` |
+| データフォルダ（大きい） | `daily_zips`、`output`（キャッシュ）、`v-net`、`jma_hypocenter`、`batch_plots` | 初期値は `~/Library/Application Support/UsuMantenViewer/data` | 初期値は `%LOCALAPPDATA%\UsuMantenViewer\data` |
+| 消えてもよいキャッシュ | 地図のタイル、走時、フォント一覧 | `~/Library/Caches/UsuMantenViewer` | `%LOCALAPPDATA%\UsuMantenViewer` |
+
+- **データフォルダ**は数百 GB になることがあるので、外付けディスクなどに変えられます（メンテナンス画面の「置き場所」→「データフォルダを変える…」。アプリを開き直すと新しい場所を使います。今のデータは移さないので、必要なら中身を移します）。
+- **`etc` の上書き**：ユーザーの設定の `etc` に同じ名前のファイルを置くと、アプリに付く物より優先します（`manten_ch.tbl` の感度を変えたいときなど）。
+- **Googleドライブの鍵**は、ユーザーの設定の `service_account` にあればそれを、無ければアプリ（プロジェクトのフォルダ）の横の `service_account` を使います。メンテナンス画面の「Googleドライブの鍵ファイルを取り込む…」で、ユーザーの設定にコピーできます。
+- **前の版からの移り方**：最初に起動したとき、まだ設定が無く、プロジェクトのフォルダ（ビルドしたアプリなら、アプリのあるフォルダ）に前の `output`・`daily_zips` があれば、そこをデータフォルダとして使います（大きいデータは移しません）。小さい設定（`output/picks`・`output/history.json`・`etc` の画面の設定と時刻表・`service_account`）は、ユーザーの設定へ写します（元のファイルは残します。写すのは一度だけ）。
 
 ---
 
@@ -286,21 +302,21 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 
 ## 別のマシンに移すとき
 
-Git で管理していないデータは、`git clone` やアプリのビルドだけでは移りません。次のフォルダ・ファイルを、移す先のプロジェクトのフォルダ（ビルドしたアプリなら、アプリのあるフォルダ）の同じ場所にコピーします。
+Git で管理していないデータは、`git clone` やアプリのビルドだけでは移りません。次のフォルダ・ファイルを、移す先の同じ場所（ユーザーの設定か、データフォルダ。「[ファイルの置き場所](#ファイルの置き場所)」を参照）にコピーします。下の「まとめて zip にする」を使うと、まとめて移せます。
 
 | 場所 | 中身 | 無いとどうなるか |
 |---|---|---|
-| `output/picks`（と `picks_` で始まるバックアップ） | 震源推定の画面で手で直した到着時刻 | **作り直せません** |
-| `output/history.json` | 実行履歴 | 履歴が空になる |
-| `etc/train_timetable.csv` ※ | 洞爺駅の時刻表（JR の時刻表から手で作ったもの） | 列車の重ね表示・照合が使えない |
-| `etc/ps_picker_params.json`・`etc/hypocenter_params.json` | 画面の設定 | 既定の設定に戻る |
+| ユーザーの設定の `picks`（とデータフォルダの `output/picks_` で始まる前の版のバックアップ） | 震源推定の画面で手で直した到着時刻 | **作り直せません** |
+| ユーザーの設定の `history.json` | 実行履歴 | 履歴が空になる |
+| ユーザーの設定の `etc/train_timetable.csv` ※ | 洞爺駅の時刻表（JR の時刻表から手で作ったもの） | 列車の重ね表示・照合が使えない |
+| ユーザーの設定の `ps_picker_params.json`・`hypocenter_params.json` | 画面の設定 | 既定の設定に戻る |
 | `v-net/*.zip` ※ | ほかの機関の観測点の波形（防災科研のページからダウンロードした、防災科研・気象庁のデータ） | もう一度ダウンロードが必要 |
 | `output/quake_rms` | 地震の候補の検出に使う揺れの大きさ（RMS） | 作り直すと1日あたり数十秒〜数分。無い日は1時間スタック画面の「地震」で候補の帯が出ない |
 | `output/quake_features` | 地震の候補ごとの波形の解析結果 | 次の検出で解析し直す（全期間で1分前後） |
 | `jma_hypocenter` | 気象庁の震源リスト | メンテナンス画面で取り直せる（1日あたり2秒以上） |
 | `batch_plots/quakes/*.csv` | 地震の候補の一覧・見逃し?の一覧 | 地震の候補を探す処理で作り直せる |
 | `daily_zips` | 観測の日ごとの ZIP（とても大きい） | 必要な日を Googleドライブから自動でダウンロードする |
-| `service_account` | Googleドライブの鍵 | Googleドライブからダウンロードできない（[windows.md](windows.md) を参照） |
+| ユーザーの設定の `service_account` | Googleドライブの鍵 | Googleドライブからダウンロードできない（[windows.md](windows.md) を参照） |
 
 ※ **再配布できません。** 時刻表は JR の時刻表から、v-net の ZIP は防災科研・気象庁の観測データから作ったものなので、人に渡したり公開したりしないでください。自分のバックアップや、自分で別のマシンに環境を作るときだけコピーします。
 
@@ -315,7 +331,12 @@ Git で管理していないデータは、`git clone` やアプリのビルド�
 - `--private` を付けると、再配布できないもの（時刻表・v-net の ZIP）も入れ、名前を `UsuMantenViewer-data-private_YYYYMMDD.zip` にします。自分のバックアップや、自分で別のマシンに環境を作るとき用で、人には渡しません。
 - `--with-zips` を付けると `daily_zips` も入れます（数十 GB になります）。
 
-移す先のプロジェクトのフォルダ（ビルドしたアプリなら、アプリのあるフォルダ）で展開します。同じ名前のファイルは上書きされるので、移す先で手で直した到着時刻などがあるときは、先にバックアップしてください。`service_account` は人に渡る zip に入れないよう、別に移します。
+zip の中は、ユーザーの設定（`user/`）とデータフォルダ（`data/`）に分けて入れます。移す先では、展開もこのスクリプトで行います。
+
+- Mac: `./pack_data_mac.sh --unpack UsuMantenViewer-data_YYYYMMDD.zip`
+- Windows: `pack_data_win.bat --unpack UsuMantenViewer-data_YYYYMMDD.zip`
+- 移す先のユーザーの設定とデータフォルダ（メンテナンス画面の「置き場所」で決めた場所）に展開します。同じ名前のファイルがあるときは残します（`--overwrite` を付けると上書きします）。前の版で作った zip（プロジェクトのフォルダからの相対パスのもの）も、新しい置き場所に振り分けて展開します。
+- `service_account` は人に渡る zip に入れないよう、別に移します（移す先でメンテナンス画面の「Googleドライブの鍵ファイルを取り込む…」）。
 
 ---
 
@@ -372,7 +393,6 @@ Git で管理していないデータは、`git clone` やアプリのビルド�
 `scripts/UsuMantenViewer.py` の先頭に一覧があります。主な未対応の項目:
 
 - WINファイル・SACファイルのキャッシュ処理の最適化
-- 変更しないファイル（`tools`・`service_account`・`etc` の設定ファイル）はアプリと一緒に置き、ユーザーの操作で作られる・変わるファイル（`output`・`daily_zips`・`batch_plots`・`etc/ps_picker_params.json`・`etc/hypocenter_params.json`）はユーザープロファイル配下に置く
 - 外部ツール（`win2sac_32`・`wchch_32`）のビルド方法の記載（Mac は gcc（Xcode のコマンドラインツール）、Windows は MinGW の gcc で、それぞれの Makefile を使ってビルドする。どちらもそのままではビルドできないため、当てているパッチをリポジトリに追加する）
 - 震源推定の画面の使い方のドキュメント（とくに遠い地震: 表示の範囲を合わせて S波を手で指定する手順、距離による大森係数 k の目安。S-P時間から走時表で距離を求める方法も検討）
 - 地震の候補の震源（`--locate-quakes`）で「近い地震」と判定する基準を厳しくする（到着時刻が少ないと、残差が小さくても位置が当てにならないため、「到着時刻が6つ以上」のような条件を足す）
