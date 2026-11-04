@@ -25,6 +25,7 @@ import app_paths
 import jma_match
 import pick_store
 import external_stations
+import magnitude
 from obspy.geodetics import gps2dist_azimuth
 
 # 設定ファイル(P波・S波検出とは別に保存する)
@@ -133,6 +134,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
   # 時刻の基準(全拠点で最も早い記録開始時刻)。到着時刻はここからの秒で扱う
   ref_time = min(tr.stats.starttime for tr in traces.values())
   start_str = ref_time.strftime("%Y-%m-%d %H:%M:%S")
+  # 推定マグニチュードに使う、満点の拠点の上下動(帯域を通して cm/s にしたもの)
+  mag_traces = magnitude.filtered_traces(traces)
 
   # 検出に関わる線の色(P波・S波検出と同じく、P波=赤・S波=マゼンタ。手で直した時刻はオレンジ・紫の実線)
   # 気象庁の震源リストの地震(震央・到達見込み)は青緑
@@ -464,21 +467,28 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
       lines.append(f"  発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒")
       if loc["rms"] > MAX_LOCAL_RMS:
         lines.append("  ※残差が大きく、遠い地震か、到着時刻の検出がずれています")
+        if res.get("far") is None:
+          lines.append("  ※推定 M: 震源が当てにならないため求めません")
+      else:
+        lines.append("  " + magnitude_text(loc))
+
+    # 気象庁の震源リストの地震(最初の P波に合うもの)。遠い地震の推定マグニチュードでも使う
+    p_abs = t_ref + timedelta(seconds=t_first) if t_first is not None else None
+    jma_text, q = jma_match.window_summary(jma_hits, jma_available, t_ref, p_abs, wide=True)
+    state["jma"] = q
 
     far = res.get("far")
     if far is not None:
       lines.append(f"◆遠い地震として(到来方向と S-P時間から): 距離 {far['distance']:.0f} km"
                    f"(S-P {far['sp']:.1f} 秒 × k {sliders['omori_k'].val:.1f})")
       lines.append(f"  震央: 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
+      lines.append("  " + magnitude_far_text(far, t_first, q))
     elif res.get("azimuth") is not None and (loc is None or loc["at_edge"]):
       # 残差が大きいだけで S-P時間が短いときは、近い地震の検出のずれなので、この案内は出さない
       lines.append(f"◆遠い地震として: {WARN_MARK}S波の到着時刻が必要です")
       lines.append("  ※「S波を探す範囲」を S-P時間より長くしてください")
 
     # 気象庁の震源リストの地震(最初の P波に合うものを選ぶ)と、推定した結果との比較
-    p_abs = t_ref + timedelta(seconds=t_first) if t_first is not None else None
-    jma_text, q = jma_match.window_summary(jma_hits, jma_available, t_ref, p_abs, wide=True)
-    state["jma"] = q
     lines += ["◆" + jma_text[0]] + jma_text[1:]
     if q is not None:
       if loc is not None and not loc["at_edge"] and loc["rms"] <= MAX_LOCAL_RMS:
@@ -493,6 +503,35 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True):
                    f"  推定した震央との距離: {dist_m / 1000:.0f} km")
         lines.append(text)
     return "\n".join(lines)
+
+  # 推定マグニチュードの行(満点の拠点の最大振幅と震源距離から。magnitude.py)
+  #   深さが上限だけ決まる浅い震源は、深さの範囲の中ほどで震源距離を計算する
+  def magnitude_text(loc):
+    depth = loc["depth"]
+    if loc.get("at_top") and loc.get("depth_max") is not None:
+      depth = (loc["depth_min"] + loc["depth_max"]) / 2
+    distances = {nm: float(np.sqrt((loc["x"] - xyz[nm][0]) ** 2 + (loc["y"] - xyz[nm][1]) ** 2 + (depth + xyz[nm][2]) ** 2))
+                 for nm in mag_traces}
+    origin = ref_time + loc["origin"]
+    m, values = magnitude.estimate(mag_traces, origin - magnitude.SIGNAL_BEFORE, origin + magnitude.SIGNAL_AFTER, distances)
+    return magnitude_line(m, values)
+
+  # 遠い地震の推定マグニチュードの行(大森公式の距離を、どの拠点にも同じ震源距離として使う)
+  #   最大振幅は、最初の P波の少し前から表示している範囲の終わりまでで測る(S波が範囲の外なら小さく出る)
+  #   S波の検出がずれると距離も外れるので、合う震源リストの地震が MAX_DISTANCE より遠いときも求めない
+  def magnitude_far_text(far, t_first, q):
+    if far["distance"] > magnitude.MAX_DISTANCE:
+      return f"※推定 M: 震源距離が {magnitude.MAX_DISTANCE:.0f} km を超えるため求めません"
+    if q is not None and np.hypot(q["dist_km"], q["深さ[km]"]) > magnitude.MAX_DISTANCE:
+      return f"※推定 M: 震源リストの地震が {magnitude.MAX_DISTANCE:.0f} km より遠いため求めません"
+    m, values = magnitude.estimate(mag_traces, ref_time + t_first - magnitude.SIGNAL_BEFORE, None,
+                                   {nm: far["distance"] for nm in mag_traces})
+    return magnitude_line(m, values) + ("(表示範囲の最大振幅)" if m is not None else "")
+
+  def magnitude_line(m, values):
+    if m is None:
+      return f"※推定 M: 求められません(揺れが雑音の{magnitude.MIN_SNR:g}倍を超える拠点がありません)"
+    return f"推定 M: {m:.1f}({len(values)}拠点の中央値。±{magnitude.UNCERTAINTY:g} 程度の推計)"
 
   # 結果の欄に表示する(1行ずつ)
   #   「◆」で始まる行は、「: 」までを見出し(色付きの太字)、残りを値(黒)にする
