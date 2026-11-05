@@ -176,14 +176,16 @@ build_win.bat
 - PyInstaller で `scripts/dist/UsuMantenViewer/` にアプリ(`UsuMantenViewer.exe` と `_internal` フォルダ)を作る
   - `--collect-all` で obspy・matplotlib・Googleドライブ用のライブラリのデータも含める
   - `--debug noarchive` でモジュールを書庫にまとめずにファイルのまま置く。obspy はカラーマップのデータを自分のソースファイルの場所から探すため、これが無いと起動時に `KeyError: 'viridis'` で止まる
-- 同じフォルダに `etc`・`service_account`・`tools`・`output\history.json` をコピーする
+- `etc` の設定ファイル（Git で管理しているもの）と `tools` の外部ツールを、アプリの中に入れる
+- 同じフォルダに `service_account` をコピーし、操作マニュアルの PDF（`UsuMantenViewer_manual.pdf`）を作って入れる（`scripts/build_manual.py`。`markdown` パッケージと Edge が必要で、作れなければ入れずに続ける）
 - フォルダ全体をプロジェクトのルートフォルダの `UsuMantenViewer.zip` にまとめる
 
 ### 配布・実行時の注意
 
 - 別のマシンに移すときは、手で直した到着時刻・RMS・震源リストなど Git の管理外のデータも移します。まとめて zip にする `pack_data_win.bat` と、コピーするフォルダの一覧は、README の「別のマシンに移すとき」を参照してください。
 
-- アプリは、`UsuMantenViewer.exe` と同じフォルダにある `etc`・`tools`・`output`・`daily_zips`・`service_account` を使います（`scripts/app_paths.py`）。zip を展開したフォルダの構成は変えないでください。
+- 外部ツール（`tools`）と設定ファイルの初期値（`etc`）は、アプリの中（`_internal`）に入っています。ユーザーの設定（画面の設定・履歴・地震リスト・手で直した到着時刻・Googleドライブの鍵など）は `%APPDATA%\UsuMantenViewer`、大きいデータ（`daily_zips`・キャッシュなど）はデータフォルダ（初期値は `%LOCALAPPDATA%\UsuMantenViewer\data`）に置きます（`scripts/app_paths.py`）。`UsuMantenViewer.exe` の横に `output` か `daily_zips` があるときは（前の版の構成）、そこをデータフォルダとして使います。データフォルダの場所は、メンテナンス画面の「置き場所」で確かめ・変えられます。
+- Googleドライブの鍵は、初回は `UsuMantenViewer.exe` の横の `service_account` を使います。メンテナンス画面の「置き場所」の「Googleドライブの鍵ファイルを取り込む…」でユーザーの設定にコピーしておくと、アプリをどこに置いても使えます。
 - `daily_zips` は配布物に含めていません。必要な日付のZIPファイルは、初回の表示時にGoogleドライブからダウンロードされます。
 - ビルド直後や配布先での**最初の起動だけ**、Matplotlib のフォント一覧の作成などで時間がかかります。2回目以降は数秒で起動します（フォント一覧は `%LOCALAPPDATA%\UsuMantenViewer\matplotlib` に保存されます）。
 - zip には `service_account`（Googleドライブの鍵）が含まれるため、扱いに注意してください。

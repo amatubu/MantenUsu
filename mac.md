@@ -109,7 +109,8 @@ python3 scripts/UsuMantenViewer.py
 - PyInstaller でアプリを作る
   - `--collect-all` で obspy・matplotlib・Googleドライブ用のライブラリのデータも含める
   - `--debug noarchive` でモジュールを書庫にまとめずにファイルのまま置く。obspy はカラーマップのデータを自分のソースファイルの場所から探すため、これが無いと起動時に `KeyError: 'viridis'` で止まる
-- `scripts/dist/UsuMantenViewer-mac/` に、アプリと `etc`・`tools`・`service_account`・`output/history.json` を並べる
+- `etc` の設定ファイル（Git で管理しているもの）と `tools` の外部ツールを、アプリの中に入れる
+- `scripts/dist/UsuMantenViewer-mac/` に、アプリと `service_account`、操作マニュアルの PDF（`UsuMantenViewer_manual.pdf`）を並べる（マニュアルは `scripts/build_manual.py` で作る。`markdown` パッケージと Chrome か Edge が必要で、無ければ入れずに続ける）
 - そのフォルダをプロジェクトのフォルダの `UsuMantenViewer-mac.zip` にまとめる（`.app` の中身を崩さないよう `ditto` を使う）
 
 ビルドの生成物（`scripts/build`、`scripts/dist`、`*.spec`、zip）は Git の管理外です。
@@ -120,7 +121,8 @@ python3 scripts/UsuMantenViewer.py
 
 - 別のマシンに移すときは、手で直した到着時刻・RMS・震源リストなど Git の管理外のデータも移します。まとめて zip にする `./pack_data_mac.sh` と、コピーするフォルダの一覧は、README の「別のマシンに移すとき」を参照してください。
 
-- **フォルダの構成**: アプリは、自分の横（`.app` 形式なら `.app` の横）にある `etc`・`tools`・`output`・`daily_zips`・`service_account` を使います（`scripts/app_paths.py`）。zip を展開したフォルダの構成は変えないでください。
+- **フォルダの構成**: 外部ツール（`tools`）と設定ファイルの初期値（`etc`）は、アプリの中に入っています。ユーザーの設定（画面の設定・履歴・地震リスト・手で直した到着時刻・Googleドライブの鍵など）は `~/Library/Application Support/UsuMantenViewer`、大きいデータ（`daily_zips`・キャッシュなど）はデータフォルダ（初期値は `~/Library/Application Support/UsuMantenViewer/data`）に置きます（`scripts/app_paths.py`）。アプリの横に `output` か `daily_zips` があるときは（前の版の構成）、そこをデータフォルダとして使います。データフォルダの場所は、メンテナンス画面の「置き場所」で確かめ・変えられます。
+- **Googleドライブの鍵**: 初回は、アプリの横の `service_account` を使います。メンテナンス画面の「置き場所」の「Googleドライブの鍵ファイルを取り込む…」でユーザーの設定にコピーしておくと、アプリをどこに置いても使えます。
 - **最初の起動は遅い**: ビルド直後や配布先での最初の1回は、Matplotlib のフォント一覧の作成と macOS による新しいファイルのチェックで、数十秒〜1分半ほどかかります。2回目以降は数秒で起動します（フォント一覧は `~/Library/Caches/UsuMantenViewer/matplotlib` に保存されます）。
 - **ダウンロードした zip から使う場合**: 署名していないアプリと `tools` の外部ツールを macOS が止めることがあります。展開したフォルダで次のコマンドを実行して、隔離情報を外してください。
 

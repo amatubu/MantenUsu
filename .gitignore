@@ -14,6 +14,7 @@ scripts/*.spec
 UsuMantenViewer*.zip
 etc/hypocenter_params.json
 UsuMantenViewer.app
+UsuMantenViewer-mac/
 *.pdf
 *.pptx
 ._*
