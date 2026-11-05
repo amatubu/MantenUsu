@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import obspy
 
 import app_paths
+import cache_manager
 from win_pipeline import tool_path
 from log_common import log_message
 
@@ -124,7 +125,7 @@ def _convert(zip_path, stations, log=log_message):
     return None
   work = out_dir / "work"
   if work.exists():
-    shutil.rmtree(work)
+    cache_manager.remove_tree(work)
   work.mkdir(parents=True)
   try:
     with zipfile.ZipFile(zip_path) as z:
@@ -204,13 +205,14 @@ def zip_status():
 
 # 変換済みの SAC(output/vnet)の (ファイル数, 合計の大きさ[バイト])
 def cache_size():
-  files = [f for f in CACHE_DIR.glob("**/*") if f.is_file()] if CACHE_DIR.exists() else []
+  files = ([f for f in CACHE_DIR.glob("**/*") if f.is_file() and not cache_manager.is_appledouble(f.name)]
+           if CACHE_DIR.exists() else [])
   return len(files), sum(f.stat().st_size for f in files)
 
 # 変換済みの SAC を消す(ZIP から変換し直せる)
 def clear_cache():
   if CACHE_DIR.exists():
-    shutil.rmtree(CACHE_DIR)
+    cache_manager.remove_tree(CACHE_DIR)   # 外付けドライブの ._ ファイルが先に消えてもエラーにしない
 
 # まだ変換していない ZIP を変換する
 #   log・cancelled・on_progress ... jma_hypocenter.fetch_days と同じ

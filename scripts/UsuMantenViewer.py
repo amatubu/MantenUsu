@@ -148,6 +148,11 @@ warnings.filterwarnings(
 #     (画面からは時間がかかりすぎるので、バッチ処理だけ。--dry-run で件数と大きさを確かめられる)
 # [完了]29. 操作マニュアル(docs/manual/manual.md。画面イメージ入り)を作り、ビルドのときに PDF にして zip に入れる
 #     (build_manual.py。Markdown → HTML → Chrome・Edge の印刷で PDF。画面イメージはスクリーンショットを docs/manual/images に置く)
+# [完了]30. キャッシュの整理(cache_manager.py)で、Mac が外付けドライブに作る付随ファイル(._ で始まるファイル)を対象から外す
+#     外付けドライブ(exFAT など)では、ファイルを消すと macOS が対の ._ ファイルも消すため、一覧に入れておいた
+#     ._ ファイルを消そうとしてエラーになっていた。また、._xxx.win を WIN ファイルとして数えていた(classify)
+#     集計・削除の対象から ._ を外し、すでに消えたファイル・フォルダの中身は飛ばすようにした
+#     (ほかの機関の観測点の変換済みの SAC を消すときも同じ。tests/test_cache_manager.py で外付けドライブの動きを再現)
 
 # クラス定義
 class MantenUsuSeismographApp:

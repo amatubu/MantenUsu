@@ -3,6 +3,7 @@
 from fnmatch import fnmatch
 import os
 import shutil
+import sys
 
 import win_pipeline
 
@@ -14,6 +15,32 @@ OUTPUT_KINDS = [
   ("sac",        "SACファイル"),
 ]
 
+
+# Mac が外付けドライブ(exFAT など)に作る付随ファイル(._ で始まる。中身はファイルの属性で、WIN や SAC ではない)か
+#   外付けドライブでは、ファイルを消すと macOS が対の ._ ファイルも消す。そのため、集計にも削除の対象にも入れない
+#   (先に一覧にしておいた ._ ファイルを消そうとすると、もう無くてエラーになる)
+def is_appledouble(name):
+  return name.startswith(win_pipeline.APPLEDOUBLE_PREFIX)
+
+# ファイルを消す(すでに無ければ何もしない。対のファイルと一緒に macOS が消したときなど)
+#   戻り値 ... 消したら True
+def remove_file(path):
+  try:
+    os.remove(path)
+    return True
+  except FileNotFoundError:
+    return False
+
+# フォルダを中身ごと消す(途中で、すでに無くなったファイルがあっても続ける。理由は is_appledouble と同じ)
+def remove_tree(path):
+  def ignore_missing(func, p, exc):
+    error = exc if isinstance(exc, BaseException) else exc[1]
+    if not isinstance(error, FileNotFoundError):
+      raise error
+  if sys.version_info >= (3, 12):
+    shutil.rmtree(path, onexc=ignore_missing)
+  else:
+    shutil.rmtree(path, onerror=ignore_missing)
 
 # 容量を読みやすい単位(B, KB, MB, GB, TB)の文字列にする
 def format_size(size_bytes):
@@ -34,16 +61,19 @@ def total_size(files):
 def collect_files(root, pattern="*", keep=()):
   keep = {p.resolve() for p in keep}
   return [p for p in root.glob(f"**/{pattern}")
-          if p.is_file() and p.resolve() not in keep]
+          if p.is_file() and not is_appledouble(p.name) and p.resolve() not in keep]
 
 # ファイルをまとめて削除する
 def delete_files(files):
   for p in files:
-    p.unlink()
+    remove_file(p)
 
 
 # output フォルダ内のファイル名から種類(OUTPUT_KINDS のキー、または "other")を返す
+#   Mac の付随ファイル(._ で始まる)は "other"(._xxx.win も WIN ファイルとして数えない)
 def classify(name):
+  if is_appledouble(name):
+    return "other"
   if name.endswith(win_pipeline.WIN_SUFFIX):
     if name.startswith((win_pipeline.COMBINED_PREFIX, win_pipeline.CORRECTED_PREFIX)):
       return "merged_win"
@@ -110,7 +140,8 @@ def delete_output_kinds(root, kinds, on_progress=None, cancelled=lambda: False):
     for path, name, _entry in _walk_files(d):
       kind = classify(name)
       if kind in kinds:
-        os.remove(path)
+        if not remove_file(path):
+          continue
         deleted += 1
         if deleted % 100 == 0:
           if cancelled():
@@ -120,5 +151,5 @@ def delete_output_kinds(root, kinds, on_progress=None, cancelled=lambda: False):
       elif kind != "other":
         has_data = True
     if not has_data:
-      shutil.rmtree(d)
+      remove_tree(d)
   return deleted
