@@ -1,0 +1,5 @@
+# 開発用(テスト)に必要なライブラリ。アプリ・ビルドには入れない
+#   インストール: python3 -m pip install -r requirements-dev.txt
+#   テストの実行: python3 -m pytest(プロジェクトのフォルダで。README の「テスト」を参照)
+-r requirements.txt
+pytest>=8.0                     # 9.2.0

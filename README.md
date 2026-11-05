@@ -229,6 +229,7 @@ python3 scripts/UsuMantenViewer.py --locate-quakes batch_plots/quakes/quake_cand
 ```text
 📦 MantenUsu/
  ┣ 📁 scripts/              # スクリプト(下の「スクリプト一覧」を参照)
+ ┣ 📁 tests/                # 自動テスト(下の「テスト」を参照)。baseline/ は実データのテストの基準
  ┣ 📁 etc/                  # win2sac 用の設定・チャンネル定義ファイル
  ┣ 📁 tools/                # win2sac_32・wchch_32 などの外部ツール(Git の管理外)
  ┣ 📁 service_account/      # Googleドライブの鍵と設定(Git の管理外)
@@ -242,6 +243,8 @@ python3 scripts/UsuMantenViewer.py --locate-quakes batch_plots/quakes/quake_cand
  ┣ 📁 reports/              # 発表用のスライドなど(Git の管理外)
  ┣ 📜 requirements.txt      # 実行に必要なライブラリ
  ┣ 📜 requirements-build.txt # ビルドに必要なライブラリ(PyInstaller を含む)
+ ┣ 📜 requirements-dev.txt  # テストに必要なライブラリ(pytest を含む)
+ ┣ 📜 pytest.ini            # テストの設定
  ┣ 📜 start_env.bat         # Windows: conda 環境を有効にしたコマンドプロンプトを開く
  ┣ 📜 build_win.bat         # Windows: ビルド
  ┣ 📜 build_mac.sh          # Mac: ビルド
@@ -398,6 +401,32 @@ zip には、操作マニュアルの PDF（`UsuMantenViewer_manual.pdf`）も�
 ```bash
 python3 scripts/build_manual.py
 ```
+
+---
+
+## テスト
+
+計算の部分（震源と判定、走時表、地震リストの取り込み、WIN → SAC の変換など）の自動テストが `tests` にあります。機能を足したり直したりしたあとに走らせて、前の結果が変わっていないか（デグレードしていないか）を確かめます。画面の操作はテストしていないので、これまでどおりアプリで確かめます。
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest
+```
+
+- プロジェクトのフォルダで実行します（Windows は `start_env.bat` で開いたコマンドプロンプトで、`python3` を `python` に読み替えます）。全部で約3分です。
+- `python3 -m pytest -m "not realdata"` で、データを使わないテストだけを走らせます（約20秒）。
+- 結果は、通ったテストが `.`、失敗したテストが `F`、飛ばしたテストが `s` で表示され、最後に件数が出ます。失敗したときは、どのテストのどの値が違ったかが表示されます。
+
+| ファイル | 内容 | 必要なデータ |
+|---|---|---|
+| `test_hypocenter.py` | 計算で作った到着時刻から、震源の位置・深さ・発生時刻と判定（近い地震・残差大・到着時刻少・遠い地震・決まらない）が正しく出るか。到来方向、遠い地震の距離（走時表・大森公式）、深さの表示 | 不要 |
+| `test_sp_distance.py` | 走時表の距離（茨城県南部の地震の 718 km など） | 不要 |
+| `test_quake_list.py` | 地震リストの取り込み（CSV の2つの形式）・置き換え（空の値は前の値を残す）・外した地震の扱い・保存、波形を表示する範囲 | 不要（本物の地震リストは書き換えない） |
+| `test_win_pipeline.py` | ZIP の日付の決め方、WIN ファイルの日時の読み取り・まとめ方・消し方、チャンネル表が変わったときの作り直し | 不要 |
+| `test_realdata.py` | WIN → SAC の変換とチャンネルの読み替えの結果（SAC ファイルのハッシュ値）。有珠山リストの24件と、判定の決まり方を確かめる3件の震源・判定 | `daily_zips`・`batch_plots/quakes` の CSV・`tools`。無ければ飛ばす |
+
+- **実データのテスト**（`test_realdata.py`）は、今の結果を基準（`tests/baseline/*.json`）として記録しておき、それと比べます。観測データは再配布できないので、基準には数値とハッシュ値だけを記録しています。震源推定の画面で保存した到着時刻（ユーザーの設定の `picks`）も使うので、到着時刻を手で直したときも基準と変わります。
+- 計算の方法を意図して変えたとき（判定の基準を変えた、到着時刻を直したなど）は、`python3 -m pytest -m realdata --update-baseline` で基準を作り直し、`git diff tests/baseline` で変わった値を確かめてからコミットします。
 
 ---
 

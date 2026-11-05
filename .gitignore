@@ -26,3 +26,7 @@ v-net/
 scripts/vnet_bookmarklet.js
 scripts/build_res/
 docs/manual/_build/
+
+# テスト(pytest)の作業ファイル
+.pytest_cache/
+tests/__pycache__/
