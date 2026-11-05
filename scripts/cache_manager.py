@@ -1,5 +1,6 @@
 # cache_manager.py
 # キャッシュ(output フォルダ・daily_zips フォルダ)の集計と削除
+from concurrent.futures import ThreadPoolExecutor
 from fnmatch import fnmatch
 import os
 import shutil
@@ -90,6 +91,11 @@ def classify(name):
 #   quake_features ... 地震の候補ごとの波形の解析結果(quake_detect.py)。作り直すのに時間がかかるので消さない
 KEEP_DIRS = {"picks", "quake_rms", "vnet", "quake_features"}
 
+# ファイルを消すときに、同時に動かす数
+#   Mac で外付けドライブ(exFAT)のファイルを消すと、1つに 40 ms ほどかかる(macOS の exFAT の処理のため。
+#   ._ ファイルも一緒に消える)。いくつか同時に消すと、1.5倍ほど速くなる(試した範囲では 8 が最も速かった)
+DELETE_WORKERS = 8
+
 # output フォルダの下の各フォルダ(期間ごと・1時間ごと)を返す。直下のファイル(履歴など)と KEEP_DIRS は含めない
 def _cache_dirs(root):
   with os.scandir(root) as it:
@@ -115,6 +121,8 @@ def scan_output(root, on_progress=None, cancelled=lambda: False):
   count = 0
   for d in _cache_dirs(root):
     for _path, name, entry in _walk_files(d):
+      if is_appledouble(name):
+        continue   # Mac の付随ファイルは数えない(途中の件数にも入れない)
       st = stats[classify(name)]
       st[0] += 1
       st[1] += entry.stat(follow_symlinks=False).st_size
@@ -133,23 +141,28 @@ def scan_output(root, on_progress=None, cancelled=lambda: False):
 #   on_progress ... 途中経過を受け取る関数(それまでに削除したファイル数)。100件ごとに呼ぶ
 #   cancelled   ... 中止するときに True を返す関数(途中まで削除した状態で終わる)
 #   戻り値       ... 削除したファイル数
+#   消すのは DELETE_WORKERS 個ずつ同時に行う(フォルダごとに、消すファイルを集めてから)
 def delete_output_kinds(root, kinds, on_progress=None, cancelled=lambda: False):
   deleted = 0
-  for d in _cache_dirs(root):
-    has_data = False   # WINファイルかSACファイルが残っているか
-    for path, name, _entry in _walk_files(d):
-      kind = classify(name)
-      if kind in kinds:
-        if not remove_file(path):
-          continue
-        deleted += 1
-        if deleted % 100 == 0:
-          if cancelled():
-            return deleted
-          if on_progress:
-            on_progress(deleted)
-      elif kind != "other":
-        has_data = True
-    if not has_data:
-      remove_tree(d)
+  with ThreadPoolExecutor(DELETE_WORKERS) as pool:
+    for d in _cache_dirs(root):
+      if cancelled():
+        break
+      targets = []
+      has_data = False   # WINファイルかSACファイルが残っているか
+      for path, name, _entry in _walk_files(d):
+        kind = classify(name)
+        if kind in kinds:
+          targets.append(path)
+        elif kind != "other":
+          has_data = True
+      # 消す数が多いフォルダでも、途中で中止できるよう 100件ずつ
+      for i in range(0, len(targets), 100):
+        if cancelled():
+          return deleted
+        deleted += sum(pool.map(remove_file, targets[i:i + 100]))
+        if on_progress:
+          on_progress(deleted)
+      if not has_data:
+        remove_tree(d)
   return deleted

@@ -80,6 +80,14 @@ def remove_wins(dest_dir):
       pass
   return removed
 
+# 作業用のフォルダで作った SACファイルと、変換に使ったチャンネル表のコピーを dest_dir に移す(同じ名前は置き換える)
+#   (チャンネル表のコピーは、あとで find_current_sacs がチャンネル表の変更を確かめるのに使う)
+def move_results(work_dir, dest_dir):
+  dest_dir.mkdir(parents=True, exist_ok=True)
+  for path in find_sacs(work_dir) + [work_dir / CHANNEL_TABLE]:
+    if path.exists():
+      shutil.move(str(path), str(dest_dir / path.name))
+
 # OSに合わせた外部ツールのパス(Windowsなら .exe を付ける)
 def tool_path(tools_dir, name):
   return tools_dir / (f"{name}.exe" if sys.platform.startswith("win") else name)

@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk  # GUIの拡張ツール(ttk = T
 import warnings
 import traceback
 import re
+import tempfile
 
 import app_paths                       # matplotlib より先に読み込む(ビルドしたアプリ向けの設定のため)
 import numpy as np
@@ -764,19 +765,8 @@ class MantenUsuSeismographApp:
         self.add_history(start_str, end_str, title_str)
       return win
 
-    # --- Step 1: 抽出 (なければ実行) ---
-    # フォルダ内に結合前のWINファイルがあるかどうかを確認
-    # (キャッシュ整理で結合前のWINだけ消した場合などは、ZIPから取り出し直す)
-    existing_wins = win_pipeline.find_raw_wins(dest_dir)
-
-    if not existing_wins:
-      extracted_count = self.extract_win_files(start_dt, end_dt, dest_dir)
-      if extracted_count == 0:
-        return
-
-    # --- Step 2: 結合 ＆ SAC変換 ---
-    success = self.convert_wins_to_sacs(dest_dir)
-    if not success:
+    # --- ZIP から取り出して SAC に変換する(作業用のフォルダで行い、SAC だけをキャッシュに置く) ---
+    if not self.prepare_sacs(start_dt, end_dt, dest_dir):
       return
 
     # --- 履歴に追加してプロット ---
@@ -799,12 +789,26 @@ class MantenUsuSeismographApp:
     # すでにSACがあれば何もしない(今のチャンネル表で変換したものだけ使う)
     if win_pipeline.find_current_sacs(dest_dir, self.etc_dir):
       return True
-    # 結合前のWINがなければZIPから抽出
-    if not win_pipeline.find_raw_wins(dest_dir):
-      if self.extract_win_files(start_dt, end_dt, dest_dir, show_dialog) == 0:
+    return self.prepare_sacs(start_dt, end_dt, dest_dir, show_dialog)
+
+  # ZIP から WINファイルを取り出して SACファイルに変換し、dest_dir(キャッシュ)に置く
+  #   取り出しと変換は、内蔵ディスクの一時フォルダ(OS の一時フォルダ)で行い、できた SACファイルだけを dest_dir に移す
+  #   (データフォルダが外付けドライブ(exFAT)のとき、Mac ではファイルを1つ消すのに 40 ms ほどかかる。
+  #    1時間分の WINファイル(約190個)をキャッシュの中で作って消すと、それだけで8秒ほどかかるため)
+  #   前の版のキャッシュで、dest_dir に結合前の WINファイルが残っていれば、それから変換する
+  #   戻り値 ... 用意できたら True
+  def prepare_sacs(self, start_dt, end_dt, dest_dir, show_dialog=True):
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if win_pipeline.find_raw_wins(dest_dir):
+      return self.convert_wins_to_sacs(dest_dir, show_dialog)
+    with tempfile.TemporaryDirectory(prefix="UsuMantenViewer_") as work:
+      work = Path(work)
+      if self.extract_win_files(start_dt, end_dt, work, show_dialog) == 0:
         return False
-    # SACに変換
-    return self.convert_wins_to_sacs(dest_dir, show_dialog)
+      if not self.convert_wins_to_sacs(work, show_dialog):
+        return False
+      win_pipeline.move_results(work, dest_dir)
+    return True
 
   # 1時間スタック波形表示の実行
   def execute_stack_pipeline(self):

@@ -85,3 +85,19 @@ def test_find_current_sacs_checks_channel_table(tmp_path):
 def test_tool_path():
   p = win_pipeline.tool_path(Path("tools"), "win2sac_32")
   assert p.name == ("win2sac_32.exe" if sys.platform.startswith("win") else "win2sac_32")
+
+
+def test_move_results(tmp_path):
+  # 作業用のフォルダで作った SAC とチャンネル表のコピーだけをキャッシュに移す(WIN は移さない)
+  work = tmp_path / "work"
+  dest = tmp_path / "dest"
+  work.mkdir()
+  touch(work / "1070432002_2608260858.win")
+  touch(work / "combined_1070432002.win")
+  touch(work / "Nizaemn.U.1070432002_sac", b"new")
+  touch(work / win_pipeline.CHANNEL_TABLE)
+  dest.mkdir()
+  touch(dest / "Nizaemn.U.1070432002_sac", b"old")   # 同じ名前は置き換える
+  win_pipeline.move_results(work, dest)
+  assert {p.name for p in dest.iterdir()} == {win_pipeline.CHANNEL_TABLE, "Nizaemn.U.1070432002_sac"}
+  assert (dest / "Nizaemn.U.1070432002_sac").read_bytes() == b"new"
