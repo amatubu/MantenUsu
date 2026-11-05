@@ -14,6 +14,17 @@ import app_paths
 import jma_match
 import pick_store
 from hypocenter import load_stations
+import sp_distance
+
+# S-P時間がこの秒数以上のときだけ、走時表(sp_distance.py)の震央距離も出す
+#   短いと、仮定した深さ(30 km)の影響が大きく、走時表の距離は当てにならない(有珠山付近の地震は大森公式で見る)
+TAUP_MIN_SP = 5.0
+
+# 結果の欄に足す、走時表の震央距離の行(大森係数 k は距離で変わるので、遠い地震はこちらが目安になる)
+def taup_text(sp):
+  if sp < TAUP_MIN_SP:
+    return ""
+  return f"\n走時表　 : 震央距離 {sp_distance.epicentral(sp):.0f} km(深さ {sp_distance.ASSUMED_DEPTH:.0f} km を仮定)"
 
 # ==========================================
 # 設定ファイル・プリセット
@@ -390,7 +401,7 @@ def plot_ps_arrival_time(st, return_to=None):
              f"S波到着　: {s_time:.2f} 秒\n"
              f"S-P時間　: {sp:.2f} 秒\n"
              f"大森係数 : {params['omori_k']:.1f} km/s\n"
-             f"震源距離 : {dist:.1f} km")
+             f"震源距離 : {dist:.1f} km" + taup_text(sp))
       # グラフタイトルを更新
       ax1.set_title(f"S-P時間: {sp:.2f} 秒 | 推定震源距離: {dist:.1f} km "
                     f"(k={params['omori_k']:.1f})", fontsize=11)
@@ -410,7 +421,8 @@ def plot_ps_arrival_time(st, return_to=None):
       if saved_s is not None:
         sp_saved = saved_s - saved_p
         msg += (f"  S波 {saved_s:.2f} 秒\n　S-P時間 {sp_saved:.2f} 秒  "
-                f"震源距離 {params['omori_k'] * sp_saved:.1f} km")
+                f"震源距離 {params['omori_k'] * sp_saved:.1f} km"
+                + (f"  走時表 {sp_distance.epicentral(sp_saved):.0f} km" if sp_saved >= TAUP_MIN_SP else ""))
     # 結果サマリを表示(気象庁の震源リストの地震を続ける)
     result_text.set_text(msg + "\n\n" + "\n".join(jma_lines))
     fig.canvas.draw_idle()
@@ -462,6 +474,8 @@ def plot_ps_arrival_time(st, return_to=None):
       log_message(f"S-P時間: {sp:.2f} s")
       log_message(f"推定震源距離: {params['omori_k'] * sp:.1f} km "
                   f"(大森係数 k={params['omori_k']})")
+      if sp >= TAUP_MIN_SP:
+        log_message(f"走時表の震央距離: {sp_distance.epicentral(sp):.0f} km(深さ {sp_distance.ASSUMED_DEPTH:.0f} km を仮定)")
     else:
       log_message("P波またはS波が検出されなかったため、距離を計算できませんでした。")
   btn_print.on_clicked(print_result)

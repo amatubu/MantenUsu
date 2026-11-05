@@ -29,7 +29,7 @@ import pick_store
 import external_stations
 # 判定(KIND_*)は震源推定の画面と共通(hypocenter.py)
 from hypocenter import (LocalProjection, pick_filtered, refine_p, pick_s, locate_event,
-                        LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT, MAX_LOCAL_RMS,
+                        LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, S_EXCLUDED_DEFAULT, MAX_LOCAL_RMS, far_method_text,
                         KIND_LOCAL, KIND_LOCAL_POOR, KIND_FAR, KIND_NONE,
                         depth_text, depth_short, depth_for_plot)
 from plot_common import NM_TO_CM
@@ -150,7 +150,8 @@ def locate_candidate(st, cand, stations, proj):
     sp = (q["s_time"] - q["p_time"]).total_seconds()
     if sp > FAR_SP_SECONDS:
       s_search = max(s_search, sp + S_SEARCH_MARGIN)
-  vp, vp_vs, k = LOCAL_VP, LOCAL_VP_VS, OMORI_K
+  # k ... 遠い地震の距離の大森係数。None なら走時表で求める(震源推定の画面で大森公式にして保存したときだけ k を使う)
+  vp, vp_vs, k = LOCAL_VP, LOCAL_VP_VS, None
   excluded, s_excluded = set(), set(S_EXCLUDED_DEFAULT)
 
   path, record = pick_store.find_record(t0, t1)
@@ -169,7 +170,9 @@ def locate_candidate(st, cand, stations, proj):
     s_picks = {nm: t for nm, t in s_picks.items() if nm in picks}
     excluded, s_excluded = set(record.get("excluded", [])), set(record.get("s_excluded", []))
     params = record.get("params", {})
-    vp, vp_vs, k = params.get("vp", vp), params.get("vp_vs", vp_vs), params.get("omori_k", k)
+    vp, vp_vs = params.get("vp", vp), params.get("vp_vs", vp_vs)
+    if params.get("far_omori"):
+      k = params.get("omori_k")
     s_search = params.get("s_search", s_search)
   else:
     # P波(短い STA/LTA で検出し、AIC 法で決め直す)
@@ -351,8 +354,8 @@ def check_title(cand, r):
     depth = f"深さ {depth_text(loc)}"
     line2 = f"震源 北緯 {r['lat']:.4f}° 東経 {r['lon']:.4f}° {depth}  残差 {loc['rms']:.3f} 秒"
   elif r["kind"] == KIND_FAR:
-    line2 = (f"遠い地震として: 到来方向 {r['azimuth']:.0f}°  距離 {far['distance']:.0f} km"
-             f"(S-P {far['sp']:.1f} 秒 × k {r.get('k', OMORI_K):g})  震央 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
+    line2 = (f"遠い地震として: 到来方向 {r['azimuth']:.0f}°  震央距離 {far['distance']:.0f} km"
+             f"({far_method_text(far)})  震央 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
   else:
     line2 = "震源は決まりませんでした(P波・S波の到着時刻が足りない)"
   q = cand["jma"]

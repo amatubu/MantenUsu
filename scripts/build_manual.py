@@ -49,7 +49,8 @@ h1 { font-size: 20pt; border-bottom: 3px solid #2c5f8a; padding-bottom: 6px; mar
 h2 { font-size: 15pt; color: #2c5f8a; border-bottom: 1px solid #c8d6e2; padding-bottom: 3px;
      margin-top: 0; break-before: page; }
 h3 { font-size: 12pt; margin-top: 1.4em; border-left: 4px solid #2c5f8a; padding-left: 8px; }
-h2, h3 { break-after: avoid; }
+h4 { font-size: 10.5pt; margin: 1.2em 0 0.4em; color: #2c5f8a; }
+h2, h3, h4 { break-after: avoid; }
 p, li { orphans: 2; widows: 2; }
 img { max-width: 100%; max-height: 120mm; display: block; margin: 8px auto; border: 1px solid #ddd; }
 .figure { break-inside: avoid; text-align: center; margin: 10px 0; }

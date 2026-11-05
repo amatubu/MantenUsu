@@ -5,6 +5,7 @@
 #   到来方向は P波の到着時刻だけから求める(遠い地震は位置が決まらないため)
 #   到着時刻(手で直したものを含む)とパラメータは「到着時刻を保存」で output/picks に保存し(pick_store.py)、
 #   同じ範囲を開いたときに読み込んで再現する
+import json
 from datetime import timedelta
 
 import numpy as np
@@ -15,7 +16,7 @@ from matplotlib.text import Annotation
 
 from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, locate_event,
                         pick_filtered, refine_p, pick_s, HORIZONTAL_RANGE,
-                        LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT,
+                        LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT, far_method_text,
                         MIN_OBSERVATIONS, MAX_LOCAL_RMS, depth_text)
 from plot_common import NM_TO_CM, get_component_color
 import gsi_tiles
@@ -48,6 +49,22 @@ SLIDER_SPECS = [
 # パラメータのデフォルト値(速度などは、地震の候補をまとめて計算する処理と同じ値。hypocenter.py を参照)
 DEFAULT_PARAMS = dict(p_sta=2.5, p_lta=10.0, p_thr=2.6, window=3.0, s_search=LOCAL_S_SEARCH, vp=LOCAL_VP,
                       vp_vs=LOCAL_VP_VS, omori_k=OMORI_K)
+
+# 遠い地震の距離の求め方を、大森公式(k のスライダー)にするかどうか(パラメータ far_omori: 1 なら大森公式、0 なら走時表)
+#   ふだんは走時表(sp_distance.py)。k は距離で変わるため、k を合わせて確かめたいときに大森公式にする
+FAR_OMORI_DEFAULT = False
+
+# 保存したパラメータ(設定ファイルの "params"、または保存した到着時刻の "params")から far_omori を読む
+def read_far_omori(params, default=FAR_OMORI_DEFAULT):
+  val = (params or {}).get("far_omori")
+  return bool(val) if isinstance(val, (int, float)) else default
+
+def read_settings_params(path):
+  try:
+    with open(path, encoding="utf-8") as f:
+      return json.load(f).get("params", {})
+  except (OSError, ValueError, AttributeError):
+    return {}
 
 # P波の検出に関わるパラメータ(これが変わったときだけ検出をやり直す)
 PICK_KEYS = ("p_sta", "p_lta", "p_thr", "window")
@@ -269,6 +286,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # ==========================================
   initial = load_params(SETTINGS_FILE, SLIDER_SPECS, DEFAULT_PARAMS)
   initial.update(overrides or {})
+  far_omori = read_far_omori(read_settings_params(SETTINGS_FILE))
   # この範囲で保存した到着時刻(最初の P波が範囲内にあるもの)
   record_path, record = pick_store.find_record(t_ref, end_time)
   if record is not None:
@@ -276,11 +294,15 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     for key, val in record.get("params", {}).items():
       if key in limits:
         initial[key] = min(max(float(val), limits[key][0]), limits[key][1])
+    far_omori = read_far_omori(record.get("params"), far_omori)
   sliders = {}
   top, step_y = 0.54, 0.026
   for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
-    sax = fig.add_axes([0.73, top - i * step_y, 0.20, 0.019])
+    # 大森係数 k のスライダーは短くし、右に距離の求め方の切り替えボタンを置く
+    width = 0.12 if key == "omori_k" else 0.20
+    sax = fig.add_axes([0.73, top - i * step_y, width, 0.019])
     sliders[key] = Slider(sax, label, vmin, vmax, valinit=initial[key], valstep=vstep)
+  k_row_y = top - [spec[0] for spec in SLIDER_SPECS].index("omori_k") * step_y
 
   # --- 状態: 自動検出の結果、手で指定した時刻、計算から外した拠点 ---
   #   horizontal ... 水平動を表示している(クリックで S波を指定する)
@@ -288,7 +310,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   #                      保存した時刻を使う。P波の検出のパラメータを変えたら P波、P波か S波を探す範囲が変わったら S波を捨てる)
   state = {"auto": {}, "pick_params": None, "result": None, "filtered": True, "layer": MAP_LAYERS[0],
            "p_thr": None, "jma": None, "horizontal": False, "auto_s": {}, "fixed": {}, "fixed_s": {},
-           "record_path": record_path}
+           "record_path": record_path, "far_omori": far_omori}
   manual = {}
   manual_s = {}
   excluded = set()
@@ -487,8 +509,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
 
     far = res.get("far")
     if far is not None:
-      lines.append(f"◆遠い地震として(到来方向と S-P時間から): 距離 {far['distance']:.0f} km"
-                   f"(S-P {far['sp']:.1f} 秒 × k {sliders['omori_k'].val:.1f})")
+      lines.append(f"◆遠い地震として(到来方向と S-P時間から): 震央距離 {far['distance']:.0f} km"
+                   f"({far_method_text(far)})")
       lines.append(f"  震央: 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
       lines.append("  " + magnitude_far_text(far, t_first, q))
     elif res.get("azimuth") is not None and (loc is None or loc["at_edge"]):
@@ -524,16 +546,16 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     m, values = magnitude.estimate(mag_traces, origin - magnitude.SIGNAL_BEFORE, origin + magnitude.SIGNAL_AFTER, distances)
     return magnitude_line(m, values)
 
-  # 遠い地震の推定マグニチュードの行(大森公式の距離を、どの拠点にも同じ震源距離として使う)
+  # 遠い地震の推定マグニチュードの行(S-P時間から求めた震源距離を、どの拠点にも同じ震源距離として使う)
   #   最大振幅は、最初の P波の少し前から表示している範囲の終わりまでで測る(S波が範囲の外なら小さく出る)
   #   S波の検出がずれると距離も外れるので、合う震源リストの地震が MAX_DISTANCE より遠いときも求めない
   def magnitude_far_text(far, t_first, q):
-    if far["distance"] > magnitude.MAX_DISTANCE:
+    if far["hypo"] > magnitude.MAX_DISTANCE:
       return f"※推定 M: 震源距離が {magnitude.MAX_DISTANCE:.0f} km を超えるため求めません"
     if q is not None and np.hypot(q["dist_km"], q["深さ[km]"]) > magnitude.MAX_DISTANCE:
       return f"※推定 M: 震源リストの地震が {magnitude.MAX_DISTANCE:.0f} km より遠いため求めません"
     m, values = magnitude.estimate(mag_traces, ref_time + t_first - magnitude.SIGNAL_BEFORE, None,
-                                   {nm: far["distance"] for nm in mag_traces})
+                                   {nm: far["hypo"] for nm in mag_traces})
     return magnitude_line(m, values) + ("(表示範囲の最大振幅)" if m is not None else "")
 
   def magnitude_line(m, values):
@@ -567,8 +589,12 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # ==========================================
   # 更新処理
   # ==========================================
+  # スライダーの値と、遠い地震の距離の求め方(far_omori)
+  def current_params():
+    return {**{k: sl.val for k, sl in sliders.items()}, "far_omori": 1.0 if state["far_omori"] else 0.0}
+
   def update(_=None):
-    params = {k: s.val for k, s in sliders.items()}
+    params = current_params()
     pick_params = tuple(params[k] for k in PICK_KEYS)
     refit = False
     if pick_params != state["pick_params"]:
@@ -637,7 +663,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     #   近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として到来方向と S-P時間から震央を推定する
     used = {nm: picks[nm] for nm in names if picks[nm] is not None and nm not in excluded}
     used_s = {nm: s_picks[nm] for nm in used if s_picks[nm] is not None and nm not in s_excluded}
-    res = locate_event(xyz, used, used_s, proj, params["vp"], params["vp_vs"], params["omori_k"])
+    res = locate_event(xyz, used, used_s, proj, params["vp"], params["vp_vs"],
+                       params["omori_k"] if state["far_omori"] else None)
     state["result"] = res
 
     message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ
@@ -704,6 +731,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       s.eventson = False      # 個別の更新イベントを止める
       s.set_val(val)
       s.eventson = True
+    state["far_omori"] = FAR_OMORI_DEFAULT
+    show_far_method()
     update()
   btn_reset.on_clicked(reset)
 
@@ -727,7 +756,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     def absolute(values):
       return {nm: t_ref + timedelta(seconds=t) for nm, t in values.items() if t is not None}
     path = pick_store.save_record(absolute(current_picks()), absolute(current_s_picks()), set(manual), set(manual_s),
-                                  excluded, s_excluded, {k: s.val for k, s in sliders.items()},
+                                  excluded, s_excluded, current_params(),
                                   replace=state["record_path"])
     if path is None:
       status_text.set_text("P波の到着時刻がないため、保存できません")
@@ -804,6 +833,27 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     fig.canvas.draw_idle()
   btn_comp.on_clicked(toggle_comp)
 
+  # --- 遠い地震の距離の求め方の切り替え(走時表 ⇔ 大森公式)。大森公式のときだけ k のスライダーを使う ---
+  far_ax = fig.add_axes([0.885, k_row_y - 0.004, 0.095, 0.027])
+  def far_label():
+    return "距離: 大森公式(k)" if state["far_omori"] else "距離: 走時表"
+  btn_far = Button(far_ax, far_label())
+  btn_far.label.set_fontsize(9)
+  def show_far_method():
+    k_slider = sliders["omori_k"]
+    k_slider.set_active(state["far_omori"])
+    color = "black" if state["far_omori"] else "#aaaaaa"
+    k_slider.label.set_color(color)
+    k_slider.valtext.set_color(color)
+    k_slider.poly.set_alpha(1.0 if state["far_omori"] else 0.3)
+    btn_far.label.set_text(far_label())
+  def toggle_far(_):
+    state["far_omori"] = not state["far_omori"]
+    show_far_method()
+    update()
+  btn_far.on_clicked(toggle_far)
+  show_far_method()
+
   # --- キーボード操作: ⌘S 到着時刻を保存(一覧に反映)、U 上下動(P波)、H 水平動(S波)、⌘W 閉じる(Windows は Ctrl) ---
   if hasattr(fig.canvas, "get_tk_widget"):
     key_win = shortcuts.figure_window(fig)
@@ -813,11 +863,11 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
 
   # --- ウィンドウを閉じるとき、最後のパラメータを保存 ---
   def on_close(_event):
-    save_params({k: s.val for k, s in sliders.items()}, SETTINGS_FILE)
+    save_params(current_params(), SETTINGS_FILE)
   fig.canvas.mpl_connect("close_event", on_close)
 
   update()
-  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_save, btn_filter, btn_layer, btn_comp)
+  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_save, btn_filter, btn_layer, btn_comp, btn_far)
   plt.show()
 
 if __name__ == "__main__":

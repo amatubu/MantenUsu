@@ -6,6 +6,8 @@
 import numpy as np
 from obspy.signal.trigger import recursive_sta_lta
 
+import sp_distance
+
 # 拠点の緯度・経度・高度が入っているチャンネル表(etc フォルダ)
 STATION_TABLE = "manten_ch.tbl"
 
@@ -178,7 +180,8 @@ def pick_s(energy, df, offset, t_p, search):
 LOCAL_VP = 3.0
 LOCAL_VP_VS = 1.73
 LOCAL_S_SEARCH = 3.0
-# 遠い地震の距離(S-P時間 × k)に使う大森係数 [km/s](P波・S波検出の画面と同じ)
+# 遠い地震の距離を大森公式(S-P時間 × k)で求めるときの大森係数 [km/s](P波・S波検出の画面と同じ)
+#   ふだんは走時表(sp_distance.py)で求める。k は距離で変わるため(150 km までは 8.0、730 km で 9.6 くらい)
 OMORI_K = 8.0
 # S波を最初から計算に使わない拠点
 #   Bamba は雑音が多く、S波の検出がずれやすいため(候補16件で S-P時間が 0.5〜2.0秒とばらついた)
@@ -286,8 +289,9 @@ def depth_for_plot(loc):
 
 # --- 遠い地震: 到来方向と S-P時間から震央を推定する ---
 #   拠点の間隔が数kmしかないため、遠い地震は P波・S波の到着時刻でも位置が決まらない
-#   そこで、P波から求めた到来方向に、S-P時間から大森公式(距離 = k × S-P時間)で求めた距離だけ進んだ点を震央とする
-#   大森公式の距離は震源距離なので、震源が深いと震央距離は少し短くなる(ここでは区別しない)
+#   そこで、P波から求めた到来方向に、S-P時間から求めた震央距離だけ進んだ点を震央とする
+#   距離は、ふだんは走時表(sp_distance.py。深さ 30 km を仮定)で求める。
+#   大森公式(距離 = k × S-P時間)を選んだときは、その距離(震源距離)を震央距離ともみなす(区別しない)
 EARTH_RADIUS_KM = 6371.0
 
 # (lat, lon) から方位 azimuth [度] に dist_km 進んだ点の (緯度, 経度)(球面で計算する)
@@ -300,15 +304,26 @@ def destination(lat, lon, azimuth, dist_km):
   return float(np.degrees(phi2)), float(np.degrees(lam2))
 
 # 到来方向と S-P時間(拠点ごとの値の平均)から震央を推定する
-#   center ... 拠点の中心 (緯度, 経度)、sp_times ... S-P時間 [秒] のリスト、k ... 大森係数 [km/s]
-# 戻り値: dict(sp(平均の S-P時間), distance [km], lat, lon) または None
-def estimate_far(center, azimuth, sp_times, k):
+#   center ... 拠点の中心 (緯度, 経度)、sp_times ... S-P時間 [秒] のリスト
+#   k ... 大森係数 [km/s]。None なら走時表で求める
+# 戻り値: dict(sp(平均の S-P時間), distance(震央距離 [km]), hypo(震源距離 [km]。推定マグニチュードに使う),
+#              k(大森係数。走時表なら None), lat, lon) または None
+def estimate_far(center, azimuth, sp_times, k=None):
   if azimuth is None or not sp_times:
     return None
   sp = float(np.mean(sp_times))
-  distance = k * sp
+  if k is None:
+    distance, hypo = sp_distance.epicentral(sp), sp_distance.hypocentral(sp)
+  else:
+    distance = hypo = k * sp
   lat, lon = destination(center[0], center[1], azimuth, distance)
-  return dict(sp=sp, distance=distance, lat=lat, lon=lon)
+  return dict(sp=sp, distance=distance, hypo=hypo, k=k, lat=lat, lon=lon)
+
+# 遠い地震の距離の求め方の説明(結果の欄・確認用の画像に出す)
+def far_method_text(far):
+  if far.get("k") is None:
+    return f"S-P {far['sp']:.1f} 秒、走時表・深さ {sp_distance.ASSUMED_DEPTH:.0f} km"
+  return f"S-P {far['sp']:.1f} 秒 × k {far['k']:.1f}"
 
 # --- P波・S波の到着時刻から震源を求めて判定する(震源推定の画面と、地震の候補をまとめて計算する処理で共通) ---
 # 判定
@@ -322,12 +337,12 @@ KIND_NONE = "決まらない"
 #   picks   ... {拠点名: P波の到着時刻 [秒]}(計算に使う拠点だけ)
 #   s_picks ... {拠点名: S波の到着時刻 [秒]}(計算に使う拠点だけ。picks にある拠点に限る)
 #   proj    ... 平面座標(緯度・経度に直すのと、遠い地震の推定の起点(拠点の中心)に使う)
-#   vp, vp_vs, k ... P波の速度 [km/s]、vp/vs、大森係数 [km/s]
+#   vp, vp_vs, k ... P波の速度 [km/s]、vp/vs、遠い地震の距離に使う大森係数 [km/s](None なら走時表で求める)
 #   近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として到来方向と S-P時間から震央を推定する
 #   (S-P時間が短いのに残差が大きいときは、遠い地震ではなく検出のずれとみなし、近い地震(残差大)とする)
 # 戻り値: dict(kind, loc(locate_grid_ps の結果 または None), far(estimate_far の結果 または None),
 #              azimuth, app_v, plane_rms, n_p, n_s, lat, lon)
-def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=OMORI_K):
+def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=None):
   used = sorted(picks)
   used_s = [nm for nm in used if nm in s_picks]
   res = dict(kind=KIND_NONE, loc=None, far=None, azimuth=None, app_v=None, plane_rms=None,
