@@ -50,7 +50,7 @@ def find_sacs(dest_dir):
 # フォルダ内のSACファイルのうち、今のチャンネル表で変換したもの
 #   チャンネル表の感度・ゲインが変わると振幅の換算が変わるので、変換したときにコピーしたチャンネル表と
 #   etc のチャンネル表を比べ、違えば(コピーが無いときも)SACと途中のファイルを消して空のリストを返す
-#   (結合前のWINファイルは残すので、ZIPから取り出し直さずに変換し直せる)
+#   (結合前のWINファイルが残っていればそれから、無ければ ZIP から取り出し直して変換し直す)
 def find_current_sacs(dest_dir, etc_dir):
   sacs = find_sacs(dest_dir)
   if not sacs:
@@ -64,6 +64,21 @@ def find_current_sacs(dest_dir, etc_dir):
   for chunk_dir in dest_dir.glob(f"{CHUNK_DIR_PREFIX}*"):
     shutil.rmtree(chunk_dir, ignore_errors=True)
   return []
+
+# SACファイルを作ったあとの WINファイル(結合前・結合後・読み替え後)を消す(キャッシュの容量を減らすため)
+#   WINファイルは SACファイルを作る途中のもので、表示などには SACファイルだけを使う。
+#   1時間分で SAC 約33 MB に対して WIN が約30 MB(結合前と結合後で同じ大きさ)あり、消すと容量がほぼ半分になる
+#   SACファイルを作り直すとき(チャンネル表が変わったときなど)は、ZIP から取り出し直す(1時間分で1〜2秒)
+#   戻り値 ... 消したファイルの数
+def remove_wins(dest_dir):
+  removed = 0
+  for path in find_wins(dest_dir):
+    try:
+      path.unlink()
+      removed += 1
+    except OSError:
+      pass
+  return removed
 
 # OSに合わせた外部ツールのパス(Windowsなら .exe を付ける)
 def tool_path(tools_dir, name):

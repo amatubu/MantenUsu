@@ -55,7 +55,10 @@ warnings.filterwarnings(
 # [完了]4. Googleドライブからのダウンロード中に中止処理を追加
 # [完了]5. log_messageのprintへの出力用にデバッグオプション(コマンドラインオプション)を追加する
 # [完了]6. 震度の推測
-# 7. WINファイル、SACファイルのキャッシュ処理の最適化(フルにキャッシュする、最小限にする(バッチ高速処理用)のオプションを用意するなど)
+# [完了]7. WINファイル、SACファイルのキャッシュ処理の最適化
+#     SACファイルを作ったら、途中の WINファイルを消すようにした(容量がほぼ半分になる。表示の速さは変わらない)。
+#     拠点・チャンネルを絞ってキャッシュする案は、win2sac が拠点ごとに全チャンネルを変換するため時間が減らず、
+#     ほかのチャンネルを見るときに作り直しが要るのでやめた。バッチ処理で1時間分を残さない案は、必要になったら考える
 # [完了]8. 1時間ごとのグラフ画面で、拠点・チャンネルの切り替え機能を追加
 # [完了]9. キャッシュ整理処理で、WINファイルのみ、結合前WINファイルのみなどのオプション追加
 # [完了]10. P波、S波の到着時刻計算
@@ -149,7 +152,7 @@ warnings.filterwarnings(
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "3.4.0"
+  APP_VERSION = "3.4.1"
   # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
   MAX_HISTORY = 1000
   # 終了日時を入れるボタンの長さ(分。開始・終了の分を両方含めた長さ)
@@ -931,6 +934,7 @@ class MantenUsuSeismographApp:
   # WINファイルの結合とSACファイルへの変換処理
   #   戻り値 ... 成功したら True(拠点ごとの変換エラーはログに出して続行する)
   #   show_dialog ... エラーをダイアログで知らせるか(バッチ処理ではFalse。ログにだけ出す)
+  #   SACファイルができたら、途中の WINファイルは消す(キャッシュの容量を減らすため。win_pipeline.remove_wins)
   def convert_wins_to_sacs(self, dest_dir, show_dialog=True):
     try:
       win_pipeline.convert_wins_to_sacs(dest_dir, self.tools_dir, self.etc_dir)
@@ -940,6 +944,8 @@ class MantenUsuSeismographApp:
       else:
         log_message(f"     [エラー] {e}")
       return False
+    if win_pipeline.find_sacs(dest_dir):
+      win_pipeline.remove_wins(dest_dir)
     return True
 
   # SACファイルの波形を描画
