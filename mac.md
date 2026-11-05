@@ -65,7 +65,7 @@ python3 -c "import tkinter, obspy, matplotlib, googleapiclient, google.oauth2; p
  ┗ 📜 build_mac.sh
 ```
 
-- `tools` には、防災科研の「連続波形ダウンロード」から入手したソースコードをビルドしてできた `win2sac_32`・`wchch_32` を置きます（ソースに含まれる `catwin32`・`wck_32` などは使いません）。
+- `tools` には、防災科研の「連続波形ダウンロード」から入手したソースコードをビルドしてできた `win2sac_32`・`wchch_32` を置きます（ソースに含まれる `catwin32`・`wck_32` などは使いません）。ビルドの手順は「7. 外部ツールのビルド」を参照してください。
 - `tools` の中のファイルには実行権限が必要です。動かない場合は `chmod +x tools/*` を実行してください。
 - `service_account` の中身（鍵と `folder_config.json`）は Windows と同じです。`windows.md` の「4. Googleドライブの設定」を参照してください。
 
@@ -134,3 +134,25 @@ python3 scripts/UsuMantenViewer.py
 - **鍵の扱い**: zip には `service_account`（Googleドライブの鍵）が含まれるため、扱いに注意してください。
 - **ログ**: `.app` 形式ではターミナルが開かないため、ログは画面のログ欄で確認します。ターミナルでログを見たい場合は、フォルダ形式でビルドするか、`UsuMantenViewer.app/Contents/MacOS/UsuMantenViewer -v` を直接実行します。
 - **起動時のメッセージ**: ターミナルから起動すると `error messaging the mach port for IMKCFRunLoopWakeUpReliable` と表示されることがありますが、macOS の文字入力の仕組みが出す記録で、動作には影響しません。
+
+---
+
+## 7. 外部ツールのビルド（`win2sac_32`・`wchch_32`）
+
+防災科研の「連続波形ダウンロード」から入手したソースコード（`win32tools`）を、Xcode のコマンドラインツール（clang。`gcc` で呼べます）でビルドします。入っていなければ `xcode-select --install` で入れます。ソースには手を入れず、オプション `-std=gnu17 -fcommon` を付けます（理由は README の「外部ツール」を参照）。
+
+```bash
+cd win32tools/win2sac.src
+make clean
+make CFLAGS="-I. -I$(xcrun --show-sdk-path)/usr/include/malloc -Wall -O3 -std=gnu17 -fcommon"
+cd ../wchch.src
+make clean
+make CFLAGS="-I. -Wall -O3 -std=gnu17 -fcommon"
+cd ..
+cp win2sac.src/win2sac_32 wchch.src/wchch_32 <プロジェクトのフォルダ>/tools/
+chmod +x <プロジェクトのフォルダ>/tools/*
+```
+
+- win2sac は `malloc.h` を読みますが、macOS では `malloc/malloc.h` にあるため、`-I$(xcrun --show-sdk-path)/usr/include/malloc` を足します。
+- 警告（warning）がたくさん出ますが、古い書き方によるもので、エラーで止まらなければ問題ありません。
+- できるのは、ビルドした Mac の種類（Apple Silicon なら arm64）用のファイルです。

@@ -9,7 +9,7 @@
 - **ターゲット OS**: Windows 10 / 11 (x86_64 および win-arm64)
 - **補足 (ARM機での運用について)**:  
   `win-arm64` ネイティブ版では C/Fortran 依存ライブラリのバイナリが不足し `PackagesNotFoundInChannelsError` が発生するため、本手順では **x86_64版（64-bit / Intel/AMD用）Miniconda** のエミュレーション実行を採用しています。
-- **外部ツール**: `tools` フォルダに、防災科学技術研究所の `win2sac_32.exe`（WINファイルをSACファイルに変換）と `wchch_32.exe`（WINファイル内のチャンネル番号の読み替え）が必要です。リポジトリには含まれていないため、防災科研の「[連続波形ダウンロード](https://www.vnet.bosai.go.jp/)」でユーザ登録を行い、ソースコードをダウンロードして Windows 用にビルドしたものを置きます（README の「外部ツール」を参照）。
+- **外部ツール**: `tools` フォルダに、防災科学技術研究所の `win2sac_32.exe`（WINファイルをSACファイルに変換）と `wchch_32.exe`（WINファイル内のチャンネル番号の読み替え）が必要です。リポジトリには含まれていないため、防災科研の「[連続波形ダウンロード](https://www.vnet.bosai.go.jp/)」でユーザ登録を行い、ソースコードをダウンロードして Windows 用にビルドしたものを置きます（「7. 外部ツールのビルド」を参照）。
 
 ---
 
@@ -189,3 +189,49 @@ build_win.bat
 - `daily_zips` は配布物に含めていません。必要な日付のZIPファイルは、初回の表示時にGoogleドライブからダウンロードされます。
 - ビルド直後や配布先での**最初の起動だけ**、Matplotlib のフォント一覧の作成などで時間がかかります。2回目以降は数秒で起動します（フォント一覧は `%LOCALAPPDATA%\UsuMantenViewer\matplotlib` に保存されます）。
 - zip には `service_account`（Googleドライブの鍵）が含まれるため、扱いに注意してください。
+
+---
+
+## 7. 外部ツールのビルド（`win2sac_32`・`wchch_32`）
+
+防災科研の「連続波形ダウンロード」から入手したソースコード（`win32tools`）を、MinGW-w64 の gcc でビルドします。ソースには手を入れず、オプション `-std=gnu17 -fcommon` を付けます（理由は README の「外部ツール」を参照）。
+
+### MinGW-w64 の入手（インストール不要）
+
+1. GitHub の [niXman/mingw-builds-binaries](https://github.com/niXman/mingw-builds-binaries/releases) の Releases から、`x86_64-<版>-release-posix-seh-ucrt-<版>.7z` をダウンロードします（動作確認: `x86_64-15.2.0-release-posix-seh-ucrt-rt_v13-rev0.7z`、GCC 15.2.0）。
+2. 7-Zip などで展開し、できた `mingw64` フォルダを好きな場所（例: `C:\mingw64`）に置きます。インストールは不要です。
+3. ビルドするコマンドプロンプトで、`mingw64\bin` をパスに加えます。
+
+```bash
+set PATH=C:\mingw64\bin;%PATH%
+gcc --version
+```
+
+- `make` は MinGW に入っている `mingw32-make` を使います。UnxUtils などの Unix のコマンドは要りません（ソース全体の Makefile は使わず、ツールごとの `*.pub.mingw.mk` を使うため）。
+
+### ビルド
+
+```bash
+cd win32tools\win2sac.src
+del *.o
+mingw32-make -f win2sac.pub.mingw.mk CFLAGS="-I. -DMINGW -Wall -O3 -std=gnu17 -fcommon"
+cd ..\wchch.src
+del *.o
+mingw32-make -f wchch.pub.mingw.mk CFLAGS="-I. -DMINGW -Wall -O3 -std=gnu17 -fcommon"
+```
+
+できた `win2sac.src\win2sac_32.exe`・`wchch.src\wchch_32.exe` を、プロジェクトの `tools` フォルダにコピーします。
+
+- 警告（warning）がたくさん出ますが、古い書き方によるもので、エラーで止まらなければ問題ありません。
+- `-std=gnu17 -fcommon` を付け忘れると、`true` や `ctrlc` の型、`multiple definition` のエラーで止まります。
+
+### できたツールの確かめ方
+
+前のツールと同じ WIN ファイルを変換し、結果を比べます（exe そのもののハッシュ値は、ビルドの環境で変わるため比べません）。
+
+- `win2sac_32`: 同じ WIN ファイルから作った SAC ファイルを `fc /b 前.sac 新.sac` で比べます（「相違点は検出されませんでした」なら同じ）。ハッシュ値で比べるときは `certutil -hashfile <ファイル> SHA256` です。
+- `wchch_32`: 読み替えが起きる Mimatsu の 2025/7/27〜9/5 のファイル（例: `daily_zips\250815.zip` の中の `0970355225/250815/0970355225_2508151000.win`）で比べます。
+
+```bash
+wchch_32.exe etc\0970355225_conv.tbl < 0970355225_2508151000.win > new.win
+```
