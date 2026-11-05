@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "saved": "2026-11-05T14:43:51",
+  "stations": {
+    "Hokudai": {
+      "p": "2026-07-06T07:58:22.928000",
+      "p_manual": false,
+      "s": "2026-07-06T07:58:23.724000",
+      "s_manual": false
+    },
+    "Mimatsu": {
+      "p": "2026-07-06T07:58:23.340000",
+      "p_manual": false,
+      "s": "2026-07-06T07:58:24.164000",
+      "s_manual": false
+    },
+    "Nizaemn": {
+      "p": "2026-07-06T07:58:23.848000",
+      "p_manual": false,
+      "s": "2026-07-06T07:58:25.224000",
+      "s_manual": false
+    }
+  },
+  "excluded": [],
+  "s_excluded": [
+    "Bamba"
+  ],
+  "params": {
+    "p_sta": 2.1,
+    "p_lta": 10.0,
+    "p_thr": 2.6,
+    "window": 3.0,
+    "s_search": 4.0,
+    "vp": 3.0,
+    "vp_vs": 1.73,
+    "omori_k": 8.0
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "saved": "2026-11-04T20:43:05",
+  "stations": {
+    "Bamba": {
+      "p": "2026-07-13T20:00:05.206219",
+      "p_manual": true,
+      "s": "2026-07-13T20:00:07.400000",
+      "s_manual": false
+    },
+    "Hokudai": {
+      "p": "2026-07-13T20:00:03.034485",
+      "p_manual": true,
+      "s": "2026-07-13T20:00:04.080000",
+      "s_manual": false
+    },
+    "KBBY": {
+      "p": "2026-07-13T20:00:02.540000",
+      "p_manual": false,
+      "s": "2026-07-13T20:00:04.630000",
+      "s_manual": false
+    },
+    "Mimatsu": {
+      "p": "2026-07-13T20:00:03.184000",
+      "p_manual": false,
+      "s": "2026-07-13T20:00:04.228000",
+      "s_manual": false
+    },
+    "Nizaemn": {
+      "p": "2026-07-13T20:00:03.490549",
+      "p_manual": true,
+      "s": "2026-07-13T20:00:04.760000",
+      "s_manual": false
+    },
+    "USOV": {
+      "p": "2026-07-13T20:00:04.120352",
+      "p_manual": true,
+      "s": "2026-07-13T20:00:05.390000",
+      "s_manual": false
+    },
+    "USUA": {
+      "p": "2026-07-13T20:00:02.890000",
+      "p_manual": false,
+      "s": "2026-07-13T20:00:03.530000",
+      "s_manual": false
+    }
+  },
+  "excluded": [
+    "Bamba"
+  ],
+  "s_excluded": [
+    "Bamba",
+    "Hokudai",
+    "KBBY",
+    "Mimatsu",
+    "Nizaemn",
+    "USOV",
+    "USUA"
+  ],
+  "params": {
+    "p_sta": 2.1,
+    "p_lta": 10.0,
+    "p_thr": 2.6,
+    "window": 3.0,
+    "s_search": 3.0,
+    "vp": 3.0,
+    "vp_vs": 1.73,
+    "omori_k": 8.0
+  }
+}

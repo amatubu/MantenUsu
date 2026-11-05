@@ -2,7 +2,10 @@
 #   1. WIN → SAC の変換とチャンネルの読み替えの結果が変わらないか(SAC ファイルのハッシュ値で比べる)
 #   2. 有珠山リストなどの地震の震源と判定が変わらないか(震源推定の画面で保存した到着時刻も使う)
 #   基準は tests/baseline/*.json。観測データは再配布できないので、数値とハッシュ値だけを記録する
-#   計算の方法を意図して変えたときは、python3 -m pytest -m realdata --update-baseline で作り直す
+#   保存した到着時刻は、ユーザーの設定(picks)ではなく、その写し(tests/baseline/picks)を使う
+#   (マシンごとに到着時刻の記録が違っても、同じ結果で比べられるように)
+#   計算の方法や到着時刻を意図して変えたときは、python3 -m pytest -m realdata --update-baseline で作り直す
+#   (基準と一緒に、到着時刻の写しも今のユーザーの設定から作り直す)
 import hashlib
 import json
 import shutil
@@ -18,6 +21,7 @@ import win_pipeline
 pytestmark = pytest.mark.realdata
 
 BASELINE_DIR = Path(__file__).resolve().parent / "baseline"
+PICKS_SNAPSHOT = BASELINE_DIR / "picks"   # テストで使う、保存した到着時刻の写し
 QUAKES_DIR = app_paths.BATCH_PLOTS_DIR / "quakes"
 MIMATSU = "0970355225"   # チャンネルの読み替え(etc/0970355225_conv.tbl)が要る拠点
 
@@ -146,15 +150,32 @@ def summary(r):
   return out
 
 
+# 調べる地震の、保存した到着時刻をユーザーの設定から写す(--update-baseline のとき・写しが無いとき)
+def refresh_picks_snapshot(cands):
+  import pick_store
+  import quake_locate
+  shutil.rmtree(PICKS_SNAPSHOT, ignore_errors=True)
+  PICKS_SNAPSHOT.mkdir(parents=True)
+  for cand in cands:
+    path, _record = pick_store.find_record(*quake_locate.candidate_window(cand))
+    if path is not None:
+      shutil.copy2(path, PICKS_SNAPSHOT / path.name)
+
+
 @pytest.fixture(scope="module")
-def located(tmp_path_factory):
+def located(request, tmp_path_factory):
+  import pick_store
   import quake_locate
   from hypocenter import LocalProjection, load_stations
   cands = selected_candidates()
+  if request.config.getoption("--update-baseline") or not PICKS_SNAPSHOT.exists():
+    refresh_picks_snapshot(cands)
   stations = load_stations(app_paths.ETC_DIR)
   proj = LocalProjection(list(stations.values()))
   work = tmp_path_factory.mktemp("hours")
-  items = quake_locate.locate_all(cands, make_hour_loader(work), stations, proj)
+  with pytest.MonkeyPatch.context() as mp:
+    mp.setattr(pick_store, "PICKS_DIR", PICKS_SNAPSHOT)
+    items = quake_locate.locate_all(cands, make_hour_loader(work), stations, proj)
   shutil.rmtree(work, ignore_errors=True)
   return {f"{c['start']:%Y-%m-%d %H:%M:%S}": summary(r) for c, r in items}
 
