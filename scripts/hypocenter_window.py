@@ -17,7 +17,7 @@ from matplotlib.text import Annotation
 from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, locate_event,
                         pick_filtered, refine_p, pick_s, HORIZONTAL_RANGE,
                         LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT, far_method_text,
-                        MIN_OBSERVATIONS, MAX_LOCAL_RMS, depth_text)
+                        MIN_OBSERVATIONS, CONFIRM_OBSERVATIONS, MAX_LOCAL_RMS, depth_text)
 from plot_common import NM_TO_CM, get_component_color
 import gsi_tiles
 from ps_picker import load_params, save_params
@@ -500,6 +500,11 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
         if res.get("far") is None:
           lines.append("  ※推定 M: 震源が当てにならないため求めません")
       else:
+        if res["n_p"] + res["n_s"] < CONFIRM_OBSERVATIONS and state["record_path"] is None:
+          # 地震の候補の震源では、保存していない(自動の検出の)到着時刻が少ないと「近い地震(到着時刻少)」にする
+          #   (保存した到着時刻を読み込んだとき・保存したあとは出さない)
+          #   (到着時刻が少ないと、雑音を拾っても残差が小さく出る)
+          lines.append(f"  ※到着時刻が {res['n_p'] + res['n_s']}つと少ないため、波形を確かめて保存してください")
         lines.append("  " + magnitude_text(loc))
 
     # 気象庁の震源リストの地震(最初の P波に合うもの)。遠い地震の推定マグニチュードでも使う

@@ -188,6 +188,12 @@ OMORI_K = 8.0
 S_EXCLUDED_DEFAULT = {"Bamba"}
 # 震源を求めるのに必要な到着時刻の数(P波・S波を合わせて。未知数は位置3つと発生時刻の4つ)
 MIN_OBSERVATIONS = 5
+# 自動の検出で「近い地震」とするのに必要な到着時刻の数
+#   ちょうど MIN_OBSERVATIONS(5つ)だと未知数に対して余裕がなく、雑音を拾った到着時刻でも残差が小さく出て、
+#   位置が当てにならないことがある(2026/8/3 00:51 は残差 0.083秒、2026/7/2 03:59 は 0.132秒で「近い地震」になったが、
+#   Mimatsu 以外は雑音を拾っていた)。これより少ないときは「近い地震(到着時刻少)」として、手で確かめる
+#   震源推定の画面で保存した(手で確かめた)到着時刻は、5つでも「近い地震」とする
+CONFIRM_OBSERVATIONS = 6
 # 震源の残差がこの秒数を超えたら、近い地震としての震源は当てにならないとみなす
 #   S波は P波のあと「S波を探す範囲」の中だけで探すので、遠い地震では P波の揺れの中の別の変化を拾ってしまう
 #   (有珠山直下の地震の候補で残差は 0.01〜0.08秒、2026/8/23 02:00 の茨城県南部の地震(730 km)では 0.6秒だった)
@@ -329,8 +335,11 @@ def far_method_text(far):
 # 判定
 KIND_LOCAL = "近い地震"
 KIND_LOCAL_POOR = "近い地震(残差大)"   # S-P時間は短いが残差が大きい(到着時刻の検出がずれている。手で確かめる)
+KIND_LOCAL_FEW = "近い地震(到着時刻少)"  # 残差は小さいが、自動の検出の到着時刻が CONFIRM_OBSERVATIONS より少ない(手で確かめる)
 KIND_FAR = "遠い地震"
 KIND_NONE = "決まらない"
+# 近い地震として震源を出す判定(要確認のものを含む)
+LOCAL_KINDS = (KIND_LOCAL, KIND_LOCAL_POOR, KIND_LOCAL_FEW)
 
 # 震源を求めて判定する
 #   xyz     ... {拠点名: 座標 [km](東, 北, 海面からの高度)}(proj の平面座標)
@@ -340,9 +349,11 @@ KIND_NONE = "決まらない"
 #   vp, vp_vs, k ... P波の速度 [km/s]、vp/vs、遠い地震の距離に使う大森係数 [km/s](None なら走時表で求める)
 #   近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として到来方向と S-P時間から震央を推定する
 #   (S-P時間が短いのに残差が大きいときは、遠い地震ではなく検出のずれとみなし、近い地震(残差大)とする)
+#   confirmed ... 到着時刻を手で確かめたか(震源推定の画面で保存したもの)。False で到着時刻が CONFIRM_OBSERVATIONS より
+#                 少ないときは、残差が小さくても近い地震(到着時刻少)とする(残差が大きいときは近い地震(残差大)のまま)
 # 戻り値: dict(kind, loc(locate_grid_ps の結果 または None), far(estimate_far の結果 または None),
 #              azimuth, app_v, plane_rms, n_p, n_s, lat, lon)
-def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=None):
+def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=None, confirmed=True):
   used = sorted(picks)
   used_s = [nm for nm in used if nm in s_picks]
   res = dict(kind=KIND_NONE, loc=None, far=None, azimuth=None, app_v=None, plane_rms=None,
@@ -358,7 +369,12 @@ def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=No
     res["loc"] = loc
   sp_times = [s_picks[nm] - picks[nm] for nm in used_s]
   if loc is not None and not loc["at_edge"] and (loc["rms"] <= MAX_LOCAL_RMS or np.mean(sp_times or [0]) < FAR_MIN_SP):
-    res["kind"] = KIND_LOCAL if loc["rms"] <= MAX_LOCAL_RMS else KIND_LOCAL_POOR
+    if loc["rms"] > MAX_LOCAL_RMS:
+      res["kind"] = KIND_LOCAL_POOR
+    elif not confirmed and len(obs) < CONFIRM_OBSERVATIONS:
+      res["kind"] = KIND_LOCAL_FEW
+    else:
+      res["kind"] = KIND_LOCAL
     res["lat"], res["lon"] = proj.to_latlon(loc["x"], loc["y"])
     return res
   far = estimate_far((proj.lat0, proj.lon0), res["azimuth"], sp_times, k)

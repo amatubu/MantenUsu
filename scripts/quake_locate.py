@@ -29,8 +29,8 @@ import pick_store
 import external_stations
 # 判定(KIND_*)は震源推定の画面と共通(hypocenter.py)
 from hypocenter import (LocalProjection, pick_filtered, refine_p, pick_s, locate_event,
-                        LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, S_EXCLUDED_DEFAULT, MAX_LOCAL_RMS, far_method_text,
-                        KIND_LOCAL, KIND_LOCAL_POOR, KIND_FAR, KIND_NONE,
+                        LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, S_EXCLUDED_DEFAULT, far_method_text,
+                        KIND_LOCAL, KIND_LOCAL_POOR, KIND_LOCAL_FEW, KIND_FAR, KIND_NONE, LOCAL_KINDS,
                         depth_text, depth_short, depth_for_plot)
 from plot_common import NM_TO_CM
 
@@ -42,7 +42,7 @@ S_SEARCH_MARGIN = 10.0
 # 震源リストの見込みで S-P時間がこの秒数より長い地震だけ、S波を探す範囲を広げる
 #   (近い地震は既定の範囲のままにする。広げると、P波の揺れの中の別の変化を拾いやすくなる)
 FAR_SP_SECONDS = 3.0
-# 地図・断面図で、残差がこの秒数未満の震源を塗りつぶし、それ以外は白抜きにする
+# 地図・断面図で、残差がこの秒数未満の近い地震を塗りつぶし、それ以外(要確認の判定を含む)は白抜きにする
 GOOD_RMS = 0.1
 # 地図の最小の範囲 [km](拠点の中心から東西・南北)
 MAP_HALF = (6.5, 4.5)
@@ -198,7 +198,8 @@ def locate_candidate(st, cand, stations, proj):
   used = {nm: t for nm, t in picks.items() if nm not in excluded}
   used_s = {nm: t for nm, t in s_picks.items() if nm in used and nm not in s_excluded}
   xyz = {nm: np.array([*proj.to_xy(*stations[nm][:2]), stations[nm][2] / 1000]) for nm in used}
-  result = locate_event(xyz, used, used_s, proj, vp, vp_vs, k)
+  # 震源推定の画面で保存した到着時刻は、手で確かめたものとして扱う(到着時刻が5つでも近い地震にする)
+  result = locate_event(xyz, used, used_s, proj, vp, vp_vs, k, confirmed=path is not None)
   result.update(picks=picks, s_picks=s_picks, excluded=sorted(excluded), s_used=sorted(used_s), ref=t0,
                 traces=w, s_search=s_search, k=k, manual=path.name if path else "", external=external)
   return result
@@ -237,10 +238,10 @@ def locate_all(candidates, load_hour, stations, proj, on_result=None):
       on_result(i, len(candidates), cand, r, None)
   return items
 
-# 判定ごとの件数の説明。例: 近い地震 11件、近い地震(残差大) 6件、…
+# 判定ごとの件数の説明。例: 近い地震 11件、近い地震(残差大) 6件、近い地震(到着時刻少) 2件、…
 def count_summary(items):
   return "、".join(f"{k} {sum(1 for _c, r in items if r['kind'] == k)}件"
-                  for k in (KIND_LOCAL, KIND_LOCAL_POOR, KIND_FAR, KIND_NONE))
+                  for k in (KIND_LOCAL, KIND_LOCAL_POOR, KIND_LOCAL_FEW, KIND_FAR, KIND_NONE))
 
 # 推定した震央と、震源リストの震央・有珠山の山頂との距離 [km]
 def epicenter_distance(lat, lon, lat2, lon2):
@@ -268,7 +269,7 @@ def write_csv(path, items, names):
       used = [t for nm, t in picks.items() if nm not in r.get("excluded", [])]
       first = min(used or picks.values(), default=None)
       loc, far, q = r["loc"], r["far"], cand["jma"]
-      local = r["kind"] in (KIND_LOCAL, KIND_LOCAL_POOR)
+      local = r["kind"] in LOCAL_KINDS
       row = [cand["start"].strftime("%Y-%m-%d %H:%M:%S"), r["kind"], r.get("manual", "")]
       row += [(fmt(picks[nm] - first, ".3f") + ("(除外)" if nm in r.get("excluded", []) else ""))
               if nm in picks else "" for nm in names]
@@ -350,7 +351,7 @@ def check_title(cand, r):
   line1 = (f"{cand['start']:%Y-%m-%d %H:%M:%S}  {r['kind']}" + ("(手直し)" if r.get("manual") else "")
            + f"  P波 {r['n_p']}・S波 {r['n_s']}  S-P[秒]: {sp or '-'}")
   loc, far = r["loc"], r["far"]
-  if r["kind"] in (KIND_LOCAL, KIND_LOCAL_POOR):
+  if r["kind"] in LOCAL_KINDS:
     depth = f"深さ {depth_text(loc)}"
     line2 = f"震源 北緯 {r['lat']:.4f}° 東経 {r['lon']:.4f}° {depth}  残差 {loc['rms']:.3f} 秒"
   elif r["kind"] == KIND_FAR:
@@ -453,7 +454,7 @@ def align_sections(axm, axe, axn, ew_space):
 #   戻り値 ... dict(axes=(地図, 東西断面, 南北断面), local=[(候補, 結果), ...], points=[(東, 北, 深さ), ...])
 #     local・points は地図に描いた近い地震の順(地図の番号の順)
 def draw_location_map(fig, items, stations, proj, title, listing=True):
-  local = [(cand, r) for cand, r in items if r["kind"] in (KIND_LOCAL, KIND_LOCAL_POOR)]
+  local = [(cand, r) for cand, r in items if r["kind"] in LOCAL_KINDS]
   points = [(*proj.to_xy(r["lat"], r["lon"]), depth_for_plot(r["loc"])) for _cand, r in local]
   half_x = max([MAP_HALF[0]] + [abs(p[0]) + 1 for p in points])
   half_y = max([MAP_HALF[1]] + [abs(p[1]) + 1 for p in points])
@@ -507,7 +508,7 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
     z = -0.733   # 大有珠の標高 733 m
     ax.plot(fx(x, y, z), fy(x, y, z), "P", color="saddlebrown", ms=10, markeredgecolor="white", zorder=5)
     for (cand, r), (x, y, z) in zip(local, points):
-      good = r["loc"]["rms"] < GOOD_RMS
+      good = r["kind"] == KIND_LOCAL and r["loc"]["rms"] < GOOD_RMS
       ax.plot(fx(x, y, z), fy(x, y, z), "o", color="red" if good else "none", markeredgecolor="red", ms=7, zorder=6)
       q = cand["jma"]
       if q:
@@ -543,7 +544,7 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
 
   handles = [Line2D([], [], marker="o", color="red", ls="", label=f"推定した震源(残差 {GOOD_RMS:g}秒未満)"),
              Line2D([], [], marker="o", color="none", markeredgecolor="red", ls="",
-                    label=f"推定した震源(残差 {GOOD_RMS:g}秒以上)"),
+                    label=f"推定した震源(残差 {GOOD_RMS:g}秒以上・要確認)"),
              Line2D([], [], marker="x", color="teal", mew=2, ls="", label="気象庁の震源"),
              Line2D([], [], marker="^", color="black", ls="", label="拠点"),
              # 画面(listing=False)は図が小さく凡例が切れるので、2行にする
@@ -564,10 +565,10 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   #   3行に分け、断面図の深さの縮尺の比は align_sections で短い2行目の後ろに入れる({scale})
   template = (f"P波・S波の到着時刻から推定({manual_note(items)})。均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g})、"
               f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。\n"
-              + "深さは海面からの深さ(拠点の高度を考慮)。{scale}\n"
+              + f"深さは海面からの深さ(拠点の高度を考慮)。白抜きは残差 {GOOD_RMS:g}秒以上か、要確認の判定(残差大・到着時刻少)。"
+              + "{scale}\n"
               + (f"番号は右下の一覧(× は気象庁の震源リストにあるもの)。" if listing else "番号は一覧の「番号」。")
               + f"近い地震として震源が決まった {len(local)}件を表示"
-              + f"(残差が {MAX_LOCAL_RMS:g}秒を超えるものを含む)"
               + (f"。遠い地震・決まらないもの {others}件は一覧の CSV を参照" if others else ""))
   note = fig.text(0.07, 0.005, "", fontsize=8, va="bottom")
   axe.section_note = (note, template)

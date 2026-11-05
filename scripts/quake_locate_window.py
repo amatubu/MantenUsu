@@ -105,7 +105,7 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   # 表の1行の値
   def row_values(cand, r):
     loc, q = r["loc"], cand["jma"]
-    local = r["kind"] in (quake_locate.KIND_LOCAL, quake_locate.KIND_LOCAL_POOR)
+    local = r["kind"] in quake_locate.LOCAL_KINDS
     depth = quake_locate.depth_short(loc) if local else ""
     summit = quake_locate.epicenter_distance(r["lat"], r["lon"], *USU_SUMMIT[:2])
     jma = f"{q['震央地名']} M{fmt(q['M'], 'g')}" if q else ""
@@ -204,7 +204,7 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
         return
       quake_list.toggle_usu(cand, r, add=False)
     else:
-      if r["kind"] not in (quake_locate.KIND_LOCAL, quake_locate.KIND_LOCAL_POOR) and not messagebox.askyesno(
+      if r["kind"] not in quake_locate.LOCAL_KINDS and not messagebox.askyesno(
           "有珠山リスト", f"この候補の判定は「{r['kind']}」で、近い地震としての震源がありません。"
           "有珠山付近の地震の一覧に加えますか?", parent=win):
         return

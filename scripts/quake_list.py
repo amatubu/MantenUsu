@@ -253,7 +253,7 @@ def usu_entry_from_location(cand, r):
   import quake_detect
   import quake_locate
   loc, q = r["loc"], cand["jma"]
-  local = r["kind"] in (quake_locate.KIND_LOCAL, quake_locate.KIND_LOCAL_POOR)
+  local = r["kind"] in quake_locate.LOCAL_KINDS
   time = (r["ref"] + timedelta(seconds=loc["origin"])) if local and loc else cand["start"]
   dist_km, direction = _azimuth_text(r["lat"], r["lon"])
   end = cand["end"] if cand["end"] > cand["start"] else cand["start"] + timedelta(seconds=DEFAULT_LENGTH)
