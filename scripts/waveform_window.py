@@ -200,6 +200,8 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
     parent.after(100, bring_back)
 
   wave_win.protocol("WM_DELETE_WINDOW", on_close)
+  # ほかの画面から閉じるとき(地震リストの画面の「前の波形を閉じる」)も、同じ後片付けをする
+  wave_win.bind("<<CloseWaveform>>", lambda _e: on_close())
   shortcuts.bind(wave_win, "w", on_close)   # ⌘W(Windows は Ctrl+W)で閉じる
 
   # 1. ウィンドウ内のキャンバスを取得
@@ -350,3 +352,5 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
       btn_layout.config(text=layout_label())
     btn_layout = ttk.Button(control_frame, text=layout_label(), command=toggle_layout)
     btn_layout.pack(side=tk.RIGHT)
+
+  return wave_win

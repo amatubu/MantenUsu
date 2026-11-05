@@ -71,6 +71,7 @@ USER_ETC_DIR = USER_DIR / "etc"                        # etc の上書き(同じ
 SETTINGS_FILE = USER_DIR / "settings.json"             # データフォルダの場所などの設定
 PICKS_DIR = USER_DIR / "picks"                         # 震源推定の画面で手で直した到着時刻
 HISTORY_FILE = USER_DIR / "history.json"               # メイン画面の実行履歴
+QUAKE_LISTS_FILE = USER_DIR / "quake_lists.json"       # 地震リストの画面の一覧(既知の地震・有珠山付近の地震)
 PS_PICKER_SETTINGS = USER_DIR / "ps_picker_params.json"     # P波・S波検出の画面のパラメータ
 HYPOCENTER_SETTINGS = USER_DIR / "hypocenter_params.json"   # 震源推定の画面のパラメータ
 USER_SERVICE_ACCOUNT_DIR = USER_DIR / "service_account"     # Googleドライブの鍵(「鍵ファイルを取り込む」でここにコピー)

@@ -1,17 +1,32 @@
-# 必要なモジュールのインポート
+# repackage_to_daily_zip.py
+# 拠点ごと・回収ごとの元の ZIP を、日ごとの ZIP(YYMMDD.zip)にまとめ直す(データを用意する側が使う)
+#   元の ZIP は、データフォルダの source_zips に置く(データフォルダはメンテナンス画面の「置き場所」で確かめられる)
+#   まとめ直した ZIP は、データフォルダの daily_zips に書く。できた ZIP は、Googleドライブのフォルダに手で保存する
+#   同じ日の ZIP がすでにあれば、無い WIN ファイルだけを書き足す(回収のたびに、新しい元の ZIP だけを入れて実行してよい)
+#
+# 使い方(プロジェクトのフォルダで):
+#   python3 scripts/repackage_to_daily_zip.py                         ... source_zips → daily_zips
+#   python3 scripts/repackage_to_daily_zip.py --source <フォルダ> --output <フォルダ>   ... 場所を指定する
+import argparse
 import os                 # ディレクトリ操作など
 import zipfile            # Zipファイルの読み書き
 from pathlib import Path  # パス操作のためのクラス
 
+import app_paths
+
+# 元の ZIP を置くフォルダ(データフォルダの中)
+SOURCE_ZIPS_DIR = app_paths.DATA_DIR / "source_zips"
+
 
 def main():
-  # --- 【設定エリア】 ---
-  # 既存のバラバラなZipが集まっているフォルダのパス
-  SOURCE_DIR = "../source_zips"  # 適宜変更してください
-
-  # きれいな日単位Zipを保存する出力先フォルダのパス
-  OUTPUT_DIR = "../daily_zips"  # 適宜変更してください
-  # --------------------
+  parser = argparse.ArgumentParser(description="拠点ごとの元の ZIP を、日ごとの ZIP(YYMMDD.zip)にまとめ直す")
+  parser.add_argument("--source", type=Path, default=SOURCE_ZIPS_DIR,
+                      help=f"元の ZIP のフォルダ(既定: {SOURCE_ZIPS_DIR})")
+  parser.add_argument("--output", type=Path, default=app_paths.ZIPS_DIR,
+                      help=f"日ごとの ZIP を書くフォルダ(既定: {app_paths.ZIPS_DIR})")
+  args = parser.parse_args()
+  SOURCE_DIR = args.source
+  OUTPUT_DIR = args.output
 
   # 出力先のフォルダを作成
   os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -26,6 +41,7 @@ def main():
   # Zipファイルが見つかったかどうかを確認
   if not zip_files:
     print(f"エラー: 指定されたフォルダにZipファイルが見つかりません: {SOURCE_DIR}")
+    print("       元の ZIP をこのフォルダに置くか、--source でフォルダを指定してください")
     return
 
   # 処理前の情報表示(lenでファイル数を取得)
@@ -95,6 +111,7 @@ def main():
     f"\n完了しました！ 合計 {total_processed} 個のファイルを日単位Zipに整理しました。"
   )
   print(f"保存先: {OUTPUT_DIR}")
+  print("できた日ごとの ZIP は、Googleドライブのフォルダに保存してください(使う側は --download-zips で受け取ります)")
 
 
 if __name__ == "__main__":

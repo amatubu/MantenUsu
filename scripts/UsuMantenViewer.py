@@ -19,16 +19,18 @@ from plot_common import setup_japanese_font
 from log_common import log_message, set_console, set_log_widget
 import win_pipeline
 from maintenance_window import MaintenanceWindow
+from quake_list_window import QuakeListWindow
 from stack_plot import StackFigure, StackWindow, find_trace
 from stack_overlays import QuakeOverlay, TrainOverlay, draw_on_image
 from waveform_window import open_waveform_window
-from drive_downloader import load_folder_id, download_file_from_drive, DriveFileNotFoundError, DownloadCancelled
+from drive_downloader import load_folder_id, download_file_from_drive, list_folder, DriveFileNotFoundError, DownloadCancelled
 from hypocenter import load_stations, LocalProjection
 import quake_detect
 import quake_features
 import quake_loose
 import quake_locate
 import pick_store
+import quake_list
 from quake_locate_window import open_locate_window
 from hypocenter_window import plot_hypocenter
 import shortcuts
@@ -135,6 +137,17 @@ warnings.filterwarnings(
 # [完了]26. 震源が決まった地震のマグニチュード(M)を推測する
 #     震源推定の画面に推定 M を表示する(magnitude.py)。上下動の速度の最大振幅と震源距離から渡辺の式で求め、
 #     気象庁の震源リストの地震(震源距離 200 km まで)の M に合わせた拠点ごとの補正を引く
+# [完了]27. 既知の地震と有珠山付近の地震の波形を、一覧からすぐに確かめられるようにする
+#     メイン画面の「地震リスト」(quake_list_window.py)。既知の地震(震源リストと対応した地震の候補)と
+#     有珠山付近の地震(震源を求めた地震)を別のタブに分け、両方に当てはまる地震は両方に入れる。
+#     一覧は CSV から取り込んでユーザーの設定(quake_lists.json)に保存し、選んだ地震の波形を履歴に残さずに表示する
+#     地震の候補を探したときは、震源リストと対応した候補を既知の地震に自動で加える。
+#     地震の候補の震源の画面では、有珠山付近の地震の一覧にある候補に ✓ を付け、ボタン(⌘U)で加える・外す
+# [完了]28. 日ごとの ZIP をGoogleドライブからまとめてダウンロードするバッチ処理(--download-zips)
+#     地震の候補の検出は手元の daily_zips だけを使うので、データが増えたときに新しい日の ZIP をそろえるため
+#     (画面からは時間がかかりすぎるので、バッチ処理だけ。--dry-run で件数と大きさを確かめられる)
+# [完了]29. 操作マニュアル(docs/manual/manual.md。画面イメージ入り)を作り、ビルドのときに PDF にして zip に入れる
+#     (build_manual.py。Markdown → HTML → Chrome・Edge の印刷で PDF。画面イメージはスクリーンショットを docs/manual/images に置く)
 
 # クラス定義
 class MantenUsuSeismographApp:
@@ -338,6 +351,15 @@ class MantenUsuSeismographApp:
       command = self.delete_history  # ボタンが押された際に実行されるメソッド
     )
     btn_del_hist.pack(side=tk.LEFT)
+
+    # 地震リスト(既知の地震・有珠山付近の地震の一覧から選んで波形を確かめる。quake_list_window.py)
+    tk.Button(
+      panel,
+      text=shortcuts.with_label("地震リスト(既知の地震・有珠山付近の地震)…", "l"),
+      font=("sans-serif", 9),
+      command=self.open_quake_list,
+    ).pack(fill=tk.X, pady=(2, 0))
+    shortcuts.bind(self.root, "l", self.open_quake_list)
 
     # ==========================================
     # 区切り線 1 (期間波形機能 と スタック機能 の間)
@@ -684,7 +706,10 @@ class MantenUsuSeismographApp:
 
   # WINファイルの取得から波形プロットまでのメイン処理
   #   return_to ... 波形表示のウィンドウを閉じたときに戻るウィンドウ(Tk)。None ならOS任せ
-  def execute_pipeline(self, is_history_reload=False, return_to=None):
+  #   is_history_reload ... 履歴からの再表示(履歴の順番を変えない)
+  #   add_to_history    ... False なら履歴に残さない(地震リストの画面から表示するとき)
+  #   戻り値 ... 開いた波形表示の画面(開けなければ None)
+  def execute_pipeline(self, is_history_reload=False, return_to=None, add_to_history=True):
     # 設定されているタイトル、開始・終了日時の取得(前後の空白は除去)
     title_str = self.entry_title.get().strip()
     start_str = self.entry_start.get().strip()
@@ -728,11 +753,11 @@ class MantenUsuSeismographApp:
 
     if existing_sacs:
       # 既存のSACファイルがある場合はそれを利用して波形を描画
-      self.plot_waveforms(dest_dir, start_str, end_str, title_str, return_to)
-      if not is_history_reload:
+      win = self.plot_waveforms(dest_dir, start_str, end_str, title_str, return_to)
+      if not is_history_reload and add_to_history:
         # 履歴からの再表示でないときは履歴に追加
         self.add_history(start_str, end_str, title_str)
-      return
+      return win
 
     # --- Step 1: 抽出 (なければ実行) ---
     # フォルダ内に結合前のWINファイルがあるかどうかを確認
@@ -750,8 +775,9 @@ class MantenUsuSeismographApp:
       return
 
     # --- 履歴に追加してプロット ---
-    self.add_history(start_str, end_str, title_str)
-    self.plot_waveforms(dest_dir, start_str, end_str, title_str, return_to)
+    if add_to_history:
+      self.add_history(start_str, end_str, title_str)
+    return self.plot_waveforms(dest_dir, start_str, end_str, title_str, return_to)
 
   # スタック表示用の出力ディレクトリ(1時間ごと)
   #   dt ... その時間の開始日時(datetime)
@@ -932,7 +958,7 @@ class MantenUsuSeismographApp:
     if len(st) == 0:
       messagebox.showerror("エラー", "SACファイルを開くことができません。WINファイルからの変換に失敗した可能性があります。")
       return
-    open_waveform_window(self.root, st, title_str, return_to, load_range=self.load_range_stream)
+    return open_waveform_window(self.root, st, title_str, return_to, load_range=self.load_range_stream)
 
   # 波形表示の画面で表示の範囲を広げたときに、その範囲の波形を用意して読み込む(TODO 24。履歴には残さない)
   #   start_dt, end_dt ... 開始・終了の分(終了の分も含む。実行ボタンと同じ)
@@ -1014,8 +1040,78 @@ class MantenUsuSeismographApp:
     finally:
       loading_win.destroy()   # 成功・失敗・中止どれでも必ずポップアップを閉じる
 
+  # --- 日ごとの ZIP をGoogleドライブからまとめてダウンロードするバッチ処理(UIなし) ---
+  #   地震の候補の検出(--detect-quakes・メンテナンス画面)は手元の daily_zips だけを使うので、その前に新しい日の ZIP をそろえる
+  #   start_date, end_date ... 期間(YYYYMMDD。省略するとGoogleドライブにある最初の日・最後の日)
+  #   dry_run ... ダウンロードせず、ダウンロードする ZIP と大きさの合計だけを表示する
+  #   手元にある日(名前に日付を含む ZIP がある日)は飛ばす。ただし、手元の YYMMDD.zip の大きさがドライブと違う日は
+  #   ダウンロードし直す(回収の途中までだった日に、あとから書き足して保存し直したもの)。Ctrl+C で止めると、ダウンロード中の ZIP は消す
+  def run_zip_download(self, start_date=None, end_date=None, dry_run=False):
+    creds_path = self.service_account_dir / "manten_usu_downloader.json"
+    if not creds_path.exists():
+      log_message(f"サービスアカウントのキーファイルが見つかりません: {creds_path}")
+      return
+    if not self.target_folder_id:
+      self.target_folder_id = load_folder_id(self.folder_config_file)
+    try:
+      remote = list_folder(creds_path, self.target_folder_id)
+    except Exception as e:
+      log_message(f"Googleドライブのファイルの一覧を取得できませんでした: {e}")
+      return
+    # ドライブのファイル名は「YYMMDD.zip」。期間は YYYYMMDD で受け取り、下6桁で比べる
+    days = sorted(name for name in remote if re.fullmatch(r"\d{6}\.zip", name))
+    lo = start_date[2:8] if start_date else None
+    hi = end_date[2:8] if end_date else None
+    days = [d for d in days if (lo is None or d[:6] >= lo) and (hi is None or d[:6] <= hi)]
+    if not days:
+      log_message("期間の中に、Googleドライブの ZIP がありません")
+      return
+    self.zips_root.mkdir(parents=True, exist_ok=True)
+    # 手元に無い日と、手元の ZIP の大きさがドライブと違う日(回収の途中までだった日に、あとから書き足したもの)
+    def needs(d):
+      local = self.zips_root / d
+      if local.exists():
+        return local.stat().st_size != remote[d]
+      return not list(self.zips_root.glob(f"*{d[:6]}*.zip"))
+    todo = [d for d in days if needs(d)]
+    updated = sum(1 for d in todo if (self.zips_root / d).exists())
+    total = sum(remote[d] for d in todo)
+    size = lambda b: f"{b / 1024 ** 3:.1f} GB" if b >= 1024 ** 3 else f"{b / 1024 ** 2:.0f} MB"
+    log_message(f"Googleドライブの ZIP: {days[0]}〜{days[-1]} の {len(days)}件、うちダウンロードするもの {len(todo)}件"
+                + (f"(大きさが変わった日 {updated}件を含む)" if updated else "")
+                + f"(合計 {size(total)})。保存先: {self.zips_root}")
+    if dry_run or not todo:
+      for d in todo:
+        log_message(f"  {d}  {remote[d] / 1024 ** 2:.0f} MB")
+      return
+    done_bytes = 0
+    failed = []
+    for i, d in enumerate(todo, 1):
+      log_message(f"[{i}/{len(todo)}] {d}({remote[d] / 1024 ** 2:.0f} MB)をダウンロードしています")
+      try:
+        download_file_from_drive(creds_path, self.target_folder_id, d, self.zips_root / d)
+        done_bytes += remote[d]
+      except KeyboardInterrupt:
+        log_message(f"中止しました({i - 1}件ダウンロード済み。途中の {d} は消しました)")
+        return
+      except Exception as e:
+        log_message(f"  失敗しました: {e}")
+        failed.append(d)
+    log_message(f"ダウンロードが終わりました: {len(todo) - len(failed)}件({size(done_bytes)})"
+                + (f"、失敗 {len(failed)}件: {' '.join(failed)}(もう一度実行すると、失敗した分だけダウンロードします)"
+                   if failed else ""))
+
   # メンテナンス画面を開く
   # メンテナンス画面は1つだけ開く(開いていれば前に出す。処理が重なって同じファイルを書かないように)
+  def open_quake_list(self):
+    win = getattr(self, "quake_list_window", None)
+    if win is not None and win.win.winfo_exists():
+      win.win.deiconify()
+      win.win.lift()
+      win.win.focus_force()
+      return
+    self.quake_list_window = QuakeListWindow(self.root, self)
+
   def open_maintenance(self):
     win = getattr(self, "maintenance", None)
     if win is not None and win.win.winfo_exists():
@@ -1387,6 +1483,13 @@ class MantenUsuSeismographApp:
     csv_path = out_dir / f"quake_candidates_{period}.csv"
     quake_detect.write_candidates_csv(csv_path, candidates, names)
     log_message(f"候補の一覧: {csv_path}")
+    # 震源リストと対応した候補を、地震リストの「既知の地震」に加える(「一覧から外す」で外した地震は除く)
+    try:
+      added, replaced = quake_list.add_from_detection(csv_path)
+      if added or replaced:
+        log_message(f"地震リスト(既知の地震)に {added}件を加え、{replaced}件を置き換えました")
+    except Exception as e:
+      log_message(f"地震リストへの追加に失敗しました: {e}")
     missed_path = out_dir / f"jma_missed_{period}.csv"
     quake_detect.write_missed_csv(missed_path, missed, names)
     log_message(f"見逃し?の一覧: {missed_path}")
@@ -1575,6 +1678,10 @@ def main():
                       help="UIを起動せず、地震の候補を探して気象庁の震源リストと照合する (期間は -s / -e)")
   parser.add_argument("--locate-quakes", metavar="CSV",
                       help="UIを起動せず、地震の候補の一覧(CSV)から候補ごとに震源を求める")
+  parser.add_argument("--download-zips", action="store_true",
+                      help="UIを起動せず、手元に無い日の ZIP をGoogleドライブからまとめてダウンロードする (期間は -s / -e。省略するとドライブにある全期間)")
+  parser.add_argument("--dry-run", action="store_true",
+                      help="ダウンロードせず、ダウンロードする ZIP と大きさの合計だけを表示する (--download-zips 用)")
   parser.add_argument("--history", action="store_true", help="地震の候補の期間を履歴に追加する (--detect-quakes 用)")
   parser.add_argument("--vnet-list", action="store_true",
                       help="外部の観測点で確かめるため、v-net からダウンロードする60分の一覧も作る (--detect-quakes 用)")
@@ -1594,14 +1701,18 @@ def main():
   args = parser.parse_args()
 
   # コンソールへのログ表示(バッチ処理モードは画面が無いので常に表示)
-  set_console(args.verbose or args.batch or args.detect_quakes or args.locate_quakes)
+  set_console(args.verbose or args.batch or args.detect_quakes or args.locate_quakes or args.download_zips)
 
   # GUIのウィンドウを生成
   root = tk.Tk()
   # MantenUsuSeismographApp クラスのインスタンスを生成
   app = MantenUsuSeismographApp(root)
 
-  if args.locate_quakes:
+  if args.download_zips:
+    root.withdraw() # GUIウィンドウを非表示にする
+    app.run_zip_download(start_date=args.start_date, end_date=args.end_date, dry_run=args.dry_run)
+    root.destroy()
+  elif args.locate_quakes:
     root.withdraw() # GUIウィンドウを非表示にする
     app.run_quake_location(args.locate_quakes, save_images=args.images)
     root.destroy()

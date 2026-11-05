@@ -36,6 +36,25 @@ def load_folder_id(config_file, key="daily_zips_id"):
     log_message(f"Googleドライブのフォルダ設定ファイルの読み込みに失敗しました: {e}")
     return None
 
+# Googleドライブの指定フォルダにあるファイルの一覧
+#   戻り値 ... {ファイル名: 大きさ [バイト]}
+def list_folder(creds_path, folder_id):
+  if not folder_id:
+    raise ValueError("GoogleドライブのフォルダIDが設定されていません")
+  creds = service_account.Credentials.from_service_account_file(str(creds_path), scopes=SCOPES)
+  service = build("drive", "v3", credentials=creds)
+  files, token = {}, None
+  while True:
+    res = service.files().list(
+      q=f"'{folder_id}' in parents and trashed = false", spaces="drive",
+      fields="nextPageToken, files(name, size)", pageSize=1000, pageToken=token,
+      supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    for f in res.get("files", []):
+      files[f["name"]] = int(f.get("size") or 0)
+    token = res.get("nextPageToken")
+    if not token:
+      return files
+
 # Googleドライブの指定フォルダからファイルをダウンロードする
 #   creds_path  ... サービスアカウントのキーファイル(JSON)
 #   folder_id   ... 検索対象のフォルダID

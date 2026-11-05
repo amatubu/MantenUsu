@@ -11,6 +11,8 @@ copy /Y ..\etc\train_timetable_template.xlsx build_res\etc\
 pyinstaller --onedir --collect-all obspy --collect-all matplotlib --collect-all google.oauth2 --collect-all googleapiclient --noconfirm --debug noarchive --add-data "build_res\etc;etc" --add-binary "..\tools\win2sac_32.exe;tools" --add-binary "..\tools\wchch_32.exe;tools" UsuMantenViewer.py
 rem Googleドライブの鍵は、アプリの横の service_account にも置ける(メンテナンス画面で取り込むと、ユーザーの設定に入る)
 if exist ..\service_account xcopy /E /I /Y ..\service_account dist\UsuMantenViewer\service_account
+rem 操作マニュアル(docs/manual/manual.md)を PDF にして入れる(markdown パッケージと Edge が必要。作れなければ入れずに続ける)
+python build_manual.py --out dist\UsuMantenViewer\UsuMantenViewer_manual.pdf
 cd dist
 tar -caf ..\..\UsuMantenViewer.zip UsuMantenViewer
 cd ..\..

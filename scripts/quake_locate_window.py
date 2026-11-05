@@ -9,13 +9,15 @@ from tkinter import ttk, messagebox
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
+import quake_list
 import quake_locate
 import shortcuts
 from quake_features import USU_SUMMIT
 
 # 表の列: (見出し, 幅 [px], 揃え)
 COLUMNS = [("番号", 44, "e"), ("開始", 140, "w"), ("判定", 120, "w"), ("手直し", 52, "center"),
-           ("深さ[km]", 70, "e"), ("残差[秒]", 70, "e"), ("山頂から[km]", 90, "e"), ("気象庁の震源リスト", 200, "w")]
+           ("深さ[km]", 70, "e"), ("残差[秒]", 70, "e"), ("山頂から[km]", 90, "e"), ("有珠山リスト", 80, "center"),
+           ("気象庁の震源リスト", 200, "w")]
 
 # 選んだ震源の印の色
 SELECT_COLOR = "#1f77b4"
@@ -61,7 +63,9 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   buttons.pack(fill=tk.X, pady=(8, 0))
   ttk.Label(left, text="行を選ぶと図に青い丸で示します。ダブルクリックで震源推定の画面を開き、到着時刻を手で直して"
                        "「保存して一覧に反映」を押すと、この一覧と図に反映します(到着時刻は output/picks に保存され、"
-                       "次に開いたときやバッチ処理でも使います)。一覧の CSV と図は「一覧と図を保存」で保存します。",
+                       "次に開いたときやバッチ処理でも使います)。一覧の CSV と図は「一覧と図を保存」で保存します。"
+                       "「有珠山リストに追加・外す」で、選んだ候補を地震リストの有珠山付近の地震に加えます(✓ の行は加え済み。"
+                       "もう一度押すと外します)。",
             wraplength=760, justify=tk.LEFT, foreground="#555555").pack(anchor="w", pady=(6, 0))
 
   # --- 右: 震央の地図と断面図 ---
@@ -75,6 +79,8 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
 
   # 図と表を作り直すときに変わるもの: 地図の番号・位置(結果ごと)、選んだ震源の印、表の行、地図と断面図の軸
   view = {"number": {}, "position": {}, "marks": [], "rows": {}, "axes": None}
+  # 地震リストの「有珠山付近の地震」にある候補の開始(表の「有珠山リスト」の列に ✓ を付ける)
+  usu = {"starts": quake_list.usu_starts()}
 
   # 地図と断面図を描く(地図の番号は近い地震だけ。結果ごとに、地図での位置も覚えておく)
   def draw_figure():
@@ -103,8 +109,10 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     depth = quake_locate.depth_short(loc) if local else ""
     summit = quake_locate.epicenter_distance(r["lat"], r["lon"], *USU_SUMMIT[:2])
     jma = f"{q['震央地名']} M{fmt(q['M'], 'g')}" if q else ""
-    return [view["number"].get(id(r), ""), f"{cand['start']:%Y-%m-%d %H:%M:%S}", r["kind"],
-            "○" if r.get("manual") else "", depth, fmt(loc["rms"], ".3f") if loc else "", fmt(summit, ".1f"), jma]
+    start = f"{cand['start']:%Y-%m-%d %H:%M:%S}"
+    return [view["number"].get(id(r), ""), start, r["kind"],
+            "○" if r.get("manual") else "", depth, fmt(loc["rms"], ".3f") if loc else "", fmt(summit, ".1f"),
+            "✓" if start in usu["starts"] else "", jma]
 
   # 表を作り直す(選んでいた行は残す)
   def fill_table(select_index=None):
@@ -183,6 +191,37 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
       return
     replace(cand, on_revert(cand, r))
 
+  # 選んだ候補を、地震リストの「有珠山付近の地震」に加える(すでにあれば、外すか確かめる)
+  #   震源リストと対応した候補は、「既知の地震」にも加える(すでにあれば、そのまま)
+  def toggle_usu():
+    k = selected_index()
+    if k is None:
+      return
+    cand, r = items[k]
+    start = f"{cand['start']:%Y-%m-%d %H:%M:%S}"
+    if start in usu["starts"]:
+      if not messagebox.askyesno("有珠山リスト", f"{start} を有珠山付近の地震の一覧から外しますか?", parent=win):
+        return
+      quake_list.toggle_usu(cand, r, add=False)
+    else:
+      if r["kind"] not in (quake_locate.KIND_LOCAL, quake_locate.KIND_LOCAL_POOR) and not messagebox.askyesno(
+          "有珠山リスト", f"この候補の判定は「{r['kind']}」で、近い地震としての震源がありません。"
+          "有珠山付近の地震の一覧に加えますか?", parent=win):
+        return
+      quake_list.toggle_usu(cand, r, add=True)
+    usu["starts"] = quake_list.usu_starts()
+    fill_table(k)
+    on_select()
+
+  # この画面が前に出たら、有珠山リストの印を読み直す(地震リストの画面で外したときなど)
+  def on_focus(event):
+    if event.widget is win:
+      starts = quake_list.usu_starts()
+      if starts != usu["starts"]:
+        usu["starts"] = starts
+        fill_table(selected_index())
+  win.bind("<FocusIn>", on_focus)
+
   def save():
     on_save()
     state["unsaved"] = False
@@ -204,6 +243,8 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   ttk.Button(buttons, text=shortcuts.with_label("震源推定を開く", "Return", modifier=False), command=open_event).pack(side=tk.LEFT)
   ttk.Button(buttons, text=shortcuts.with_label("自動に戻す", "r"), command=revert).pack(side=tk.LEFT, padx=(8, 0))
   ttk.Button(buttons, text=shortcuts.with_label("一覧と図を保存", "s"), command=save).pack(side=tk.LEFT, padx=(8, 0))
+  ttk.Button(buttons, text=shortcuts.with_label("有珠山リストに追加・外す", "u"), command=toggle_usu).pack(side=tk.LEFT, padx=(8, 0))
+  shortcuts.bind(win, "u", toggle_usu)
   shortcuts.bind(win, "Return", open_event, modifier=False)
   shortcuts.bind(win, "KP_Enter", open_event, modifier=False)
   shortcuts.bind(win, "r", revert)

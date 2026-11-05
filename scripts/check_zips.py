@@ -1,13 +1,19 @@
+# check_zips.py
+# 拠点ごとの元の ZIP の中身の構成(日付フォルダ・ファイル名の形式)を確かめる(repackage_to_daily_zip.py の前に)
+#   既定は、データフォルダの source_zips(--source でフォルダを指定できる)
+import argparse
 import os
 import zipfile
 from pathlib import Path
 
+import app_paths
+
 
 def main():
-  # --- 【設定エリア】 ---
-  # チェック対象のZipファイルが集まっているフォルダのパス
-  TARGET_DIR = "../source_zips"  # 適宜変更してください
-  # --------------------
+  default = app_paths.DATA_DIR / "source_zips"
+  parser = argparse.ArgumentParser(description="拠点ごとの元の ZIP の中身の構成を確かめる")
+  parser.add_argument("--source", type=Path, default=default, help=f"元の ZIP のフォルダ(既定: {default})")
+  TARGET_DIR = parser.parse_args().source
 
   target_path = Path(TARGET_DIR)
   zip_files = list(target_path.glob("*.zip"))

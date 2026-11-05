@@ -24,3 +24,4 @@ etc/train_timetable.csv
 v-net/
 scripts/vnet_bookmarklet.js
 scripts/build_res/
+docs/manual/_build/

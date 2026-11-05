@@ -12,7 +12,7 @@
 # できるもの:
 #   scripts/dist/UsuMantenViewer-mac/  ... アプリと、その横に etc・tools・service_account・output
 #                                          (アプリはこの横のフォルダを使う。app_paths.py を参照)
-#   UsuMantenViewer-mac.zip            ... 上のフォルダを zip にしたもの(配布用)
+#   UsuMantenViewer-mac.zip            ... 上のフォルダを zip にしたもの(配布用。操作マニュアルの PDF も入れる)
 #   ※ Windows 版と同じく service_account(Googleドライブの鍵)も含むので、zip の扱いに注意
 set -euo pipefail
 
@@ -91,6 +91,9 @@ fi
 if [ -d ../service_account ]; then
   ditto ../service_account "$RELEASE/service_account"
 fi
+
+# --- 操作マニュアル(docs/manual/manual.md)を PDF にして入れる(markdown パッケージと Chrome か Edge が必要。無ければ入れずに続ける) ---
+"$PYTHON" build_manual.py --out "$RELEASE/UsuMantenViewer_manual.pdf" || echo "注意: 操作マニュアルの PDF を入れずに続けます"
 
 # --- zip にまとめる(ditto は .app のリンクや属性を保ったまま圧縮できる) ---
 rm -f "$ROOT/$NAME-mac.zip"

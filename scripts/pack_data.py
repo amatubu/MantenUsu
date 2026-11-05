@@ -39,6 +39,7 @@ BASES = {"user": app_paths.USER_DIR, "data": app_paths.DATA_DIR}
 ITEMS = [
   ("user", "picks", "**/*", "震源推定の画面で手で直した到着時刻(作り直せない)"),
   ("user", "", "history.json", "実行履歴"),
+  ("user", "", "quake_lists.json", "地震リストの一覧"),
   ("user", "", "ps_picker_params.json", "P波・S波検出の画面の設定"),
   ("user", "", "hypocenter_params.json", "震源推定の画面の設定"),
   ("user", "etc", "*.tbl", "etc の上書き(チャンネル表)"),

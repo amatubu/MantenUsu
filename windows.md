@@ -37,8 +37,8 @@ conda create -n obspy_env python obspy matplotlib google-api-python-client googl
 # 3. 作成した環境の有効化
 conda activate obspy_env
 
-# 4. pyinstaller の導入(ビルドも行いたい場合のみ)
-pip install pyinstaller
+# 4. pyinstaller の導入(ビルドも行いたい場合のみ。markdown は操作マニュアルの PDF を作るため)
+pip install pyinstaller markdown
 ```
 
 ### すでに `obspy_env` を作ってある場合

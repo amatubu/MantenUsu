@@ -1,93 +1,125 @@
+# simulate_size.py
+# 観測データの量を、日ごと・月ごとに集計する(Googleドライブやディスクの容量の見積もり用)
+#   既定は、データフォルダの daily_zips の ZIP の中身(WIN ファイル)を、解凍せずに数える
+#     ファイル数・WIN ファイルの大きさの合計・ZIP の大きさ(圧縮後)を出す
+#   --dir で、展開した元データのフォルダ(拠点ID/YYMMDD/*.win の形)を数えることもできる(日ごとの ZIP にまとめる前の見積もり)
+#
+# 使い方(プロジェクトのフォルダで):
+#   python3 scripts/simulate_size.py                ... daily_zips の月ごとの集計
+#   python3 scripts/simulate_size.py --daily        ... 日ごとの集計も出す
+#   python3 scripts/simulate_size.py --dir <フォルダ> ... 展開した元データのフォルダを数える
+import argparse
 import os
+import zipfile
 from collections import defaultdict
+from pathlib import Path
+
+import app_paths
 
 
-def main():
-  source_root = "."
+def new_stats():
+  return {"count": 0, "size": 0, "zip": 0}
 
-  if not os.path.exists(source_root):
-    print(f"エラー: コピー元フォルダが見つかりません: {source_root}")
-    return
+# daily_zips の ZIP の中身を数える(日付は ZIP の中のフォルダ名 拠点ID/YYMMDD/...)
+def scan_daily_zips(zips_dir):
+  daily = defaultdict(new_stats)
+  for zip_path in sorted(zips_dir.glob("*.zip")):
+    try:
+      with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+          parts = info.filename.split("/")
+          if not info.filename.endswith(".win") or len(parts) < 2:
+            continue
+          day = parts[-2]
+          if not (day.isdigit() and len(day) == 6):
+            continue
+          daily[day]["count"] += 1
+          daily[day]["size"] += info.file_size
+          daily[day]["zip"] += info.compress_size
+    except Exception as e:
+      print(f"警告: {zip_path.name} を読めませんでした ({e})")
+  return daily
 
-  # 集計用の辞書
-  # daily_stats: { "260823": {"count": 0, "size": 0} }
-  # monthly_stats: { "2608": {"count": 0, "size": 0} }
-  daily_stats = defaultdict(lambda: {"count": 0, "size": 0})
-  monthly_stats = defaultdict(lambda: {"count": 0, "size": 0})
-
-  total_files = 0
-  total_size = 0
-
-  print("ファイル構造をスキャン中... しばらくお待ちください。\n")
-
-  for id_folder in os.listdir(source_root):
-    id_path = os.path.join(source_root, id_folder)
+# 展開した元データのフォルダ(拠点ID(10桁)/YYMMDD/*.win)を数える
+def scan_folder(root):
+  daily = defaultdict(new_stats)
+  for id_folder in os.listdir(root):
+    id_path = os.path.join(root, id_folder)
     if not os.path.isdir(id_path) or not id_folder.isdigit() or len(id_folder) != 10:
       continue
-
-    for date_folder in os.listdir(id_path):
-      date_path = os.path.join(id_path, date_folder)
-      if (
-        not os.path.isdir(date_path)
-        or not date_folder.isdigit()
-        or len(date_folder) != 6
-      ):
+    for day in os.listdir(id_path):
+      day_path = os.path.join(id_path, day)
+      if not os.path.isdir(day_path) or not day.isdigit() or len(day) != 6:
         continue
-
-      # 日付フォルダ名から月を抽出 (例: "260823" -> 年:26, 月:08 -> "2608")
-      month_key = date_folder[0:4]
-
-      for filename in os.listdir(date_path):
+      for filename in os.listdir(day_path):
         if not filename.endswith(".win"):
           continue
-
-        file_path = os.path.join(date_path, filename)
         try:
-          file_size = os.path.getsize(file_path)
+          size = os.path.getsize(os.path.join(day_path, filename))
         except OSError:
           continue
+        daily[day]["count"] += 1
+        daily[day]["size"] += size
+  return daily
 
-        total_files += 1
-        total_size += file_size
+# 大きさを読みやすい単位にする
+def format_size(size_bytes):
+  for unit in ["B", "KB", "MB", "GB"]:
+    if size_bytes < 1024.0:
+      return f"{size_bytes:.1f} {unit}"
+    size_bytes /= 1024.0
+  return f"{size_bytes:.1f} TB"
 
-        # 日別の集計
-        daily_stats[date_folder]["count"] += 1
-        daily_stats[date_folder]["size"] += file_size
+def print_table(title, rows, label, with_zip):
+  print(f"\n【{title}】")
+  header = f"{label:<16} | {'ファイル数':>8} | {'WIN の大きさ':>12}" + (f" | {'ZIP(圧縮後)':>12}" if with_zip else "")
+  print(header)
+  print("-" * (len(header) + 6))
+  for key, st in rows:
+    line = f"{key:<16} | {st['count']:>10} | {format_size(st['size']):>14}"
+    if with_zip:
+      line += f" | {format_size(st['zip']):>14}"
+    print(line)
 
-        # 月別の集計
-        monthly_stats[month_key]["count"] += 1
-        monthly_stats[month_key]["size"] += file_size
+def main():
+  parser = argparse.ArgumentParser(description="観測データの量を、日ごと・月ごとに集計する")
+  parser.add_argument("--dir", type=Path, help="展開した元データのフォルダ(拠点ID/YYMMDD/*.win)を数える")
+  parser.add_argument("--daily", action="store_true", help="日ごとの集計も出す")
+  args = parser.parse_args()
 
-  # 容量を読みやすい単位（KB, MB, GB）に変換する関数
-  def format_size(size_bytes):
-    for unit in ["B", "KB", "MB", "GB"]:
-      if size_bytes < 1024.0:
-        return f"{size_bytes:.2f} {unit}"
-      size_bytes /= 1024.0
-    return f"{size_bytes:.2f} TB"
+  if args.dir:
+    if not args.dir.is_dir():
+      print(f"エラー: フォルダが見つかりません: {args.dir}")
+      return
+    print(f"展開した元データのフォルダを数えています: {args.dir}")
+    daily, with_zip = scan_folder(args.dir), False
+  else:
+    zips_dir = app_paths.ZIPS_DIR
+    if not zips_dir.is_dir():
+      print(f"エラー: daily_zips が見つかりません: {zips_dir}")
+      return
+    print(f"daily_zips の ZIP の中身を数えています(解凍はしません): {zips_dir}")
+    daily, with_zip = scan_daily_zips(zips_dir), True
+  if not daily:
+    print("WIN ファイルが見つかりませんでした。")
+    return
 
-  # --- 結果の表示 ---
-  print("=" * 50)
-  print(f"全体サマリー: 総ファイル数 {total_files} 個, 総容量 {format_size(total_size)}")
-  print("=" * 50)
+  monthly = defaultdict(new_stats)
+  total = new_stats()
+  for day, st in daily.items():
+    for target in (monthly[day[:4]], total):
+      for k in target:
+        target[k] += st[k]
 
-  print("\n【月別シミュレーション（月単位Zipのイメージ）】")
-  print(f"{'月':<10} | {'ファイル数':<10} | {'合計サイズ':<12}")
-  print("-" * 38)
-  for month in sorted(monthly_stats.keys()):
-    c = monthly_stats[month]["count"]
-    s = format_size(monthly_stats[month]["size"])
-    print(f"20{month[:2]}年{month[2:]}月 ({month})" + f" | {c:<10} | {s}")
-
-  print("\n【日別シミュレーション（日単位Zipのイメージ - 一部抜粋）】")
-  print(f"{'日付':<10} | {'ファイル数':<10} | {'合計サイズ':<12}")
-  print("-" * 38)
-  # 日別は数が多いかもしれないので上位・あるいは全て表示（今回は全て、または見やすく）
-  for date in sorted(daily_stats.keys()):
-    c = daily_stats[date]["count"]
-    s = format_size(daily_stats[date]["size"])
-    print(f"20{date[:2]}年{date[2:4]}月{date[4:]}日 ({date})" + f" | {c:<10} | {s}")
-  print("=" * 50)
+  print("=" * 60)
+  print(f"全体: {len(daily)}日、ファイル数 {total['count']}、WIN の大きさ {format_size(total['size'])}"
+        + (f"、ZIP(圧縮後) {format_size(total['zip'])}" if with_zip else ""))
+  print(f"1日あたりの平均: WIN {format_size(total['size'] / len(daily))}"
+        + (f"、ZIP {format_size(total['zip'] / len(daily))}" if with_zip else ""))
+  print("=" * 60)
+  print_table("月ごと", [(f"20{m[:2]}年{m[2:]}月", monthly[m]) for m in sorted(monthly)], "月", with_zip)
+  if args.daily:
+    print_table("日ごと", [(f"20{d[:2]}/{d[2:4]}/{d[4:]}", daily[d]) for d in sorted(daily)], "日付", with_zip)
 
 
 if __name__ == "__main__":
