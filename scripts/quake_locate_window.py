@@ -35,7 +35,8 @@ def fmt(v, spec):
 #                     反映する関数は、求め直した結果を渡すと、その行と図を更新する
 #   on_save ... 「一覧と図を保存」で呼ぶ関数(引数なし)
 #   on_revert ... (候補, 結果) を渡すと、保存した到着時刻を消して自動で求め直した結果を返す関数
-def open_locate_window(parent, items, stations, proj, title, on_open_event, on_save, on_revert):
+#   on_recompute ... 保存した結果を使わずに震源を計算し直す関数(引数は進み具合を出す画面。戻り値は新しい [(候補, 結果), ...])
+def open_locate_window(parent, items, stations, proj, title, on_open_event, on_save, on_revert, on_recompute=None):
   win = tk.Toplevel(parent)
   win.title(f"地震の候補の震源 - {title}")
   win.geometry("1560x900")
@@ -71,6 +72,22 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   # --- 右: 震央の地図と断面図 ---
   right = ttk.Frame(win)
   right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+  # 左の一覧を隠して、地図と断面図を画面いっぱいに広げる(もう一度押すと戻す。ウィンドウの全画面表示は変えない)
+  map_bar = ttk.Frame(right)
+  map_bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=(6, 0))
+  hide_button = ttk.Button(map_bar)
+  hide_button.pack(side=tk.RIGHT)
+  hidden = {"on": False}
+
+  def toggle_list():
+    hidden["on"] = not hidden["on"]
+    if hidden["on"]:
+      left.pack_forget()
+    else:
+      left.pack(side=tk.LEFT, fill=tk.Y, before=right)
+    hide_button.configure(text=shortcuts.with_label("一覧を表示" if hidden["on"] else "一覧を隠す", "f"))
+  hide_button.configure(command=toggle_list, text=shortcuts.with_label("一覧を隠す", "f"))
+
   fig = Figure(figsize=(9.6, 7.8))
   canvas = FigureCanvasTkAgg(fig, master=right)
   toolbar = NavigationToolbar2Tk(canvas, right)
@@ -222,6 +239,22 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
         fill_table(selected_index())
   win.bind("<FocusIn>", on_focus)
 
+  # すべての候補の震源を計算し直す(保存した到着時刻はそのまま使う)
+  def recompute():
+    if on_recompute is None or state["opening"]:
+      return
+    if not messagebox.askyesno("再計算", f"{len(items)}件の震源を計算し直しますか?\n"
+                               "(手直しして保存した到着時刻はそのまま使います)", parent=win):
+      return
+    k = selected_index()
+    new_items = on_recompute(win)
+    if not win.winfo_exists():
+      return
+    items[:] = new_items
+    draw_figure()
+    fill_table(k if k is not None and k < len(items) else None)
+    on_select()
+
   def save():
     on_save()
     state["unsaved"] = False
@@ -239,7 +272,7 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     win.destroy()
   win.protocol("WM_DELETE_WINDOW", close)
 
-  #   ショートカット: 震源推定を開く ↩(Enter)、自動に戻す ⌘R、一覧と図を保存 ⌘S、閉じる ⌘W(Windows は Ctrl)
+  #   ショートカット: 震源推定を開く ↩(Enter)、自動に戻す ⌘R、一覧と図を保存 ⌘S、一覧を隠す・表示 ⌘F、閉じる ⌘W(Windows は Ctrl)
   ttk.Button(buttons, text=shortcuts.with_label("震源推定を開く", "Return", modifier=False), command=open_event).pack(side=tk.LEFT)
   ttk.Button(buttons, text=shortcuts.with_label("自動に戻す", "r"), command=revert).pack(side=tk.LEFT, padx=(8, 0))
   ttk.Button(buttons, text=shortcuts.with_label("一覧と図を保存", "s"), command=save).pack(side=tk.LEFT, padx=(8, 0))
@@ -250,6 +283,9 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   shortcuts.bind(win, "r", revert)
   shortcuts.bind(win, "s", save)
   shortcuts.bind(win, "w", close)
+  shortcuts.bind(win, "f", toggle_list)
+  if on_recompute is not None:
+    ttk.Button(buttons, text="再計算", command=recompute).pack(side=tk.LEFT, padx=(8, 0))
   ttk.Button(buttons, text="閉じる", command=close).pack(side=tk.RIGHT)
 
   draw_figure()

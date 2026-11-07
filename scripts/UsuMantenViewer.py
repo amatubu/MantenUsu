@@ -315,12 +315,13 @@ class MantenUsuSeismographApp:
 
     # 4. 実行ボタン
     # ボタンの定義
+    #   Mac の標準のボタンは背景色が変えられず(薄いグレーのまま)、白い文字が読みにくいので、文字を濃い緑にする
     btn_run = tk.Button(
       panel,
       text = shortcuts.with_label("抽出・変換・プロット実行 (自動判定)", "Return"),    # ボタンに表示されるラベル
       font = ("sans-serif", 11, "bold"),
       bg = "#4CAF50",
-      fg = "white",
+      fg = "#1B5E20" if shortcuts.IS_MAC else "white",
       activebackground = "#45a049",
       command = self.execute_pipeline,  # ボタンが押された際に実行されるメソッド
     )
@@ -438,8 +439,15 @@ class MantenUsuSeismographApp:
       text=shortcuts.with_label("候補の一覧(CSV)を選んで震源を表示", "o"),
       font=("sans-serif", 9),
       command=self.open_quake_locations,
-    ).pack(fill=tk.X, pady=(0, 4))
+    ).pack(fill=tk.X, pady=(0, 0))
     shortcuts.bind(self.root, "o", self.open_quake_locations)
+    # 前に計算した震源を使い回すか(外すと、開くたびに全件計算する。デモで計算の様子を見せたいときなど)
+    #   ユーザーの設定(settings.json)の locate_use_cache に覚えておく
+    self.locate_use_cache = tk.BooleanVar(value=app_paths.load_settings().get("locate_use_cache", True))
+    def save_locate_use_cache(*_args):
+      app_paths.save_settings({**app_paths.load_settings(), "locate_use_cache": bool(self.locate_use_cache.get())})
+    self.locate_use_cache.trace_add("write", save_locate_use_cache)
+    ttk.Checkbutton(panel, text="前に計算した震源を使い回す", variable=self.locate_use_cache).pack(anchor="w", pady=(0, 4))
 
     # ==========================================
     # 区切り線 2 (スタック機能 と メンテナンス機能 の間)
@@ -1574,27 +1582,35 @@ class MantenUsuSeismographApp:
     stations = load_stations(self.etc_dir)
     proj = LocalProjection(list(stations.values()))
 
-    # 進み具合の表示(計算中は画面の操作を止める)
-    progress = tk.Toplevel(self.root)
-    progress.title("計算中")
-    progress.geometry("320x110")
-    progress.resizable(False, False)
-    progress.transient(self.root)
-    progress.grab_set()
-    progress_var = tk.StringVar(value=f"震源を計算しています... 0 / {len(candidates)}")
-    tk.Label(progress, textvariable=progress_var, font=("sans-serif", 10)).pack(expand=True)
-    progress.update()
-
-    def on_result(i, n, cand, r, error):
-      if error is not None:
-        log_message(f"[エラー] {cand['start']:%Y-%m-%d %H:%M:%S}: {error}")
-      progress_var.set(f"震源を計算しています... {i} / {n}")
+    # 震源を求める(計算中は進み具合を表示して、画面の操作を止める)
+    #   前に計算した結果(output/quake_locate)があればそれを使う。force ... すべて計算し直す(「再計算」・使い回さない設定)
+    #   parent ... 進み具合の画面を出す画面
+    def compute(force, parent):
+      progress = tk.Toplevel(parent)
+      progress.title("計算中")
+      progress.geometry("320x110")
+      progress.resizable(False, False)
+      progress.transient(parent)
+      progress.grab_set()
+      progress_var = tk.StringVar(value=f"震源を計算しています... 0 / {len(candidates)}")
+      tk.Label(progress, textvariable=progress_var, font=("sans-serif", 10)).pack(expand=True)
       progress.update()
-    try:
-      items = quake_locate.locate_all(candidates, self.load_hour_stream, stations, proj, on_result)
-    finally:
-      progress.destroy()
-    log_message(f"地震の候補の震源({path.name}): {quake_locate.count_summary(items)}")
+
+      def on_result(i, n, cand, r, error):
+        if error is not None:
+          log_message(f"[エラー] {cand['start']:%Y-%m-%d %H:%M:%S}: {error}")
+        progress_var.set(f"震源を計算しています... {i} / {n}")
+        progress.update()
+      try:
+        result, computed = quake_locate.locate_all_cached(candidates, self.load_hour_stream, stations, proj, on_result,
+                                                          force=force)
+      finally:
+        progress.destroy()
+      log_message(f"地震の候補の震源({path.name}): {quake_locate.count_summary(result)}"
+                  f"(計算 {computed}件・前の結果 {len(result) - computed}件)")
+      return result
+
+    items = compute(not self.locate_use_cache.get(), self.root)
     if not items:
       messagebox.showwarning("警告", "震源を計算できた候補がありませんでした。")
       return
@@ -1643,7 +1659,8 @@ class MantenUsuSeismographApp:
       log_message(f"保存しました: {out_csv} / {out_png}")
       messagebox.showinfo("保存", f"保存しました。\n\n{out_csv}\n{out_png}")
 
-    open_locate_window(self.root, items, stations, proj, path.stem, open_event, save, revert)
+    open_locate_window(self.root, items, stations, proj, path.stem, open_event, save, revert,
+                       on_recompute=lambda parent: compute(True, parent))
 
   # --- 地震の候補の震源を求めるバッチ処理(UIなし) ---
   #   csv_path    ... 地震の候補の一覧(--detect-quakes の quake_candidates_*.csv。「候補」の列があれば印の付いた行だけ)

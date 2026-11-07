@@ -10,6 +10,7 @@
 #   震源推定の画面で保存した到着時刻(output/picks、pick_store.py)がある候補は、自動の検出の代わりにそれを使う
 #   (保存した到着時刻に、ほかの機関の観測点(external_stations.py)があれば、それも使う。自動の検出には使わない)
 import csv
+import pickle
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -237,6 +238,73 @@ def locate_all(candidates, load_hour, stations, proj, on_result=None):
     if on_result:
       on_result(i, len(candidates), cand, r, None)
   return items
+
+# --- 震源の計算結果のキャッシュ(画面で候補の一覧を開くとき) ---
+# 候補ごとの結果(波形を除く)を保存し、次に同じ候補を開いたときは計算せずに使う
+#   候補の始まり・終わり、震源リストの地震、保存した到着時刻のファイル(名前・更新日時・大きさ)、拠点の位置が同じなら
+#   結果も同じとみなす(到着時刻を手直しして保存したり、自動に戻したりすると、その候補だけ計算し直す)
+#   locate_candidate や locate_event の中身を変えたら LOCATE_CACHE_VERSION を上げて、作り直させる
+#   (中身は Python の pickle。このアプリが書いたファイルだけを読む)
+LOCATE_CACHE_VERSION = 1
+LOCATE_CACHE_FILE = app_paths.OUTPUT_DIR / "quake_locate" / f"locate_v{LOCATE_CACHE_VERSION}.pkl"
+
+# 候補の結果を保存するときの見分け方
+def locate_key(cand, stations):
+  t0, t1 = candidate_window(cand)
+  path, _record = pick_store.find_record(t0, t1)
+  picks = None
+  if path is not None:
+    st = path.stat()
+    picks = (path.name, st.st_mtime_ns, st.st_size)
+  q = cand["jma"]
+  jma = (q["日時"].isoformat(), q["緯度"], q["経度"], q["深さ[km]"]) if q else None
+  return repr((cand["start"].isoformat(), cand["end"].isoformat(), jma, picks, sorted(stations.items())))
+
+def load_locate_cache(path=None):
+  try:
+    with open(path or LOCATE_CACHE_FILE, "rb") as f:
+      cache = pickle.load(f)
+    return cache if isinstance(cache, dict) else {}
+  except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ValueError):
+    return {}
+
+def save_locate_cache(cache, path=None):
+  path = Path(path or LOCATE_CACHE_FILE)
+  path.parent.mkdir(parents=True, exist_ok=True)
+  tmp = path.with_suffix(".tmp")
+  with open(tmp, "wb") as f:
+    pickle.dump(cache, f)
+  tmp.replace(path)
+
+# 候補をすべて計算する(保存した結果があればそれを使う。画面で一覧を開くとき)
+#   force ... 保存した結果を使わずに、すべて計算し直す(画面の「再計算」)
+#   結果に波形(traces)は含まない(確認用の画像を作るバッチ処理は locate_all を使う)
+#   戻り値 ... ([(候補, 結果), ...], 計算した件数)
+def locate_all_cached(candidates, load_hour, stations, proj, on_result=None, force=False, cache_path=None):
+  cache = load_locate_cache(cache_path)
+  stream_cache, items, computed = {}, [], 0
+  for i, cand in enumerate(candidates, 1):
+    if cand["jma"]:
+      add_arrivals(cand["jma"], (proj.lat0, proj.lon0))
+    key = locate_key(cand, stations)
+    r = None if force else cache.get(key)
+    if r is None:
+      try:
+        r = locate_candidate(window_stream(*candidate_window(cand), load_hour, stream_cache), cand, stations, proj)
+      except Exception as e:
+        if on_result:
+          on_result(i, len(candidates), cand, None, e)
+        continue
+      r = {k: v for k, v in r.items() if k != "traces"}
+      cache[key] = r
+      computed += 1
+    r = dict(r)
+    items.append((cand, r))
+    if on_result:
+      on_result(i, len(candidates), cand, r, None)
+  if computed:
+    save_locate_cache(cache, cache_path)
+  return items, computed
 
 # 判定ごとの件数の説明。例: 近い地震 11件、近い地震(残差大) 6件、近い地震(到着時刻少) 2件、…
 def count_summary(items):
@@ -509,12 +577,12 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
     ax.plot(fx(x, y, z), fy(x, y, z), "P", color="saddlebrown", ms=10, markeredgecolor="white", zorder=5)
     for (cand, r), (x, y, z) in zip(local, points):
       good = r["kind"] == KIND_LOCAL and r["loc"]["rms"] < GOOD_RMS
-      ax.plot(fx(x, y, z), fy(x, y, z), "o", color="red" if good else "none", markeredgecolor="red", ms=7, zorder=6)
+      ax.plot(fx(x, y, z), fy(x, y, z), "o", color="red" if good else "none", markeredgecolor="red", ms=6, zorder=6)
       q = cand["jma"]
       if q:
         jx, jy = proj.to_xy(q["緯度"], q["経度"])
         jz = q["深さ[km]"]
-        ax.plot(fx(jx, jy, jz), fy(jx, jy, jz), "x", color="teal", ms=8, mew=2, zorder=6)
+        ax.plot(fx(jx, jy, jz), fy(jx, jy, jz), "x", color="teal", ms=7, mew=1.8, zorder=6)
         ax.plot([fx(x, y, z), fx(jx, jy, jz)], [fy(x, y, z), fy(jx, jy, jz)], color="teal", lw=0.8, ls=":", zorder=5)
   plot_all(axm, lambda x, y, z: x, lambda x, y, z: y)
   plot_all(axe, lambda x, y, z: x, lambda x, y, z: z, label_external=False)

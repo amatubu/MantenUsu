@@ -89,7 +89,8 @@ def classify(name):
 #   vnet ... ほかの機関の観測点の変換済みの SAC(external_stations.py)。メンテナンス画面の「ほかの機関の観測点」で消す
 #   picks で始まるフォルダ(picks_backup_... など、到着時刻のバックアップ)も消さない
 #   quake_features ... 地震の候補ごとの波形の解析結果(quake_detect.py)。作り直すのに時間がかかるので消さない
-KEEP_DIRS = {"picks", "quake_rms", "vnet", "quake_features"}
+#   quake_locate ... 画面で開いた候補の一覧の震源の計算結果(quake_locate.py)。小さいので消さない(画面の「再計算」で作り直す)
+KEEP_DIRS = {"picks", "quake_rms", "vnet", "quake_features", "quake_locate"}
 
 # ファイルを消すときに、同時に動かす数
 #   Mac で外付けドライブ(exFAT)のファイルを消すと、1つに 40 ms ほどかかる(macOS の exFAT の処理のため。
