@@ -147,6 +147,8 @@ warnings.filterwarnings(
 #     一覧は CSV から取り込んでユーザーの設定(quake_lists.json)に保存し、選んだ地震の波形を履歴に残さずに表示する
 #     地震の候補を探したときは、震源リストと対応した候補を既知の地震に自動で加える。
 #     地震の候補の震源の画面では、有珠山付近の地震の一覧にある候補に ✓ を付け、ボタン(⌘U)で加える・外す
+#     有珠山付近の地震のタブの「地図にプロット」(⌘P)で、一覧を地震の候補の CSV にして地震の候補の震源の画面で開く。
+#     「メモを編集」(⌘E)で、選んだ地震のメモを書き換える
 # [完了]28. 日ごとの ZIP をGoogleドライブからまとめてダウンロードするバッチ処理(--download-zips)
 #     地震の候補の検出は手元の daily_zips だけを使うので、データが増えたときに新しい日の ZIP をそろえるため
 #     (画面からは時間がかかりすぎるので、バッチ処理だけ。--dry-run で件数と大きさを確かめられる)
@@ -168,7 +170,7 @@ warnings.filterwarnings(
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "3.4.1"
+  APP_VERSION = "3.5.0"
   # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
   MAX_HISTORY = 1000
   # 終了日時を入れるボタンの長さ(分。開始・終了の分を両方含めた長さ)
@@ -1563,21 +1565,25 @@ class MantenUsuSeismographApp:
   # --- 地震の候補の震源を画面に表示する ---
   #   候補の一覧(--detect-quakes の quake_candidates_*.csv。「候補」の列があれば印の付いた行だけ)を選び、
   #   バッチ処理(--locate-quakes)と同じ方法で震源を求めて、表と地図・断面図の画面を開く
-  def open_quake_locations(self):
-    path = filedialog.askopenfilename(
-      parent=self.root, title="地震の候補の一覧(CSV)を選んでください",
-      initialdir=str(quake_detect.OUTPUT_DIR if quake_detect.OUTPUT_DIR.exists() else self.batch_output_dir),
-      filetypes=[("CSV ファイル", "*.csv"), ("すべてのファイル", "*.*")])
-    if not path:
-      return
+  #   path   ... 地震の候補の一覧(CSV)。None なら選んでもらう
+  #   parent ... 確認や計算中の表示を出す画面(地震リストの画面から開くときはその画面)
+  def open_quake_locations(self, path=None, parent=None):
+    parent = parent or self.root
+    if path is None:
+      path = filedialog.askopenfilename(
+        parent=parent, title="地震の候補の一覧(CSV)を選んでください",
+        initialdir=str(quake_detect.OUTPUT_DIR if quake_detect.OUTPUT_DIR.exists() else self.batch_output_dir),
+        filetypes=[("CSV ファイル", "*.csv"), ("すべてのファイル", "*.*")])
+      if not path:
+        return
     path = Path(path)
     candidates = quake_locate.read_candidates(path)
     if not candidates:
-      messagebox.showwarning("警告", "一覧に地震の候補がありません(「開始」の列が必要です)。")
+      messagebox.showwarning("警告", "一覧に地震の候補がありません(「開始」の列が必要です)。", parent=parent)
       return
     # 1件あたり約0.3秒かかる(初めて読む時間は、SACファイルの準備でさらにかかる)
     if len(candidates) > 50 and not messagebox.askyesno(
-        "確認", f"候補が {len(candidates)}件あります。計算に1分以上かかることがありますが、続けますか?"):
+        "確認", f"候補が {len(candidates)}件あります。計算に1分以上かかることがありますが、続けますか?", parent=parent):
       return
     stations = load_stations(self.etc_dir)
     proj = LocalProjection(list(stations.values()))
@@ -1610,9 +1616,9 @@ class MantenUsuSeismographApp:
                   f"(計算 {computed}件・前の結果 {len(result) - computed}件)")
       return result
 
-    items = compute(not self.locate_use_cache.get(), self.root)
+    items = compute(not self.locate_use_cache.get(), parent)
     if not items:
-      messagebox.showwarning("警告", "震源を計算できた候補がありませんでした。")
+      messagebox.showwarning("警告", "震源を計算できた候補がありませんでした。", parent=parent)
       return
 
     # 候補の前後の波形(震源推定の画面と、求め直すときに使う)

@@ -21,10 +21,10 @@ KNOWN, USU = "known", "usu"
 LIST_TITLES = {KNOWN: "既知の地震", USU: "有珠山付近の地震"}
 # 一覧の列(名前, 幅, 右寄せか)
 COLUMNS = {
-  KNOWN: [("発震時刻", 150, False), ("震央地名", 130, False), ("M", 45, True), ("深さ[km]", 60, True),
-          ("震央距離[km]", 80, True), ("満点の倍率", 75, True), ("対応", 150, False), ("有珠山付近", 70, False)],
-  USU: [("発生時刻(推定)", 150, False), ("深さ[km]", 60, True), ("山頂から", 120, False), ("残差[秒]", 60, True),
-        ("らしさ", 110, False), ("気象庁の M", 70, True), ("メモ", 200, False)],
+  KNOWN: [("発震時刻", 165, False), ("震央地名", 130, False), ("M", 45, True), ("深さ[km]", 60, True),
+          ("震央距離[km]", 80, True), ("満点の倍率", 75, True), ("対応", 135, False), ("有珠山付近", 70, False)],
+  USU: [("発生時刻(推定)", 165, False), ("深さ[km]", 60, True), ("山頂から", 120, False), ("残差[秒]", 60, True),
+        ("らしさ", 110, False), ("気象庁の M", 70, True), ("メモ", 185, False)],
 }
 # 波形を表示する範囲: 揺れの開始のこの秒数前から、終了のこの秒数後まで(分にそろえる。履歴への追加と同じ)
 MARGIN_SECONDS = 30
@@ -85,6 +85,11 @@ def remove(lists, kind, entry):
   lists[kind].remove(entry)
   if entry["start"] not in lists["removed"][kind]:
     lists["removed"][kind].append(entry["start"])
+
+# メモを書き換える(地震リストの画面の「メモを編集」。有珠山付近の地震の一覧だけがメモの列を持つ)
+#   空にすればメモを消す
+def set_memo(entry, memo):
+  entry.setdefault("fields", {})["メモ"] = memo.strip()
 
 # 波形を表示する範囲(メイン画面の日時の欄の形式 YYYYMMDDHHmm。終了の分も含む)
 def display_range(entry):
@@ -305,3 +310,45 @@ def toggle_usu(cand, r, add):
   merge(lists, {USU: [usu], KNOWN: [known] if known else []}, keep_existing_known=True)
   save(lists)
   return True
+
+# 有珠山付近の地震の一覧を、地震の候補の一覧の形式(quake_locate.read_candidates で読める CSV)で書き出す
+#   地震リストの画面の「地図にプロット」で、地震の候補の震源の画面に渡すために使う
+#   気象庁の震源は、既知の地震の一覧に同じ開始の地震があれば、その発震時刻で取得済みの震源リストから引く
+#   (震源リストが無い日や見つからないときは、気象庁の列を空にする)
+#   戻り値 ... 書き出した件数
+USU_CANDIDATES_FIELDS = ["開始", "終了", "メモ", "有珠山の地震らしさ",
+                         "気象庁: 発震時刻", "緯度", "経度", "深さ[km]", "M", "震央地名"]
+
+def _jma_quake(time_text):
+  import jma_hypocenter
+  try:
+    t = datetime.strptime(time_text.strip()[:21], "%Y-%m-%d %H:%M:%S.%f")
+  except ValueError:
+    try:
+      t = datetime.strptime(time_text.strip()[:19], TIME_FORMAT)
+    except ValueError:
+      return None
+  day = t.replace(hour=0, minute=0, second=0, microsecond=0)
+  hits = [q for q in jma_hypocenter.load_day(day) if abs((q["日時"] - t).total_seconds()) < 1.0]
+  return min(hits, key=lambda q: abs((q["日時"] - t).total_seconds())) if hits else None
+
+def write_usu_candidates(path, lists=None):
+  lists = lists or load()
+  known = {e["start"]: e for e in lists[KNOWN]}
+  path = Path(path)
+  path.parent.mkdir(parents=True, exist_ok=True)
+  with open(path, "w", encoding="utf-8-sig", newline="") as f:
+    w = csv.DictWriter(f, fieldnames=USU_CANDIDATES_FIELDS)
+    w.writeheader()
+    for e in sorted(lists[USU], key=lambda e: e["start"]):
+      fields = e.get("fields", {})
+      row = {"開始": e["start"], "終了": e["end"][11:19], "メモ": fields.get("メモ", ""),
+             "有珠山の地震らしさ": fields.get("らしさ", "")}
+      k = known.get(e["start"])
+      q = _jma_quake(k.get("time") or k["fields"].get("発震時刻", "")) if k else None
+      if q:
+        row.update({"気象庁: 発震時刻": f"{q['日時']:%Y-%m-%d %H:%M:%S.%f}"[:-5], "緯度": f"{q['緯度']:.4f}",
+                    "経度": f"{q['経度']:.4f}", "深さ[km]": f"{q['深さ[km]']:g}",
+                    "M": f"{q['M']:g}" if q["M"] is not None else "", "震央地名": q["震央地名"]})
+      w.writerow(row)
+  return len(lists[USU])

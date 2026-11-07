@@ -159,3 +159,43 @@ def test_read_locations_csv(tmp_path):
 def test_read_unknown_csv(tmp_path):
   assert quake_list.read_csv(write_csv(tmp_path / "u.csv", ["開始", "何か"], [{"開始": "2026-01-01 00:00:00"}])) is None
   assert quake_list.read_csv(write_csv(tmp_path / "v.csv", ["列"], [{"列": "1"}])) is None
+
+
+# --- 有珠山付近の地震を、地震の候補の CSV に書き出す(地震リストの「地図にプロット」) ---
+
+def test_write_usu_candidates_reads_back_with_jma(user_files, monkeypatch, tmp_path):
+  import app_paths
+  import quake_locate
+  jma_dir = tmp_path / "jma"
+  jma_dir.mkdir()
+  monkeypatch.setattr(app_paths, "JMA_HYPOCENTER_DIR", jma_dir)
+  write_csv(jma_dir / "20250708.csv", ["日時", "緯度", "経度", "深さ[km]", "M", "震央地名"],
+            [{"日時": "2025-07-08 21:30:04.70", "緯度": "42.55", "経度": "140.85", "深さ[km]": "2", "M": "0.3",
+              "震央地名": "胆振地方西部"}])
+  lists = empty_lists()
+  lists[USU] = [entry("2025-07-22 08:49:30", "2025-07-22 08:50:00", メモ="山頂付近", らしさ="低"),
+                entry("2025-07-08 21:30:00", "2025-07-08 21:30:40")]
+  # 既知の地震に同じ開始があれば、その発震時刻で震源リストから引く
+  lists[KNOWN] = [dict(entry("2025-07-08 21:30:00", "2025-07-08 21:30:40"), time="2025-07-08 21:30:04.7")]
+  out = tmp_path / "out" / "usu.csv"
+  assert quake_list.write_usu_candidates(out, lists) == 2
+  cands = quake_locate.read_candidates(out)
+  assert [f"{c['start']:%H:%M:%S}" for c in cands] == ["21:30:00", "08:49:30"]   # 開始の順
+  assert f"{cands[0]['end']:%H:%M:%S}" == "21:30:40"
+  assert cands[0]["jma"]["震央地名"] == "胆振地方西部" and cands[0]["jma"]["M"] == 0.3
+  assert cands[1]["jma"] is None
+  assert cands[1]["row"]["メモ"] == "山頂付近" and cands[1]["row"]["有珠山の地震らしさ"] == "低"
+
+
+# --- メモの編集(地震リストの「メモを編集」) ---
+
+def test_set_memo_saves_and_clears(user_files):
+  lists = empty_lists()
+  e = entry("2026-06-23 12:58:40", メモ="")
+  lists[USU] = [e]
+  quake_list.set_memo(e, "  採石場の発破の可能性 ")
+  quake_list.save(lists)
+  assert quake_list.load()[USU][0]["fields"]["メモ"] == "採石場の発破の可能性"
+  quake_list.set_memo(e, "")
+  quake_list.save(lists)
+  assert quake_list.load()[USU][0]["fields"]["メモ"] == ""

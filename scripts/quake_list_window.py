@@ -11,6 +11,10 @@ from log_common import log_message
 from maintenance_window import open_path
 
 
+# 「地図にプロット」で書き出す CSV の名前(地震の候補の震源の画面の題名と、保存する一覧の名前にもなる)
+USU_MAP_CSV = "地震リスト_有珠山付近の地震.csv"
+
+
 class QuakeListWindow:
   # app ... メイン画面(execute_pipeline で波形を表示する)
   def __init__(self, parent, app):
@@ -49,22 +53,31 @@ class QuakeListWindow:
       tree.bind("<Return>", lambda _e: (self.show_selected(), "break")[1])
       tree.bind("<KP_Enter>", lambda _e: (self.show_selected(), "break")[1])
       self.trees[kind] = tree
-    self.notebook.bind("<<NotebookTabChanged>>", lambda _e: self.focus_tree())
+    self.notebook.bind("<<NotebookTabChanged>>", lambda _e: self.on_tab_changed())
 
     # 下のボタン
     bottom = ttk.Frame(frame)
     bottom.pack(fill=tk.X, pady=(8, 0))
     ttk.Button(bottom, text="波形を表示  Enter", command=self.show_selected).pack(side=tk.LEFT)
-    ttk.Button(bottom, text=shortcuts.with_label("画像を開く", "i"), command=self.open_image).pack(side=tk.LEFT, padx=(6, 0))
+    self.image_button = ttk.Button(bottom, text=shortcuts.with_label("画像を開く", "i"), command=self.open_image)
+    self.image_button.pack(side=tk.LEFT, padx=(6, 0))
     self.close_previous = tk.BooleanVar(value=True)
     ttk.Checkbutton(bottom, text="前の波形を閉じる", variable=self.close_previous).pack(side=tk.LEFT, padx=(12, 0))
     ttk.Button(bottom, text="一覧から外す", command=self.remove_selected).pack(side=tk.RIGHT)
-    ttk.Button(bottom, text="CSV を取り込む…", command=self.import_csv).pack(side=tk.RIGHT, padx=(0, 6))
+    self.import_button = ttk.Button(bottom, text="CSV を取り込む…", command=self.import_csv)
+    self.import_button.pack(side=tk.RIGHT, padx=(0, 6))
+    # 有珠山付近の地震のタブだけに出す(一覧を地震の候補の CSV にして、地震の候補の震源の画面で開く)
+    self.map_button = ttk.Button(bottom, text=shortcuts.with_label("地図にプロット", "p"), command=self.show_on_map)
+    # メモの編集も、メモの列がある有珠山付近の地震のタブだけに出す
+    self.memo_button = ttk.Button(bottom, text=shortcuts.with_label("メモを編集", "e"), command=self.edit_memo)
     ttk.Label(frame, text=f"↑↓ 選ぶ　Enter・ダブルクリック 波形を表示　{shortcuts.label('i')} 画像　"
+                          f"{shortcuts.label('e')} メモ・{shortcuts.label('p')} 地図にプロット(有珠山付近の地震)　"
                           f"{shortcuts.label('Left')}{shortcuts.label('Right')} タブの切り替え　{shortcuts.label('w')} 閉じる",
               foreground="#666666").pack(anchor="w", pady=(6, 0))
 
     shortcuts.bind(win, "i", self.open_image)
+    shortcuts.bind(win, "p", lambda: self.show_on_map() if self.current_kind() == quake_list.USU else None)
+    shortcuts.bind(win, "e", lambda: self.edit_memo() if self.current_kind() == quake_list.USU else None)
     shortcuts.bind(win, "w", self.close)
     shortcuts.bind(win, "Left", lambda: self.switch_tab(-1))
     shortcuts.bind(win, "Right", lambda: self.switch_tab(+1))
@@ -104,6 +117,33 @@ class QuakeListWindow:
       first = tree.get_children()[0]
       tree.selection_set(first)
       tree.focus(first)
+
+  def on_tab_changed(self):
+    if self.current_kind() == quake_list.USU:
+      self.map_button.pack(side=tk.RIGHT, padx=(0, 6), before=self.import_button)
+      self.memo_button.pack(side=tk.LEFT, padx=(6, 0), after=self.image_button)
+    else:
+      self.map_button.pack_forget()
+      self.memo_button.pack_forget()
+    self.focus_tree()
+
+  # 有珠山付近の地震を、地震の候補の震源の画面(地図と断面図)で開く
+  #   一覧を地震の候補の CSV(quake_detect.OUTPUT_DIR/USU_MAP_CSV)に書き出し、メイン画面の
+  #   「候補の一覧(CSV)を選んで震源を表示」と同じ処理で開く(前に計算した震源を使い回すかも、メイン画面の設定に従う)
+  def show_on_map(self):
+    import quake_detect
+    self.reload_if_changed()
+    if not self.lists[quake_list.USU]:
+      messagebox.showinfo("地図にプロット", "有珠山付近の地震の一覧が空です。", parent=self.win)
+      return
+    path = quake_detect.OUTPUT_DIR / USU_MAP_CSV
+    try:
+      n = quake_list.write_usu_candidates(path, self.lists)
+    except OSError as e:
+      messagebox.showerror("エラー", f"一覧を書き出せませんでした。\n{e}", parent=self.win)
+      return
+    log_message(f"有珠山付近の地震 {n}件を書き出しました: {path}")
+    self.app.open_quake_locations(path, parent=self.win)
 
   def switch_tab(self, step):
     n = len(self.kinds)
@@ -199,6 +239,48 @@ class QuakeListWindow:
       messagebox.showinfo("画像", "この地震の確認用の画像がありません(データフォルダの中に見つかりません)。", parent=self.win)
       return
     open_path(path)
+
+  # 選んだ地震のメモを書き換える(小さな画面で入力。Enter で保存、Esc でやめる。空にするとメモを消す)
+  def edit_memo(self):
+    self.reload_if_changed()
+    kind, entry = self.selected()
+    if entry is None:
+      return
+    dlg = tk.Toplevel(self.win)
+    dlg.title("メモを編集")
+    dlg.transient(self.win)
+    dlg.resizable(True, False)
+    body = ttk.Frame(dlg, padding=10)
+    body.pack(fill=tk.BOTH, expand=True)
+    ttk.Label(body, text=f"{quake_list.LIST_TITLES[kind]}  {entry['time']}").pack(anchor="w")
+    memo = tk.StringVar(value=entry.get("fields", {}).get("メモ", ""))
+    field = ttk.Entry(body, textvariable=memo, width=60)
+    field.pack(fill=tk.X, pady=(6, 8))
+    buttons = ttk.Frame(body)
+    buttons.pack(anchor="e")
+
+    def save(_e=None):
+      quake_list.set_memo(entry, memo.get())
+      quake_list.save(self.lists)
+      self.loaded_mtime = self.file_mtime()
+      dlg.destroy()
+      self.refresh()
+      self.focus_tree()
+      return "break"
+
+    def cancel(_e=None):
+      dlg.destroy()
+      self.focus_tree()
+      return "break"
+    ttk.Button(buttons, text="やめる  Esc", command=cancel).pack(side=tk.RIGHT)
+    ttk.Button(buttons, text="保存  Enter", command=save).pack(side=tk.RIGHT, padx=(0, 6))
+    field.bind("<Return>", save)
+    field.bind("<KP_Enter>", save)
+    dlg.bind("<Escape>", cancel)
+    dlg.protocol("WM_DELETE_WINDOW", cancel)
+    field.focus_set()
+    field.icursor(tk.END)
+    dlg.grab_set()
 
   def remove_selected(self):
     self.reload_if_changed()
