@@ -4,6 +4,7 @@
 #   その候補の震源推定の画面を開く(到着時刻を手で直して確かめるため)
 #   震源推定の画面で「保存して一覧に反映」を押すと、保存した到着時刻から求め直した震源で、その行と図を更新する
 import tkinter as tk
+import webbrowser
 from tkinter import ttk, messagebox
 
 from matplotlib.figure import Figure
@@ -11,7 +12,9 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 
 import quake_list
 import quake_locate
+import quake_web_map
 import shortcuts
+from log_common import log_message
 from quake_features import USU_SUMMIT
 
 # 表の列: (見出し, 幅 [px], 揃え)
@@ -87,6 +90,18 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
       left.pack(side=tk.LEFT, fill=tk.Y, before=right)
     hide_button.configure(text=shortcuts.with_label("一覧を表示" if hidden["on"] else "一覧を隠す", "f"))
   hide_button.configure(command=toggle_list, text=shortcuts.with_label("一覧を隠す", "f"))
+
+  # 震源をブラウザの地図(地理院タイル)で開く。HTML は batch_plots/quakes/locate/<題名>_map.html に書き出す
+  def open_web_map():
+    path = quake_locate.OUTPUT_DIR / f"{title}_map.html"
+    try:
+      n = quake_web_map.write_web_map(path, items, stations, title)
+    except OSError as e:
+      messagebox.showerror("エラー", f"地図を書き出せませんでした。\n{e}", parent=win)
+      return
+    log_message(f"ブラウザの地図を書き出しました(震源 {n}件): {path}")
+    webbrowser.open(path.resolve().as_uri())
+  ttk.Button(map_bar, text="ブラウザで地図を開く", command=open_web_map).pack(side=tk.RIGHT, padx=(0, 6))
 
   fig = Figure(figsize=(9.6, 7.8))
   canvas = FigureCanvasTkAgg(fig, master=right)

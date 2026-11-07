@@ -26,6 +26,12 @@ TIMEOUT = 5
 # 取得したタイル(このアプリの実行中だけ)。取得できなかったタイルは None を入れ、何度も待たないようにする
 _memory = {}
 
+# 地理院地図(ブラウザで開くページ)の URL。中心に十字を出す(vs の c1)
+#   zoom ... ズームレベル(15 で約 1.5 km 四方、10 で約 50 km 四方が1画面)
+def gsi_map_url(lat, lon, zoom=15):
+  return (f"https://maps.gsi.go.jp/#{zoom}/{lat:.6f}/{lon:.6f}/"
+          "&base=std&ls=std&disp=1&vs=c1g1j0h0k0l0u0t0z0r0s0m0f1")
+
 # 緯度・経度を、ズームレベル z のタイル番号(小数)にする(Webメルカトル)
 def lonlat_to_tile(lon, lat, z):
   n = 2 ** z

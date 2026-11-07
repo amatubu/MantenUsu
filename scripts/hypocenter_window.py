@@ -6,6 +6,7 @@
 #   到着時刻(手で直したものを含む)とパラメータは「到着時刻を保存」で output/picks に保存し(pick_store.py)、
 #   同じ範囲を開いたときに読み込んで再現する
 import json
+import webbrowser
 from datetime import timedelta
 
 import numpy as np
@@ -397,7 +398,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # 配置図を描き直す
   def draw_map(res):
     map_ax.clear()
-    map_ax.set_title("拠点の配置 (中心からの距離)", fontsize=10)
+    map_ax.set_title("拠点の配置 (中心からの距離)  クリックで地理院地図", fontsize=10)
     map_ax.set_xlabel("東 [km]")
     map_ax.set_ylabel("北 [km]")
     map_ax.grid(True)
@@ -686,12 +687,31 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   for s in sliders.values():
     s.on_changed(update)
 
+  # --- 配置図のクリック: ブラウザで地理院地図を開く ---
+  #   震央が決まっていれば震央(遠い地震は推定した震央)を中心に、決まっていなければクリックした位置を中心にする
+  def open_gsi_map(event):
+    res = state.get("result") or {}
+    if res.get("lat") is not None:
+      lat, lon = res["lat"], res["lon"]
+      zoom = 10 if res.get("far") is not None else 15
+    elif event.xdata is not None:
+      lat, lon = proj.to_latlon(event.xdata, event.ydata)
+      zoom = 14
+    else:
+      return
+    url = gsi_tiles.gsi_map_url(lat, lon, zoom)
+    log_message(f"地理院地図を開きます: {url}")
+    webbrowser.open(url)
+
   # --- 波形のクリック: 左=到着時刻を手で指定、Shift+左=その拠点だけ自動検出に戻す、
   #     右=拠点を計算から外す・戻す ---
   def on_click(event):
     # ズーム・移動のツールを使っているときは何もしない
     toolbar = fig.canvas.toolbar
     if toolbar is not None and toolbar.mode:
+      return
+    if event.inaxes is map_ax and event.button == 1:
+      open_gsi_map(event)
       return
     name = next((nm for nm in names
                  if event.inaxes in (wave_axes[nm], cft_axes[nm])), None)
