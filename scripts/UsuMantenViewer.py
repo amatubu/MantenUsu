@@ -170,7 +170,7 @@ warnings.filterwarnings(
 # クラス定義
 class MantenUsuSeismographApp:
   # バージョン情報
-  APP_VERSION = "3.5.0"
+  APP_VERSION = "3.6.0"
   # 履歴に残す件数の上限(地震の候補のバッチ処理で、まとめて追加することがあるため多めにしている)
   MAX_HISTORY = 1000
   # 終了日時を入れるボタンの長さ(分。開始・終了の分を両方含めた長さ)
