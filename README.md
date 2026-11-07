@@ -520,6 +520,7 @@ zip の中は、ユーザーの設定（`user/`）とデータフォルダ（`da
 | `screen_events.py` | 地震らしい期間の一覧から、近い地震の候補を絞り込む（一覧のCSVと確認用の画像を出力） |
 | `train_day_plot.py` | 1日分の波形から列車らしい揺れを拾い、洞爺駅の時刻表と対応させる（貨物列車の候補・地震も判別。`--stack` で1時間スタック波形に重ねた画像とPDFも出力。`--format svg`（または `pdf`）で拡大しても粗くならない画像に、`--hours 18,22` でスタック波形を作る時間を絞れる。時刻表は `etc/train_timetable_template.xlsx` で入力してCSVに保存） |
 | `jma_hypocenter.py` | 気象庁の震源リスト（日ごと・暫定値）を取得し、`jma_hypocenter` フォルダに日ごとのCSVとして保存する（日付を省略すると観測の最初の日から昨日まで。取得済みの日は取り直さないが、最後の日だけは取り直して前回との違いを表示する。メンテナンス画面からも取得できる） |
+| `template_match.py` | テンプレートマッチング（試作）。有珠山付近の地震（`batch_plots/quakes/usu_quakes_24.csv`）の波形をひな形にして、全期間の波形から似た揺れを探す（2〜20 Hz・50 Hz に間引き、全拠点・3成分の相関の平均。日ごとの結果は `output/template_match` に保存し、一覧の作り直しには使い回す）。一覧は `batch_plots/quakes/template_match/detections_<開始>_<終了>.csv`、`--images` で確認用の画像。2拠点だけの検出は相関 0.35 以上だけ残す。発破などとみられる地震は、ひな形から除く（`EXCLUDED_TEMPLATES`）。例: `python template_match.py -s 20250708 -e 20260826 -j 5`（全期間で3〜4時間） |
 
 ---
 

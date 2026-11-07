@@ -1,7 +1,7 @@
 # win_pipeline.py の、外部ツールを使わない部分(日付の扱い・ファイルの整理)のテスト
 #   変換そのもの(win2sac_32・wchch_32)は test_realdata.py で、手元のデータがあるときだけ確かめる
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -101,3 +101,18 @@ def test_move_results(tmp_path):
   win_pipeline.move_results(work, dest)
   assert {p.name for p in dest.iterdir()} == {win_pipeline.CHANNEL_TABLE, "Nizaemn.U.1070432002_sac"}
   assert (dest / "Nizaemn.U.1070432002_sac").read_bytes() == b"new"
+
+
+def test_time_chunks_split_by_clock_time():
+  # 欠測があっても、どの組も CHUNK_MINUTES 分より短い時間に収まる(win2sac_32 の点の数の上限のため)
+  def name(minute):
+    t = datetime(2026, 6, 4, 10, 0) + timedelta(minutes=minute)
+    return Path(f"0970355225_{t:%y%m%d%H%M}.win")
+  minutes = list(range(0, 54)) + list(range(71, 300))   # 10:54〜11:10 が欠測
+  chunks = win_pipeline.time_chunks([name(m) for m in minutes])
+  for chunk in chunks:
+    span = win_pipeline.win_datetime(chunk[-1].name) - win_pipeline.win_datetime(chunk[0].name)
+    assert span.total_seconds() < win_pipeline.CHUNK_MINUTES * 60
+  assert [len(c) for c in chunks] == [103, 120, 60]   # 10:00〜11:59(欠測で103個)・12:00〜13:59・14:00〜14:59
+  assert sum(chunks, []) == [name(m) for m in minutes]
+  assert len(win_pipeline.time_chunks([name(m) for m in range(120)])) == 1

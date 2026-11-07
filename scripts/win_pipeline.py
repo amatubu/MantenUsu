@@ -21,6 +21,7 @@ CHANNEL_TABLE = "manten_ch.tbl"  # チャンネル表(etc にあるもの。変�
 
 # win2sac_32 は約8000秒(2時間13分20秒)より長いWINファイルを、何も出力せずに終える。
 # そのため、これより長い期間はこの分数ずつに分けて変換し、あとでつなぐ(WINファイルは1分に1つ)
+#   ファイルの数ではなく時刻で分ける(欠測があると、120個のファイルが8000秒を超える時間にまたがるため)
 CHUNK_MINUTES = 120
 
 
@@ -218,14 +219,27 @@ def convert_wins_to_sacs(dest_dir, tools_dir, etc_dir):
   shutil.copy2(manten_tbl_path, dest_dir / manten_tbl_path.name)
 
   for station_id, files in group_raw_wins(dest_dir).items():
-    if len(files) <= CHUNK_MINUTES:
+    chunks = time_chunks(files)
+    if len(chunks) == 1:
       combined_win = dest_dir / f"{COMBINED_PREFIX}{station_id}{WIN_SUFFIX}"
       combine_wins(files, combined_win)
       target_win = correct_channels(combined_win, station_id, tools_dir, etc_dir)
       run_win2sac(win2sac_path, win_prm_path, target_win, station_id, f"{station_id}_sac", etc_dir)
     else:
-      convert_in_chunks(win2sac_path, win_prm_path, files, station_id, dest_dir,
+      convert_in_chunks(win2sac_path, win_prm_path, chunks, station_id, dest_dir,
                         tools_dir, etc_dir, manten_tbl_path)
+
+# WINファイル(古い順)を、最初のファイルの時刻から CHUNK_MINUTES 分ずつの組に分ける
+#   戻り値 ... [[WINファイル, ...], ...](どの組も CHUNK_MINUTES 分より短い時間に収まる)
+def time_chunks(files):
+  chunks, chunk_start = [], None
+  for f in files:
+    t = win_datetime(f.name)
+    if not chunks or t is None or chunk_start is None or (t - chunk_start).total_seconds() >= CHUNK_MINUTES * 60:
+      chunks.append([])
+      chunk_start = t
+    chunks[-1].append(f)
+  return chunks
 
 # win2sac_32 で1つのWINファイルを変換する(SACファイルはWINファイルと同じフォルダに出力)
 #   sac_name ... 出力するSACファイル名の末尾(拠点名.成分.<sac_name> になる)
@@ -247,13 +261,15 @@ def run_win2sac(win2sac_path, win_prm_path, target_win, station_id, sac_name, et
   ]
   result = subprocess.run(cmd, cwd=target_win.parent,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-  if result.returncode != 0:
+  # 点の数が上限を超えたときなどは、終了コード 0 のまま ERROR を出して何も出力しない
+  if result.returncode != 0 or b"ERROR" in result.stderr:
     log_message(f"変換エラー (Station: {station_id}): "
                 f"{result.stderr.decode('utf-8', errors='ignore')}")
 
 # 長い期間を CHUNK_MINUTES 分ずつ作業フォルダで変換し、成分ごとに1つのSACファイルにつなぐ
+#   chunks ... time_chunks で分けたWINファイルの組
 #   出力するSACファイルの名前は、分けずに変換したときと同じ(拠点名.成分.拠点ID_sac)
-def convert_in_chunks(win2sac_path, win_prm_path, files, station_id, dest_dir,
+def convert_in_chunks(win2sac_path, win_prm_path, chunks, station_id, dest_dir,
                       tools_dir, etc_dir, manten_tbl_path):
   import obspy  # 長い期間のときだけ必要なので、ここで読み込む
 
@@ -262,12 +278,12 @@ def convert_in_chunks(win2sac_path, win_prm_path, files, station_id, dest_dir,
   work_dir.mkdir()
   shutil.copy2(manten_tbl_path, work_dir / manten_tbl_path.name)
   try:
-    for i in range(0, len(files), CHUNK_MINUTES):
+    for i, chunk in enumerate(chunks):
       combined_win = work_dir / f"{COMBINED_PREFIX}{station_id}{WIN_SUFFIX}"
-      combine_wins(files[i:i + CHUNK_MINUTES], combined_win)
+      combine_wins(chunk, combined_win)
       target_win = correct_channels(combined_win, station_id, tools_dir, etc_dir)
       run_win2sac(win2sac_path, win_prm_path, target_win, station_id,
-                  f"{station_id}_sac{i // CHUNK_MINUTES:03d}", etc_dir)
+                  f"{station_id}_sac{i:03d}", etc_dir)
 
     st = obspy.Stream()
     for sac in sorted(find_sacs(work_dir)):
