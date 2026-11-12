@@ -187,7 +187,9 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # グラフ領域の左余白と幅、グラフの間隔と下余白(グラフの縦幅は拠点数から決める)
   left, width = 0.06, 0.50
   # (下に線の意味を2行で書くので、下余白を少し広くしている)
-  gap, bottom = 0.04, 0.10
+  #   外部の観測点を加えると拠点が 9 つほどになるので、間隔は詰めてグラフの縦幅を広くする
+  #   (時刻の目盛りは一番下のグラフにだけ出すので、間隔は縦軸の目盛りが重ならない程度でよい)
+  gap, bottom = 0.014, 0.10
   n = len(names)
   h = (0.82 - gap * (n - 1)) / n
 
