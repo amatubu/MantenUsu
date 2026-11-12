@@ -99,6 +99,11 @@ XLIM_SPAN_RATIO = 0.45
 XLIM_BEFORE_RATIO = 0.2
 XLIM_MIN_WIDTH = 3.0
 
+# 波形のグラフに書く、P波の差(P波の線の左)と S-P時間(S波の線の右)の縦の位置(グラフの高さの割合)
+#   P波は上にそろえ、S波は下にそろえる(P波と S波が近い拠点でも重ならないように)
+P_INFO_Y, P_INFO_VA = 0.96, "top"
+S_INFO_Y = 0.04
+
 # 結果の欄の文字の大きさ・行の間隔・行数の上限・色(見出し、本文、注意、気象庁の震源リスト)
 #   見出し(◆〜「: 」まで)だけ色付きの太字にし、値は黒にする。気象庁の震源リストの見出しは別の色にする
 RESULT_FONTSIZE = 9
@@ -264,9 +269,6 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     wave_lines[name], = ax.plot(times[name], filtered_data[name], lw=0.5,
                                 color=get_component_color("U"))
     ax.set_ylabel("速度 (cm/s)")
-    # 拠点名はグラフの左上に表示する
-    ax.text(0.01, 0.95, station_names.short(name), transform=ax.transAxes, va="top", fontsize=10,
-            weight="bold", bbox=dict(facecolor="white", edgecolor="none", alpha=0.8))
     ax.grid(True)
     if i < n - 1:
       plt.setp(ax.get_xticklabels(), visible=False)
@@ -274,14 +276,16 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     cax = ax.twinx()
     cax.set_ylabel("CFT", color=cft_color)
     cax.tick_params(axis="y", colors=cft_color)
-    # グラフの右上に、最初の拠点からの P波の差(1行目)と S-P時間(2行目)を書く(内容は update() で設定)
-    #   (左上だと早い拠点の P波の立ち上がりに重なるため。CFT の線より上に出すため右の軸に書く)
-    #   計算に使わない S波は、2行目を灰色の打ち消し線にする
-    p_info = cax.text(0.99, 0.95, "", transform=cax.transAxes, ha="right", va="top", fontsize=8.5,
-                      color="#333333", zorder=10, bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1.5))
-    s_info = cax.annotate("", xy=(1, 0), xycoords=p_info, xytext=(0, -2), textcoords="offset points",
-                          ha="right", va="top", fontsize=8.5, color="#333333", zorder=10,
-                          bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1.5))
+    # 拠点名はグラフの左上に表示する(P波の差の文字と重なったときも拠点名が上に出るよう、右の軸に一番手前で書く)
+    cax.text(0.01, 0.95, station_names.short(name), transform=cax.transAxes, va="top", fontsize=10,
+             weight="bold", zorder=11, bbox=dict(facecolor="white", edgecolor="none", alpha=0.8))
+    # P波の線の左に最初の拠点からの P波の差(右揃え・上端にそろえる)、S波の線の右に S-P時間(左揃え・下端にそろえる)を書く
+    #   (位置と内容は update() で設定。横は時刻、縦はグラフの高さの割合。表示の範囲の外に出たら描かない)
+    #   CFT の線より上に出すため右の軸に書く。計算に使わない S波は灰色の打ち消し線にする
+    info_kw = dict(xycoords=cax.get_xaxis_transform(), textcoords="offset points", fontsize=8.5,
+                   zorder=10, annotation_clip=True, bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1))
+    p_info = cax.annotate("", xy=(0, P_INFO_Y), xytext=(-3, 0), ha="right", va=P_INFO_VA, **info_kw)
+    s_info = cax.annotate("", xy=(0, S_INFO_Y), xytext=(3, 0), ha="left", va="bottom", **info_kw)
     info_texts[name] = (p_info, s_info)
     wave_axes[name], cft_axes[name] = ax, cax
     pick_lines[name] = ax.axvline(0, color=p_color, ls="--", lw=1.2, visible=False)
@@ -512,7 +516,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # 結果の文字列を作る
   #   label ... 拠点名の表示(画面は読み替えた正式名。ログ欄へのテキスト出力は内部名のまま)
   #   per_station ... 拠点ごとの到着時刻・差・S-P時間を1行ずつ書くか(テキスト出力)。画面では最初の拠点だけを書き、
-  #                   拠点ごとの差と S-P時間は波形のグラフの右上に書く(station_info。拠点が多いと欄からはみ出すため)
+  #                   拠点ごとの差と S-P時間は波形のグラフの P波・S波の線の横に書く(拠点が多いと欄からはみ出すため)
   def result_message(picks, res, label=station_names.full, per_station=False):
     # 開始時刻はウィンドウのタイトルにあるので書かない(行数を減らすため)
     #   見出しの行は「◆」で始め、注意の行は「※」で始める。見出しの値を赤にするときは WARN_MARK を付ける
@@ -597,7 +601,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # 拠点ごとの、最初の拠点からの P波の差と S-P時間
   #   戻り値 ... (P波の行, S波の行, S波を計算に使わないか)
   #   例: 「P +0.337 秒 (手動)」「S-P 0.670 秒 (手動)」。P波が無いときは S波の行は空
-  #   グラフの右上では、計算に使わない S波を打ち消し線で示す。テキスト出力では「(計算に使わない)」と書く(station_info)
+  #   テキスト出力に使う(station_info。計算に使わない S波は「(計算に使わない)」と書く)
   def station_info_parts(nm, picks, t_first):
     if picks[nm] is None:
       return "P波 検出なし", "", False
@@ -747,20 +751,26 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     state["result"] = res
 
     message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ
-    # グラフの右上に、最初の拠点からの P波の差と S-P時間を書く
-    #   (計算から外した拠点は灰色。計算に使わない S波は灰色の打ち消し線)
+    # P波の線の左に最初の拠点からの P波の差、S波の線の右に S-P時間を書く(文字の色は線の色にそろえる)
+    #   (手で指定したかは線の形でわかるので書かない。計算から外した拠点は灰色。計算に使わない S波は灰色の打ち消し線)
     used_p = [picks[nm] for nm in names if picks[nm] is not None and nm not in excluded]
     t_first = min(used_p, default=None)
     for nm in names:
-      p_text, s_text, unused = station_info_parts(nm, picks, t_first)
       p_info, s_info = info_texts[nm]
-      gray = nm in excluded or picks[nm] is None
-      p_info.set_text(p_text)
-      p_info.set_color("#888888" if gray else "#333333")
-      s_info.set_text(s_text)
-      s_info.set_visible(bool(s_text))
-      s_info.set_color("#888888" if gray or unused else "#333333")
-      s_info.set_path_effects([StrikeThrough()] if unused else [])
+      p_info.set_visible(picks[nm] is not None)
+      s_info.set_visible(picks[nm] is not None and s_picks[nm] is not None)
+      if picks[nm] is None:
+        continue
+      diff = picks[nm] - t_first if t_first is not None else 0.0
+      p_info.set_text(f"+{diff:.3f} 秒")
+      p_info.xy = (picks[nm], P_INFO_Y)
+      p_info.set_color("#888888" if nm in excluded else (manual_color if nm in manual else p_color))
+      if s_picks[nm] is not None:
+        unused = nm in s_excluded or nm in excluded
+        s_info.set_text(f"S-P {s_picks[nm] - picks[nm]:.3f} 秒")
+        s_info.xy = (s_picks[nm], S_INFO_Y)
+        s_info.set_color("#888888" if unused else (s_manual_color if nm in manual_s else s_color))
+        s_info.set_path_effects([StrikeThrough()] if nm in s_excluded and nm not in excluded else [])
     q = state["jma"]
     for nm in names:
       if q is not None:
