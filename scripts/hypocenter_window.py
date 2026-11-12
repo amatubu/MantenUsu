@@ -8,6 +8,7 @@
 import json
 import webbrowser
 from datetime import timedelta
+from tkinter import messagebox
 
 import numpy as np
 import obspy
@@ -102,6 +103,9 @@ XLIM_MIN_WIDTH = 3.0
 
 # 卓越周波数を求める始まり: 各拠点の P波の DOMINANT_BEFORE 秒前(そこから10秒間。quake_features.dominant_frequency)
 DOMINANT_BEFORE = 0.2
+
+# 到着時刻の手直しを「ひとつ戻す」で戻せる回数
+HISTORY_MAX = 100
 
 # 波形のグラフに書く、P波の差(P波の線の左)と S-P時間(S波の線の右)の縦の位置(グラフの高さの割合)
 #   P波は上にそろえ、S波は下にそろえる(P波と S波が近い拠点でも重ならないように)
@@ -318,7 +322,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # --- 結果のテキスト ---
   #   見やすくするため、1行ずつ別の文字にして、見出し(◆)・注意・気象庁の震源リストを色分けする
   #   (行の高さは、文字の大きさ × RESULT_LINESPACING を図の高さの割合にしたもの)
-  result_top = 0.30
+  #   (上に、ボタンを2段置く)
+  result_top = 0.262
   line_height = RESULT_FONTSIZE * RESULT_LINESPACING / 72 / fig.get_figheight()
   #   1行は「見出し」と「値」の2つの文字からなり、値は見出しのすぐ右に置く(見出しの右下に合わせる)
   result_rows = []
@@ -382,6 +387,29 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # 計算に使う S波の到着時刻(手で指定したもの、保存したもの、自動で検出したものの順)
   def current_s_picks():
     return {nm: manual_s.get(nm, state["fixed_s"].get(nm, state["auto_s"].get(nm))) for nm in names}
+
+  # --- 到着時刻の手直しの履歴(「ひとつ戻す」「保存時に戻す」)と、保存していない変更の有無 ---
+  #   snapshot ... 手で指定した時刻・保存した時刻・計算から外した拠点の写し(手直しの前に history に積む)
+  #   saved_key ... 開いたとき・保存したときの「保存する内容」。いまの内容と違えば、保存していない変更がある
+  #                 (パラメータの変更で P波の検出が変わった場合も含む)
+  history = []
+  def snapshot():
+    return (dict(manual), dict(manual_s), set(excluded), set(s_excluded), dict(state["fixed"]), dict(state["fixed_s"]))
+  def restore(snap):
+    for target, value in zip((manual, manual_s, excluded, s_excluded, state["fixed"], state["fixed_s"]), snap):
+      target.clear()
+      target.update(value)
+  def picks_key():
+    def rounded(values):
+      return tuple(sorted((nm, None if t is None else round(t, 4)) for nm, t in values.items()))
+    return (rounded(current_picks()), rounded(current_s_picks()), tuple(sorted(manual)), tuple(sorted(manual_s)),
+            tuple(sorted(excluded)), tuple(sorted(s_excluded)))
+  def is_dirty():
+    return state.get("saved_key") is not None and picks_key() != state["saved_key"]
+  # 手直しの前に呼ぶ(履歴は多くなりすぎないよう HISTORY_MAX まで)
+  def remember():
+    history.append(snapshot())
+    del history[:-HISTORY_MAX]
 
   # 画面の上の説明(上下動・水平動の表示で、クリックの意味が変わる)
   def set_help_title():
@@ -811,6 +839,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       jma_lines[nm].set_visible(q is not None)
     draw_map(res)
     show_result(message)
+    refresh_unsaved()
     fig.canvas.draw_idle()
 
   for s in sliders.values():
@@ -849,10 +878,15 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     # 水平動を表示しているときは S波、上下動のときは P波を扱う
     picked, removed = (manual_s, s_excluded) if state["horizontal"] else (manual, excluded)
     if event.button == 1 and event.key == "shift":
+      if name not in picked:
+        return
+      remember()
       picked.pop(name, None)
     elif event.button == 1:
+      remember()
       picked[name] = float(event.xdata)
     elif event.button in (2, 3):   # Mac では右クリックが 2 になることがある
+      remember()
       removed.symmetric_difference_update({name})
     else:
       return
@@ -864,6 +898,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   btn_auto = Button(aax, "自動検出に戻す")
   btn_auto.label.set_fontsize(9)
   def back_to_auto(_):
+    remember()
     manual.clear()
     manual_s.clear()
     state["fixed"].clear()
@@ -917,6 +952,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       fig.canvas.draw_idle()
       return
     state["record_path"] = path
+    state["saved_key"], state["saved_snap"] = picks_key(), snapshot()
+    refresh_unsaved()
     text = f"保存しました: {path.name}"
     if on_apply:
       try:
@@ -928,6 +965,35 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     status_text.set_text(text)
     fig.canvas.draw_idle()
   btn_save.on_clicked(save_picks)
+
+  # --- ボタン: ひとつ戻す(⌘Z)・保存時に戻す。右に、保存していない変更があることを書く ---
+  #   保存時に戻す ... 最後に保存したとき(保存していなければ開いたとき)の到着時刻に戻す(これも「ひとつ戻す」で戻せる)
+  uax = fig.add_axes([0.61, 0.275, 0.095, 0.032])
+  btn_undo = Button(uax, shortcuts.with_label("ひとつ戻す", "z"))
+  btn_undo.label.set_fontsize(9)
+  def undo(_=None):
+    if not history:
+      return
+    restore(history.pop())
+    update()
+  btn_undo.on_clicked(undo)
+
+  vax = fig.add_axes([0.715, 0.275, 0.095, 0.032])
+  btn_revert = Button(vax, "保存時に戻す")
+  btn_revert.label.set_fontsize(9)
+  def revert(_):
+    if state.get("saved_snap") is None or not is_dirty():
+      return
+    remember()
+    restore(state["saved_snap"])
+    update()
+  btn_revert.on_clicked(revert)
+
+  unsaved_text = fig.text(0.82, 0.291, "", va="center", fontsize=9, color=RESULT_COLORS["warn"])
+  def refresh_unsaved():
+    unsaved_text.set_text("保存していない変更があります" if is_dirty() else "")
+    btn_undo.label.set_color("black" if history else "#aaaaaa")
+    btn_revert.label.set_color("black" if is_dirty() else "#aaaaaa")
 
   # 保存した到着時刻の状態(右上に表示する)
   status_text = fig.text(0.98, 0.995, "", ha="right", va="top", fontsize=9, color=RESULT_COLORS["jma"])
@@ -1008,12 +1074,34 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   btn_far.on_clicked(toggle_far)
   show_far_method()
 
-  # --- キーボード操作: ⌘S 到着時刻を保存(一覧に反映)、U 上下動(P波)、H 水平動(S波)、⌘W 閉じる(Windows は Ctrl) ---
+  # --- 閉じるとき: 保存していない到着時刻の変更があれば、保存するか確かめる ---
+  #   はい = 保存して閉じる、いいえ = 保存せずに閉じる、キャンセル = 閉じない
+  def request_close():
+    if is_dirty():
+      answer = messagebox.askyesnocancel(
+        "到着時刻を保存", "到着時刻の変更を保存していません。保存してから閉じますか?",
+        parent=fig.canvas.get_tk_widget().winfo_toplevel())
+      if answer is None:
+        return
+      if answer:
+        save_picks(None)
+        if is_dirty():   # 保存できなかった(P波が無いなど)
+          return
+    plt.close(fig)
+
+  # --- キーボード操作: ⌘S 到着時刻を保存(一覧に反映)、⌘Z ひとつ戻す、U 上下動(P波)、H 水平動(S波)、
+  #     ⌘W 閉じる(Windows は Ctrl) ---
   if hasattr(fig.canvas, "get_tk_widget"):
     key_win = shortcuts.figure_window(fig)
     shortcuts.bind(key_win, "s", lambda: save_picks(None))
+    shortcuts.bind(key_win, "z", undo)
     shortcuts.bind(key_win, "u", lambda: state["horizontal"] and toggle_comp(None), modifier=False)
     shortcuts.bind(key_win, "h", lambda: state["horizontal"] or toggle_comp(None), modifier=False)
+    # 閉じる操作(⌘W と、ウィンドウの閉じるボタン)は、保存していない変更を確かめてから閉じる
+    shortcuts.bind(key_win, "w", request_close)
+    #   閉じるボタンの処理は、Matplotlib が図を最初に表示するとき(plt.show)に自前のものに置き換えるので、
+    #   表示したあとに(Tk の処理が一巡してから)割り当て直す
+    key_win.after_idle(lambda: key_win.protocol("WM_DELETE_WINDOW", request_close))
 
   # --- ウィンドウを閉じるとき、最後のパラメータを保存 ---
   def on_close(_event):
@@ -1021,7 +1109,11 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   fig.canvas.mpl_connect("close_event", on_close)
 
   update()
-  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_save, btn_filter, btn_layer, btn_comp, btn_far)
+  # 開いたときの到着時刻を「保存した状態」とする(保存した到着時刻が無いときは、自動の検出のままなら確かめない)
+  state["saved_key"], state["saved_snap"] = picks_key(), snapshot()
+  refresh_unsaved()
+  fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_save, btn_filter, btn_layer, btn_comp, btn_far,
+                  btn_undo, btn_revert)
   plt.show()
 
 if __name__ == "__main__":
