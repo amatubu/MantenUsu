@@ -642,8 +642,11 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   others = len(items) - len(local)
   #   3行に分け、断面図の深さの縮尺の比は align_sections で短い2行目の後ろに入れる({scale})
   n_uniform = sum(1 for _c, r in items if not r.get("layered", True))
-  structure = "深さで速度が変わる構造(有珠山の先行研究の P波速度構造、vp/vs は中間)" + (
-    f"(一様な構造にして保存した {n_uniform}件を除く)" if n_uniform else "")
+  if items and n_uniform == len(items):
+    structure = f"均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g}。保存したパラメータがあればその値)"
+  else:
+    structure = "深さで速度が変わる構造(有珠山の先行研究の P波速度構造、vp/vs は中間)" + (
+      f"(一様な構造にして保存した {n_uniform}件を除く)" if n_uniform else "")
   template = (f"P波・S波の到着時刻から推定({manual_note(items)})。{structure}、"
               f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。\n"
               + f"深さは海面からの深さ(拠点の高度を考慮)。白抜きは残差 {GOOD_RMS:g}秒以上か、要確認の判定(残差大・到着時刻少)。"
