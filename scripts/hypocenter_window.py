@@ -14,6 +14,9 @@ import obspy
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from matplotlib.text import Annotation
+from matplotlib.patheffects import AbstractPathEffect
+from matplotlib.path import Path
+from matplotlib.transforms import IdentityTransform
 
 from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, locate_event,
                         pick_filtered, refine_p, pick_s, HORIZONTAL_RANGE,
@@ -31,6 +34,22 @@ import magnitude
 import shortcuts
 import station_names
 from obspy.geodetics import gps2dist_azimuth
+
+# 文字に打ち消し線を引く(matplotlib の文字には打ち消し線の指定が無いため、文字の形の範囲の中ほどに横線を描く)
+#   計算に使わない S波の S-P時間に使う
+class StrikeThrough(AbstractPathEffect):
+  def draw_path(self, renderer, gc, tpath, affine, rgbFace=None):
+    renderer.draw_path(gc, tpath, affine, rgbFace)
+    ext = tpath.get_extents(affine)
+    if ext.width <= 0:
+      return
+    y = (ext.y0 + ext.y1) / 2
+    gc_line = renderer.new_gc()
+    gc_line.copy_properties(gc)
+    gc_line.set_foreground(rgbFace if rgbFace is not None else gc.get_rgb())
+    gc_line.set_linewidth(0.8)
+    renderer.draw_path(gc_line, Path([[ext.x0, y], [ext.x1, y]]), IdentityTransform())
+    gc_line.restore()
 
 # 設定ファイル(P波・S波検出とは別に保存する)
 SETTINGS_FILE = app_paths.HYPOCENTER_SETTINGS
@@ -73,6 +92,12 @@ PICK_KEYS = ("p_sta", "p_lta", "p_thr", "window")
 
 # 波形の表示に使う帯域通過フィルター [Hz](小さな地震を見やすくする。検出には使わない)
 DISPLAY_BAND = (2.0, 20.0)
+
+# 開いたときなどの横軸の範囲: 最初の P波から最後の S波までが横幅のこの割合になるようにする
+#   (最初の P波の前に横幅の XLIM_BEFORE_RATIO を空ける。横幅は XLIM_MIN_WIDTH 秒より狭くしない)
+XLIM_SPAN_RATIO = 0.45
+XLIM_BEFORE_RATIO = 0.2
+XLIM_MIN_WIDTH = 3.0
 
 # 結果の欄の文字の大きさ・行の間隔・行数の上限・色(見出し、本文、注意、気象庁の震源リスト)
 #   見出し(◆〜「: 」まで)だけ色付きの太字にし、値は黒にする。気象庁の震源リストの見出しは別の色にする
@@ -230,7 +255,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     pick_data[name] = (pick_filtered(tr), energy, tr.stats.sampling_rate, tr.stats.starttime - ref_time)
 
   wave_axes, cft_axes, pick_lines, wave_lines, jma_lines = {}, {}, {}, {}, {}
-  s_lines, hor_lines = {}, {}
+  s_lines, hor_lines, info_texts = {}, {}, {}
   first_ax = None
   for i, name in enumerate(names):
     y0 = bottom + (n - 1 - i) * (h + gap)
@@ -240,8 +265,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
                                 color=get_component_color("U"))
     ax.set_ylabel("速度 (cm/s)")
     # 拠点名はグラフの左上に表示する
-    ax.text(0.01, 0.95, station_names.short(name), transform=ax.transAxes, va="top", fontsize=10, weight="bold",
-            bbox=dict(facecolor="white", edgecolor="none", alpha=0.8))
+    ax.text(0.01, 0.95, station_names.short(name), transform=ax.transAxes, va="top", fontsize=10,
+            weight="bold", bbox=dict(facecolor="white", edgecolor="none", alpha=0.8))
     ax.grid(True)
     if i < n - 1:
       plt.setp(ax.get_xticklabels(), visible=False)
@@ -249,6 +274,15 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     cax = ax.twinx()
     cax.set_ylabel("CFT", color=cft_color)
     cax.tick_params(axis="y", colors=cft_color)
+    # グラフの右上に、最初の拠点からの P波の差(1行目)と S-P時間(2行目)を書く(内容は update() で設定)
+    #   (左上だと早い拠点の P波の立ち上がりに重なるため。CFT の線より上に出すため右の軸に書く)
+    #   計算に使わない S波は、2行目を灰色の打ち消し線にする
+    p_info = cax.text(0.99, 0.95, "", transform=cax.transAxes, ha="right", va="top", fontsize=8.5,
+                      color="#333333", zorder=10, bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1.5))
+    s_info = cax.annotate("", xy=(1, 0), xycoords=p_info, xytext=(0, -2), textcoords="offset points",
+                          ha="right", va="top", fontsize=8.5, color="#333333", zorder=10,
+                          bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1.5))
+    info_texts[name] = (p_info, s_info)
     wave_axes[name], cft_axes[name] = ax, cax
     pick_lines[name] = ax.axvline(0, color=p_color, ls="--", lw=1.2, visible=False)
     s_lines[name] = ax.axvline(0, color=s_color, ls="--", lw=1.2, visible=False)
@@ -256,7 +290,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     # 水平動(はじめは表示しない。「波形」のボタンで上下動と切り替える)
     hor_lines[name] = {c: ax.plot(t, f, lw=0.5, color=get_component_color(c), visible=False)[0]
                        for c, (t, _raw, f) in hor_display[name].items()}
-  wave_axes[names[-1]].set_xlabel("時刻 (s)")
+  # 横軸は記録の始まり(ウィンドウのタイトルの時刻)からの秒
+  wave_axes[names[-1]].set_xlabel(f"時刻 (s、{ref_time.strftime('%H:%M:%S')} から)")
   # 線の意味(グラフの下に書く)
   fig.text(left, 0.008, "線: 赤の破線 = P波(自動)、橙の実線 = P波(手で指定)、マゼンタの破線 = S波(自動)、\n"
            "紫の実線 = S波(手で指定)(薄い線は計算に使わない S波)、青緑の点線 = 気象庁の震源からの P波の到達見込み、"
@@ -376,10 +411,25 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     ax.callbacks.connect("xlim_changed", fit_ylim)
 
   # 到着時刻のまわりに横軸を合わせる
+  #   最初の P波から最後の S波(S波が無ければ最後の P波)までが、横幅の XLIM_SPAN_RATIO ほどになるようにする
+  #   (近い地震は P波・S波が 1〜2 秒に集まるので、拡大しないと S波の始まりを探しにくい)
+  #   計算から外した拠点の時刻は、ずれていることが多いので使わない(全部外したときは使う)
   def fit_xlim(picks):
-    times = [p for p in picks.values() if p is not None]
-    if times:
-      first_ax.set_xlim(min(times) - 5, max(times) + 10)
+    s_picks = current_s_picks()
+    use = [nm for nm in names if picks[nm] is not None and nm not in excluded] or \
+          [nm for nm in names if picks[nm] is not None]
+    if not use:
+      return
+    first = min(picks[nm] for nm in use)
+    last = max([picks[nm] for nm in use] +
+               [s_picks[nm] for nm in use if s_picks[nm] is not None and nm not in s_excluded])
+    width = max((last - first) / XLIM_SPAN_RATIO, XLIM_MIN_WIDTH)
+    x0 = first - width * XLIM_BEFORE_RATIO
+    # 記録の範囲からはみ出さないようにする
+    t_min = min(float(times[nm][0]) for nm in names)
+    t_max = max(float(times[nm][-1]) for nm in names)
+    x0 = max(t_min, min(x0, t_max - width))
+    first_ax.set_xlim(x0, min(t_max, x0 + width))
 
   # 配置図の背景に地理院タイルを敷く(中心から東西 ±half_x km、南北 ±half_y km の範囲)
   # タイルはWebメルカトルだが、狭い範囲なので四隅の位置だけ合わせて平面に貼る
@@ -461,27 +511,27 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
 
   # 結果の文字列を作る
   #   label ... 拠点名の表示(画面は読み替えた正式名。ログ欄へのテキスト出力は内部名のまま)
-  def result_message(picks, res, label=station_names.full):
-    s_picks = current_s_picks()
+  #   per_station ... 拠点ごとの到着時刻・差・S-P時間を1行ずつ書くか(テキスト出力)。画面では最初の拠点だけを書き、
+  #                   拠点ごとの差と S-P時間は波形のグラフの右上に書く(station_info。拠点が多いと欄からはみ出すため)
+  def result_message(picks, res, label=station_names.full, per_station=False):
     # 開始時刻はウィンドウのタイトルにあるので書かない(行数を減らすため)
     #   見出しの行は「◆」で始め、注意の行は「※」で始める。見出しの値を赤にするときは WARN_MARK を付ける
     #   (show_result で色分けする)
-    lines = ["◆P波到着(最初の拠点からの差)・S-P時間:"]
     used = [nm for nm in names if picks[nm] is not None and nm not in excluded]
     t_first = min((picks[nm] for nm in used), default=None)
-    for nm in names:
-      if picks[nm] is None:
-        lines.append(f"  {label(nm)}: 検出なし")
-        continue
-      mark = " (手動)" if nm in manual else ""
-      mark += " (除外)" if nm in excluded else ""
-      diff = picks[nm] - t_first if t_first is not None else 0.0
-      if s_picks[nm] is not None:
-        sp = f"  S-P {s_picks[nm] - picks[nm]:.2f} 秒" + (" (手動)" if nm in manual_s else "")
-        sp += " (計算に使わない)" if nm in s_excluded and nm not in excluded else ""
-      else:
-        sp = "  S波 検出なし"
-      lines.append(f"  {label(nm)}: {format_time(ref_time + picks[nm])[11:]}  +{diff:.3f} 秒{mark}{sp}")
+    if per_station:
+      lines = ["◆P波到着(最初の拠点からの差)・S-P時間:"]
+      for nm in names:
+        if picks[nm] is None:
+          lines.append(f"  {label(nm)}: 検出なし")
+          continue
+        lines.append(f"  {label(nm)}: {format_time(ref_time + picks[nm])[11:]}  {station_info(nm, picks, t_first)}")
+    elif t_first is None:
+      lines = [f"◆最初の P波到着: {WARN_MARK}検出なし"]
+    else:
+      first = min(used, key=lambda nm: picks[nm])
+      lines = [f"◆最初の P波到着: {format_time(ref_time + t_first)[11:]}({label(first)})"
+               "  (拠点ごとの差と S-P時間はグラフに表示)"]
     if res.get("azimuth") is not None:
       lines.append(f"◆到来方向: {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})"
                    f"  見かけの速度: {res['app_v']:.1f} km/s  残差: {res['plane_rms']:.3f} 秒")
@@ -543,6 +593,25 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
                    f"  推定した震央との距離: {dist_m / 1000:.0f} km")
         lines.append(text)
     return "\n".join(lines)
+
+  # 拠点ごとの、最初の拠点からの P波の差と S-P時間
+  #   戻り値 ... (P波の行, S波の行, S波を計算に使わないか)
+  #   例: 「P +0.337 秒 (手動)」「S-P 0.670 秒 (手動)」。P波が無いときは S波の行は空
+  #   グラフの右上では、計算に使わない S波を打ち消し線で示す。テキスト出力では「(計算に使わない)」と書く(station_info)
+  def station_info_parts(nm, picks, t_first):
+    if picks[nm] is None:
+      return "P波 検出なし", "", False
+    s_picks = current_s_picks()
+    diff = picks[nm] - t_first if t_first is not None else 0.0
+    p_text = f"P +{diff:.3f} 秒" + (" (手動)" if nm in manual else "") + (" (除外)" if nm in excluded else "")
+    if s_picks[nm] is None:
+      return p_text, "S波 検出なし", False
+    s_text = f"S-P {s_picks[nm] - picks[nm]:.3f} 秒" + (" (手動)" if nm in manual_s else "")
+    return p_text, s_text, nm in s_excluded and nm not in excluded
+
+  def station_info(nm, picks, t_first):
+    p_text, s_text, unused = station_info_parts(nm, picks, t_first)
+    return "  ".join(t for t in (p_text, s_text + (" (計算に使わない)" if unused else "")) if t)
 
   # 推定マグニチュードの行(満点の拠点の最大振幅と震源距離から。magnitude.py)
   #   深さが上限だけ決まる浅い震源は、深さの範囲の中ほどで震源距離を計算する
@@ -678,6 +747,20 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     state["result"] = res
 
     message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ
+    # グラフの右上に、最初の拠点からの P波の差と S-P時間を書く
+    #   (計算から外した拠点は灰色。計算に使わない S波は灰色の打ち消し線)
+    used_p = [picks[nm] for nm in names if picks[nm] is not None and nm not in excluded]
+    t_first = min(used_p, default=None)
+    for nm in names:
+      p_text, s_text, unused = station_info_parts(nm, picks, t_first)
+      p_info, s_info = info_texts[nm]
+      gray = nm in excluded or picks[nm] is None
+      p_info.set_text(p_text)
+      p_info.set_color("#888888" if gray else "#333333")
+      s_info.set_text(s_text)
+      s_info.set_visible(bool(s_text))
+      s_info.set_color("#888888" if gray or unused else "#333333")
+      s_info.set_path_effects([StrikeThrough()] if unused else [])
     q = state["jma"]
     for nm in names:
       if q is not None:
@@ -772,7 +855,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     log_message("--- 震源推定 ---")
     for k, s in sliders.items():
       log_message(f"{k}: {s.val}")
-    for line in plain(result_message(current_picks(), state["result"] or {}, label=str)).splitlines():
+    for line in plain(result_message(current_picks(), state["result"] or {}, label=str, per_station=True)).splitlines():
       log_message(line)
   btn_print.on_clicked(print_result)
 
