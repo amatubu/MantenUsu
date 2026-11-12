@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from plot_common import NM_TO_CM, plot_components
 import shortcuts
+import station_names
 
 # 計測震度から気象庁震度階級へ変換
 #   I ... 計測震度
@@ -173,7 +174,7 @@ def plot_jma_analysis(result, return_to=None):
   # ウィンドウのタイトル(既定の「Figure 1」の代わり)
   if fig.canvas.manager is not None:
     fig.canvas.manager.set_window_title(
-      f"震度推定 - {result['station']} ({result['start_time']})")
+      f"震度推定 - {station_names.full(result['station'])} ({result['start_time']})")
   axes = axes.flatten()
 
   # --- 1. 元の速度波形 ---
@@ -208,7 +209,7 @@ def plot_jma_analysis(result, return_to=None):
   # サマリーに表示する内容
   result_text = (
     f"[ 解析結果サマリー ]\n"
-    f"• 拠点名 (Station): {result['station']}\n"
+    f"• 拠点名 (Station): {station_names.full(result['station'])}\n"
     f"• 開始時刻 (JST): {result['start_time']}\n\n"
     f"• 揺れの指標 a: {result['a']:.4f} cm/s^2 [Gal]\n\n"
     f"• 計測震度: {result['intensity']:.2f}\n"

@@ -13,6 +13,7 @@ from matplotlib.colors import to_hex
 
 from hypocenter import LOCAL_KINDS, KIND_LOCAL, depth_for_plot, depth_short, depth_text
 from quake_features import USU_SUMMIT
+import station_names
 from quake_locate import GOOD_RMS   # 残差がこれ未満なら塗りつぶし、以上(と要確認の判定)なら白抜き(画面の地図と同じ)
 
 LEAFLET_VERSION = "1.9.4"
@@ -49,7 +50,8 @@ def map_data(items, stations):
               "time": f"{q['日時']:%Y-%m-%d %H:%M:%S.%f}"[:-5]} if q else None})
   return {
     "quakes": quakes,
-    "stations": [{"name": nm, "lat": la, "lon": lo} for nm, (la, lo, _el) in sorted(stations.items())],
+    "stations": [{"name": station_names.full(nm), "lat": la, "lon": lo}   # 拠点名は表示用に読み替える
+                 for nm, (la, lo, _el) in sorted(stations.items())],
     "summit": {"lat": USU_SUMMIT[0], "lon": USU_SUMMIT[1]},
     "others": len(items) - len(local), "good_rms": GOOD_RMS,
     "legend": [{"depth": d, "color": depth_color(d)} for d in DEPTH_STEPS],

@@ -21,6 +21,7 @@ import numpy as np
 from scipy.signal import find_peaks, oaconvolve
 
 import app_paths
+import station_names
 import win_pipeline
 
 warnings.filterwarnings("ignore", message="Sample spacing read from SAC file")
@@ -316,7 +317,7 @@ def save_image(path, det, tdata, toffs, tinfo):
           seg = d[int(round(shift0 * SAMPLING_RATE)) + o:][:n]
           scale = np.std(seg) / np.std(tpl) if np.std(tpl) > 0 and len(seg) == n else 1
           ax.plot(o / SAMPLING_RATE + np.arange(n) / SAMPLING_RATE, tpl * scale, color="tab:red", lw=0.7)
-      ax.set_ylabel(f"{nm}\n{c}", fontsize=7, rotation=0, ha="right", va="center")
+      ax.set_ylabel(f"{station_names.short(nm)}\n{c}", fontsize=7, rotation=0, ha="right", va="center")
       ax.set_yticks([])
   axes[-1].set_xlabel("ひな形の始まり(最初の拠点の P波の0.5秒前)からの秒")
   axes[-1].set_xlim(-10, 20)

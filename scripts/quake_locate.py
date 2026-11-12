@@ -22,6 +22,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import MultipleLocator
 
 import app_paths
+import station_names
 import gsi_tiles
 import jma_match
 import quake_detect
@@ -396,7 +397,7 @@ def save_check_image(path, cand, r, title):
           x = (q[key] - r["ref"]).total_seconds() - first
           if -1 <= x <= span:
             ax.axvline(x, color="teal", lw=1.2, ls=":")
-      ax.text(0.005, 0.88, f"{nm} {'上下動' if j == 0 else '水平動(N/E)'}", transform=ax.transAxes, fontsize=8,
+      ax.text(0.005, 0.88, f"{station_names.short(nm)} {'上下動' if j == 0 else '水平動(N/E)'}", transform=ax.transAxes, fontsize=8,
               weight="bold", bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1))
       ax.set_ylabel("cm/s", fontsize=7)
       ax.tick_params(labelsize=7)
@@ -415,7 +416,7 @@ def save_check_image(path, cand, r, title):
 # 確認用の画像のタイトル(2行)
 def check_title(cand, r):
   picks, s_picks = r["picks"], r["s_picks"]
-  sp = "  ".join(f"{nm} {s_picks[nm] - picks[nm]:.2f}" for nm in sorted(s_picks) if nm in picks)
+  sp = "  ".join(f"{station_names.short(nm)} {s_picks[nm] - picks[nm]:.2f}" for nm in sorted(s_picks) if nm in picks)
   line1 = (f"{cand['start']:%Y-%m-%d %H:%M:%S}  {r['kind']}" + ("(手直し)" if r.get("manual") else "")
            + f"  P波 {r['n_p']}・S波 {r['n_s']}  S-P[秒]: {sp or '-'}")
   loc, far = r["loc"], r["far"]
@@ -471,14 +472,14 @@ def label_external_above(ax, external, proj, half_x):
   pos = [min(max((x + half_x) / (2 * half_x), 0.03), 0.97) for x, _z, _nm in marks]
   # 名前どうしの最小の間隔(断面の幅に対する割合): いちばん長い名前の幅(1文字 フォントの大きさの約0.65倍)に余白を足したもの
   width_pt = ax.get_position().width * ax.figure.get_figwidth() * 72
-  gap = (max(len(nm) for *_r, nm in marks) * LABEL_FONTSIZE * 0.65 + 8) / width_pt
+  gap = (max(len(station_names.short(nm)) for *_r, nm in marks) * LABEL_FONTSIZE * 0.65 + 8) / width_pt
   for i in range(1, len(pos)):
     pos[i] = max(pos[i], pos[i - 1] + gap)
   over = pos[-1] - 0.97
   if over > 0:
     pos = [p - over for p in pos]
   for (x, z, nm), p in zip(marks, pos):
-    ax.external_labels.append(ax.annotate(nm, (x, z), xytext=(p, 1.06), textcoords="axes fraction", fontsize=LABEL_FONTSIZE, ha="center", va="bottom",
+    ax.external_labels.append(ax.annotate(station_names.short(nm), (x, z), xytext=(p, 1.06), textcoords="axes fraction", fontsize=LABEL_FONTSIZE, ha="center", va="bottom",
                 color="dimgray", annotation_clip=False, zorder=6,
                 arrowprops=dict(arrowstyle="-", color="gray", lw=0.6, shrinkA=1, shrinkB=4)))
 
@@ -571,7 +572,7 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
       ax.plot(fx(x, y, z), fy(x, y, z), "^", color="gray" if nm in external else "black", ms=9,
               markeredgecolor="white", zorder=5)
       if nm in stations or label_external:
-        ax.annotate(nm, (fx(x, y, z), fy(x, y, z)), textcoords="offset points", xytext=(5, 4), fontsize=8, zorder=5)
+        ax.annotate(station_names.short(nm), (fx(x, y, z), fy(x, y, z)), textcoords="offset points", xytext=(5, 4), fontsize=8, zorder=5)
     x, y = proj.to_xy(*USU_SUMMIT[:2])
     z = -0.733   # 大有珠の標高 733 m
     ax.plot(fx(x, y, z), fy(x, y, z), "P", color="saddlebrown", ms=10, markeredgecolor="white", zorder=5)

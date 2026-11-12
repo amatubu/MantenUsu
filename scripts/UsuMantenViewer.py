@@ -35,6 +35,7 @@ import quake_list
 from quake_locate_window import open_locate_window
 from hypocenter_window import plot_hypocenter
 import shortcuts
+import station_names
 from pathlib import Path
 import jma_match
 import jma_hypocenter
@@ -414,8 +415,9 @@ class MantenUsuSeismographApp:
       state="readonly",
       width=13
     )
+    #   表示は読み替えた拠点名(station_names)。選んだものは execute_stack_pipeline で内部名に戻す
     channel_list = self.load_channel_options()
-    self.channel_combo["values"] = channel_list
+    self.channel_combo["values"] = [station_names.channel(ch) for ch in channel_list]
     if channel_list:
       self.channel_combo.current(0)
     self.channel_combo.pack(side=tk.LEFT, padx=(0, 5))
@@ -477,6 +479,7 @@ class MantenUsuSeismographApp:
     self.lbl_jma_status = tk.Label(maint_frame, text="", font=("sans-serif", 9), fg="#555555")
     self.lbl_jma_status.pack(side=tk.LEFT)
 
+
     # クラスの初期化内でのUI追加例
     # 5. 実行履歴セクションの下あたりに「実行ログ」エリアを追加
     tk.Label(
@@ -504,6 +507,14 @@ class MantenUsuSeismographApp:
     self.update_history_ui()
     self.update_duration_display()
     self.update_jma_status()
+
+  # 拠点名の表示を切り替えたあと(メンテナンス画面の「表示」タブ)、この画面のチャンネルの選択欄を描き直す
+  #   選んでいたチャンネルはそのまま(並びは変わらないので、位置で選び直す)
+  def refresh_station_names(self):
+    index = self.channel_combo.current()
+    self.channel_combo["values"] = [station_names.channel(ch) for ch in self.load_channel_options()]
+    if index >= 0:
+      self.channel_combo.current(index)
 
   # manten_ch.tbl から 「拠点名.コンポーネント」 のリストを自動生成するヘルパー
   def load_channel_options(self):
@@ -834,7 +845,7 @@ class MantenUsuSeismographApp:
   def execute_stack_pipeline(self):
     date_str = self.entry_stack_date.get().strip()
     hour_str = self.entry_stack_hour.get().strip()
-    channel_sel = self.channel_combo.get()
+    channel_sel = station_names.internal_channel(self.channel_combo.get())
 
     # 入力チェック
     if not date_str.isdigit() or len(date_str) != 8:
@@ -892,7 +903,7 @@ class MantenUsuSeismographApp:
     # 終了日時はその分も含むので、N分間なら開始 + (N-1)分
     end_dt = start_dt + timedelta(minutes=minutes - 1)
     # 入力欄に設定してから、通常の「波形表示」と同じ処理を実行する(履歴にも残る)
-    for entry, value in ((self.entry_title, f"1時間スタックから ({station}.{comp})"),
+    for entry, value in ((self.entry_title, f"1時間スタックから ({station_names.full(station)}.{comp})"),
                          (self.entry_start, start_dt.strftime("%Y%m%d%H%M")),
                          (self.entry_end, end_dt.strftime("%Y%m%d%H%M"))):
       entry.delete(0, tk.END)

@@ -9,6 +9,7 @@ from pathlib import Path
 import zipfile
 
 import app_paths                   # matplotlib より先に読み込む(ビルドしたアプリ向けの設定のため)
+import station_names
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -107,7 +108,7 @@ def plot_availability(summary_df, save_path=None):
             va="center", ha="left", fontsize=11, color=INK)
 
   ax.set_yticks(range(len(names)))
-  ax.set_yticklabels(list(reversed(names)), fontsize=12, color=INK, fontweight="bold")
+  ax.set_yticklabels([station_names.full(nm) for nm in reversed(names)], fontsize=12, color=INK, fontweight="bold")
   ax.set_ylim(-0.6, len(names) - 0.4)
 
   # 横軸は月ごと。最初の月と1月だけ年をつける

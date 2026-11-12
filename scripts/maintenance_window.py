@@ -23,6 +23,7 @@ import cache_manager
 import external_stations
 import jma_hypocenter
 import quake_detect
+import station_names
 from cache_dialog import OutputCacheDialog
 from log_common import log_message, flush_pending, add_log_widget, remove_log_widget
 
@@ -222,6 +223,28 @@ class MaintenanceWindow:
                    "鍵ファイル(manten_usu_downloader.json・folder_config.json)は、ユーザーの設定の service_account にコピーします。"
               ).pack(anchor="w", pady=(8, 0))
 
+    # --- 拠点名の表示(station_names.py。外部に発表する図を作るときに、発表用の名前に切り替える) ---
+    disp = page("表示")
+    ttk.Label(disp, text="拠点名の表示", font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(0, 6))
+    aliases = station_names.names()
+    self.var_station_names = tk.BooleanVar(value=station_names.is_enabled())
+    ttk.Checkbutton(disp, text="拠点名を発表用の名前で表示する", variable=self.var_station_names,
+                    command=self.toggle_station_names,
+                    state=tk.NORMAL if aliases else tk.DISABLED).pack(anchor="w")
+    names_text = "\n".join(f"{nm} → {full}" + (f"(狭い所は {short})" if short != full else "")
+                           for nm, (full, short) in aliases.items())
+    ttk.Label(disp, justify=tk.LEFT, text=names_text or "発表用の名前が設定されていません"
+              ).pack(anchor="w", padx=(22, 0), pady=(4, 0))
+    row = ttk.Frame(disp)
+    row.pack(fill=tk.X, pady=(8, 0))
+    ttk.Button(row, text="名前の設定を開く", command=lambda: open_path(station_names.CONFIG_FILE)).pack(side=tk.LEFT)
+    ttk.Label(disp, foreground="#666666", justify=tk.LEFT,
+              text="ふだんは外しておき、外部に発表する図を作るときに入れます(入れたかどうかは、次に起動したときも同じです)。\n"
+                   "開いている図は変わりません。切り替えたあとに開き直すか、描き直してください。バッチ処理の画像にも使います。\n"
+                   "保存した到着時刻・キャッシュ・CSV・ファイル名・ログは、内部名のままです。\n"
+                   "名前を変えるときは、設定のファイル(etc/station_names.txt)をユーザーの設定の etc に写して直し、アプリを開き直します。"
+              ).pack(anchor="w", pady=(8, 0))
+
     # --- 実行ログ(メイン画面の実行ログと同じもの。メイン画面が隠れていても見えるように) ---
     ttk.Label(frame, text="実行ログ:").pack(anchor="w", pady=(10, 2))
     log_frame = ttk.Frame(frame)
@@ -243,6 +266,14 @@ class MaintenanceWindow:
     self.btn_close.pack(side=tk.RIGHT)
 
     self.refresh()
+
+  # 拠点名の表示を切り替える(「表示」タブのチェックボックス)。メイン画面のチャンネルの選択欄も描き直す
+  def toggle_station_names(self):
+    on = bool(self.var_station_names.get())
+    station_names.set_enabled(on)
+    if self.app is not None:
+      self.app.refresh_station_names()
+    log_message(f"拠点名を{'発表用の名前' if on else '内部名'}で表示します(開いている図は、開き直すか描き直すと変わります)")
 
   # 処理中は押せなくするボタンを作る
   def add_button(self, parent, text, command):

@@ -23,6 +23,14 @@ def stations():
   return load_stations(ETC_DIR)
 
 
+# 拠点名の読み替え(メイン画面の切り替え)は、ユーザーの設定にかかわらず外しておく
+#   (読み替えを試すテストは、その中で入れる)
+@pytest.fixture(autouse=True)
+def station_names_off(monkeypatch):
+  import station_names
+  monkeypatch.setattr(station_names, "_enabled", False)
+
+
 # ユーザーの設定とデータフォルダを一時フォルダに差し替える(本物の地震リストなどを書き換えないため)
 @pytest.fixture
 def user_files(tmp_path, monkeypatch):

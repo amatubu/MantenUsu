@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 import numpy as np
 
 import app_paths
+import station_names
 import win_pipeline
 import matplotlib
 # 単体で実行したときだけ画面を使わない描画にする(アプリの画面から関数を使うときは切り替えない)
@@ -688,7 +689,7 @@ def main():
 
   OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
   stem = f"{day:%Y%m%d}_{args.station}.{args.comp}"
-  title = (f"{label}  {BAND[0]:g}-{BAND[1]:g}Hz {RMS_WINDOW:g}秒RMS  "
+  title = (f"{day:%Y-%m-%d} {station_names.full(args.station)}.{args.comp}  {BAND[0]:g}-{BAND[1]:g}Hz {RMS_WINDOW:g}秒RMS  "
            f"揺れ(雑音の{EVENT_RATIO:g}倍超) {len(events)}件")
   if timetable:
     title += f"  時刻表にない大きな揺れ(貨物列車の候補・赤) {len(candidates)}件"

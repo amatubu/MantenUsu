@@ -15,6 +15,7 @@ from datetime import datetime
 import numpy as np
 
 import app_paths
+import station_names
 import win_pipeline
 import matplotlib
 # 単体で実行したときだけ画面を使わない描画にする(アプリの画面から関数を使うときは切り替えない)
@@ -70,7 +71,7 @@ def save_image(path, title, info):
     ax.axvspan(*info["span"], color="gray", alpha=0.1)
     if info["picks"].get(nm) is not None:
       ax.axvline(info["picks"][nm], color="red", ls="--", lw=1)
-    ax.text(0.01, 0.92, nm, transform=ax.transAxes, va="top", weight="bold")
+    ax.text(0.01, 0.92, station_names.short(nm), transform=ax.transAxes, va="top", weight="bold")
     ax.set_ylabel("cm/s")
     ax.grid(True)
   axes[0].set_xlim(t0, info["peak_t"] + 60)

@@ -10,6 +10,7 @@ from datetime import timedelta
 from plot_common import NM_TO_CM, plot_components
 from log_common import log_message
 import shortcuts
+import station_names
 import app_paths
 import jma_match
 import pick_store
@@ -165,7 +166,7 @@ def plot_ps_arrival_time(st, return_to=None):
   # 観測点名と記録開始時刻(結果パネルの先頭に表示)
   station = tr_u.stats.station or "-"
   start_str = tr_u.stats.starttime.strftime("%Y-%m-%d %H:%M:%S")
-  header = (f"拠点名　: {station}\n"
+  header = (f"拠点名　: {station_names.full(station)}\n"
             f"開始時刻: {start_str}\n")
 
   # 気象庁の震源リストで、この期間に揺れが届きそうな地震(取得済みのときだけ。到達見込みは拠点の位置で計算)
@@ -203,7 +204,7 @@ def plot_ps_arrival_time(st, return_to=None):
   # ウィンドウのタイトル(既定の「Figure 1」の代わり)
   if fig.canvas.manager is not None:
     fig.canvas.manager.set_window_title(
-      f"P波・S波検出とS-P時間 - {station} ({start_str})")
+      f"P波・S波検出とS-P時間 - {station_names.full(station)} ({start_str})")
   # グラフ領域の左余白と幅(0.0〜1.0の割合で定義)
   left, width = 0.06, 0.64
   # グラフ1つの縦幅、間隔、下余白

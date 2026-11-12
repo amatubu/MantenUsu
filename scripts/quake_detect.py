@@ -16,6 +16,7 @@ import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
 import app_paths
+import station_names
 import jma_match
 import quake_features
 from hypocenter import LocalProjection
@@ -383,7 +384,7 @@ def save_candidate_image(path, cand, traces, match, title, missed=False):
           ax.axvline(x, color=color, ls="--", lw=1)
           ax.text(x, 0.95, f" {label}", color=color, transform=ax.get_xaxis_transform(), va="top", fontsize=8)
     ratio = cand["ratios"].get(nm)
-    ax.text(0.005, 0.92, f"{nm}" + (f"  ×{ratio:.0f}" if ratio is not None else "  (データなし)"),
+    ax.text(0.005, 0.92, station_names.short(nm) + (f"  ×{ratio:.0f}" if ratio is not None else "  (データなし)"),
             transform=ax.transAxes, va="top", weight="bold", fontsize=9,
             bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1))
     ax.set_ylabel("cm/s")

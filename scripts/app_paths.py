@@ -1,6 +1,6 @@
 # app_paths.py
 # ファイルの置き場所を決める(TODO 12)
-#   1. アプリに付く物(変更しない): tools、etc の設定ファイルの初期値(win.prm・*.ch・*.tbl・external_stations.txt)
+#   1. アプリに付く物(変更しない): tools、etc の設定ファイルの初期値(win.prm・*.ch・*.tbl・external_stations.txt・station_names.txt)
 #        開発中 ... プロジェクトのフォルダ / ビルドしたアプリ ... アプリの中(Mac は .app/Contents の中、Windows は exe の横)
 #        (前のビルドのように、アプリの横に tools・etc があればそれを使う)
 #   2. ユーザーの設定(小さい・作り直せない): 画面のパラメータ、履歴、手で直した到着時刻(picks)、時刻表、

@@ -18,6 +18,7 @@ import quake_detect
 import train_day_plot
 from stack_plot import STACK_ROWS, add_span, add_label
 from log_common import log_message
+import station_names
 
 # 帯・線の色
 COLOR_MATCHED = "#9467bd"   # 震源リストと照合した地震の候補
@@ -137,7 +138,7 @@ class TrainOverlay:
 
   def available(self, dt, station):
     if station not in self.STATIONS:
-      return False, f"線路に近い拠点({'・'.join(self.STATIONS)})だけで使えます"
+      return False, f"線路に近い拠点({'・'.join(map(station_names.full, self.STATIONS))})だけで使えます"
     if not self.timetable_path.exists():
       return False, f"時刻表がありません({self.timetable_path.name})"
     return True, ""
@@ -161,7 +162,7 @@ class TrainOverlay:
     st.merge(method=1, fill_value=0)
     traces = {tr.stats.station: tr for tr in st}
     if station not in traces:
-      raise RuntimeError(f"{station} の上下動がありません")
+      raise RuntimeError(f"{station_names.full(station)} の上下動がありません")
     # 秒の基準は表示する時間の日の始まり。前後の日の時刻表も、その日の秒に直して加える
     #   (時刻表は、それぞれの日に有効な行だけを使う。ダイヤ改正の前後で時刻が変わるため)
     day = _day_start(t0)

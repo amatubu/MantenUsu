@@ -178,6 +178,7 @@ Mac は ⌘（Command）キー、Windows は Ctrl キーと組み合わせます
 - 地震の候補の検出: `--detect-quakes` と同じ処理を画面から実行します。揺れの大きさ（RMS）を保存済みの期間と、daily_zips にあってまだ計算していない日を表示します。期間（YYYYMMDD、空けると daily_zips の最初の日から最後の日まで）を入れて「地震の候補を探す」を押すと、まだの日だけ RMS を計算し、候補の一覧などを `batch_plots/quakes` に保存します。確認用の画像・PDF の保存、候補の履歴への追加、外部の観測点で確かめるためにダウンロードする60分の一覧の作成も選べます。別スレッドで実行するので、途中で中止できます（手元の daily_zips の ZIP だけを使い、Googleドライブからはダウンロードしません）。
 - キャッシュ: 「出力データキャッシュ整理」と「波形Zipファイル整理」です。
 - ほかの機関の観測点: 設定の観測点（`etc/external_stations.txt`）と、`v-net` フォルダの ZIP ごとの開始時刻・長さ・大きさ・変換済みの観測点を一覧にします。まだ変換していない ZIP の変換、変換済みの SAC（`output/vnet`）の削除（観測点の設定を変えたときなど）、`v-net` フォルダと設定ファイルを開くこともできます。
+- 表示: 拠点名を発表用の名前で表示するかを切り替えます（「[拠点名の読み替え](#拠点名の読み替えetcstation_namestxtオプション)」）。
 
 ### バッチ処理
 - 画面を出さずに、指定したチャンネル・期間の1時間スタック波形の画像を一括で保存します（`batch_plots`）。
@@ -265,7 +266,7 @@ python3 scripts/UsuMantenViewer.py --locate-quakes batch_plots/quakes/quake_cand
 
 | 種類 | 中身 | Mac | Windows |
 |---|---|---|---|
-| アプリに付く物（変更しない） | `tools`、`etc` の初期値（win.prm・*.ch・*.tbl・external_stations.txt） | 開発中はプロジェクトのフォルダ、ビルドしたアプリは `.app` の中 | 開発中はプロジェクトのフォルダ、ビルドしたアプリは exe の横の `_internal` |
+| アプリに付く物（変更しない） | `tools`、`etc` の初期値（win.prm・*.ch・*.tbl・external_stations.txt・station_names.txt） | 開発中はプロジェクトのフォルダ、ビルドしたアプリは `.app` の中 | 開発中はプロジェクトのフォルダ、ビルドしたアプリは exe の横の `_internal` |
 | ユーザーの設定（小さい・作り直せない） | 画面の設定（`ps_picker_params.json`・`hypocenter_params.json`）、実行履歴（`history.json`）、地震リスト（`quake_lists.json`）、手で直した到着時刻（`picks`）、洞爺駅の時刻表（`etc/train_timetable.csv`）、Googleドライブの鍵（`service_account`）、`etc` の上書き、データフォルダの設定（`settings.json`） | `~/Library/Application Support/UsuMantenViewer` | `%APPDATA%\UsuMantenViewer` |
 | データフォルダ（大きい） | `daily_zips`、`source_zips`（データを用意する側だけ）、`output`（キャッシュ）、`v-net`、`jma_hypocenter`、`batch_plots` | 初期値は `~/Library/Application Support/UsuMantenViewer/data` | 初期値は `%LOCALAPPDATA%\UsuMantenViewer\data` |
 | 消えてもよいキャッシュ | 地図のタイル、走時、フォント一覧 | `~/Library/Caches/UsuMantenViewer` | `%LOCALAPPDATA%\UsuMantenViewer` |
@@ -341,6 +342,29 @@ WINファイルの処理には、防災科学技術研究所（防災科研）�
 - 日付は、列車が通る時刻の日で判定します。0時台・1時台の深夜の貨物列車も、その時刻の日付で判定します（3/13 の夜から続けて 3/14 の 0:30 に通るものは 3/14）。改正の日の未明に走る列車が旧ダイヤのままなら、その行の有効終了日を改正の日（2026/3/14）にします。
 - 日付は「2026/3/14」「2026-03-14」のどちらの書き方でも読めます。
 
+### 拠点名の読み替え（`etc/station_names.txt`。オプション）
+
+満点地震計の拠点名（`Bamba`・`Hokudai`・`Mimatsu`・`Nizaemn`）を、図と画面に出すときだけ、外部に発表するときの名前（Irie・SobetsuOnsen・Takinomachi）に読み替えられます。ふだん（身内での確認）は内部名のままにしておき、発表用の図を作るときだけ切り替える使い方を想定しています。
+
+- 切り替えは、メンテナンス画面の「表示」タブの「拠点名を発表用の名前で表示する」です（既定は外してあります）。入れたかどうかはユーザーの設定の `settings.json`（`station_names`）に覚えておくので、次に起動したときもそのままです。バッチ処理で保存する画像にも使います。
+- メイン画面の1時間スタックのチャンネルの選択欄はすぐに変わります。開いている図や画面は変わらないので、開き直すか描き直してください。
+- 読み替える名前は `etc/station_names.txt` に書いてあります。名前を変えるときは、このファイルをユーザーの設定の `etc` に写して直します（「[ファイルの置き場所](#ファイルの置き場所)」の `etc` の上書き）。ファイルに名前が1つも無いと、チェックボックスは押せません。
+- 1行に1拠点で「内部名 正式名 略称」と書きます（`#` から後ろは説明）。書いていない拠点（Mimatsu）は内部名のままです。略称を省くと正式名を使います。名前には空白と「.」を使えません（「拠点名.成分」の形で使うため）。ほかの拠点の名前とぶつかる行は使わず、ログに書きます。
+
+```text
+Bamba    Irie          Irie     # 入江
+Nizaemn  Takinomachi   Takino   # 滝之町
+Hokudai  SobetsuOnsen  Sobetsu  # 壮瞥温泉の近く
+```
+
+| 使う名前 | 使う所 |
+|---|---|
+| 正式名 | 図のタイトル・ウィンドウのタイトル、2x2 の波形の各枠の見出し、拠点・チャンネルの選択欄（波形表示、メイン画面の1時間スタック）、P波・S波検出と震度推定の結果、震源推定の画面の結果の文、データの期間の図（`show_statistics.py`）、ブラウザで見る震源の地図（地震の候補の震源の画面の「ブラウザで地図を開く」） |
+| 略称（狭い所） | 縦1列の波形の縦軸、1時間スタックの拠点のボタン、震源推定の画面の波形の左上と配置図、地震の候補の確認用の画像と震源の地図・断面図、ひな形の相関の図（`template_match.py`） |
+| 内部名のまま | SAC・チャンネル表の観測点コード、保存した到着時刻（`picks`）、キャッシュ、CSV の列名と値、保存する画像のファイル名、ログの文（震源推定の「テキスト出力」も）、バッチ処理の `-c` の指定 |
+
+ほかの機関の観測点（`etc/external_stations.txt`）の名前は、そのファイルの「画面で使う名前」のままです。
+
 ---
 
 ## 起動
@@ -382,6 +406,22 @@ python3 scripts/UsuMantenViewer.py --download-zips -s 20260901 -e 20260930 --dry
 
 ```bash
 python3 scripts/UsuMantenViewer.py --download-zips -s 20260901 -e 20260930
+```
+
+### Mac のコンソールに出る IMKCFRunLoopWakeUpReliable のメッセージ
+
+Mac で動かしていると、コンソールにときどき次のような行が出ます。
+
+```text
+2026-11-12 20:33:52.131 Python[53579:54554500] error messaging the mach port for IMKCFRunLoopWakeUpReliable
+```
+
+macOS の入力メソッド（日本語入力などの IMK）が、アプリに知らせを送れなかったときに macOS 自身が出すメッセージで、アプリの処理には関係なく、害はありません（Tk に限らず、Qt などのアプリでも出ます）。いつ出るかは macOS 側の事情によります。
+
+アプリの側では出さないようにできないため、そのままにしています。抜くには標準エラーの行を選り分けるか、macOS の `NSLog` の出力をまとめて止める（環境変数 `CFLOG_FORCE_DISABLE_STDERR`）しかなく、どちらもほかの大事なメッセージやエラーを隠すおそれがあるためです。コンソールの表示がじゃまなときは、ターミナルで次のように、この行だけを除いて表示できます（ほかの行はそのまま出ます）。
+
+```bash
+python3 scripts/UsuMantenViewer.py 2>&1 | grep --line-buffered -v IMKCFRunLoopWakeUpReliable
 ```
 
 ---
@@ -510,6 +550,7 @@ zip の中は、ユーザーの設定（`user/`）とデータフォルダ（`da
 | `build_manual.py` | 操作マニュアル（`docs/manual/manual.md`）を PDF にする（ビルドのときに呼ぶ） |
 | `pack_data.py` | 別のマシンに移すデータ（Git の管理外のもの）を1つの zip にまとめる（`pack_data_mac.sh`・`pack_data_win.bat` から呼ぶ） |
 | `app_paths.py` | データフォルダの場所（開発中とビルドしたアプリで共通）、ビルドしたアプリ向けの設定 |
+| `station_names.py` | 満点地震計の拠点名の、表示のときだけの読み替え（`etc/station_names.txt`。正式名と略称） |
 | `plot_common.py` / `log_common.py` | 描画・ログ出力の共通処理 |
 
 ### 単体で使う補助スクリプト（`scripts/`）

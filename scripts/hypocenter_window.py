@@ -29,6 +29,7 @@ import pick_store
 import external_stations
 import magnitude
 import shortcuts
+import station_names
 from obspy.geodetics import gps2dist_azimuth
 
 # 設定ファイル(P波・S波検出とは別に保存する)
@@ -239,7 +240,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
                                 color=get_component_color("U"))
     ax.set_ylabel("速度 (cm/s)")
     # 拠点名はグラフの左上に表示する
-    ax.text(0.01, 0.95, name, transform=ax.transAxes, va="top", fontsize=10, weight="bold",
+    ax.text(0.01, 0.95, station_names.short(name), transform=ax.transAxes, va="top", fontsize=10, weight="bold",
             bbox=dict(facecolor="white", edgecolor="none", alpha=0.8))
     ax.grid(True)
     if i < n - 1:
@@ -409,7 +410,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       x, y = xy[nm]
       color = "gray" if nm in excluded or current_picks()[nm] is None else "black"
       map_ax.plot(x, y, "^", color=color, ms=9, markeredgecolor="white", zorder=3)
-      map_ax.annotate(nm, (x, y), textcoords="offset points", xytext=(5, 5),
+      map_ax.annotate(station_names.short(nm), (x, y), textcoords="offset points", xytext=(5, 5),
                       fontsize=8, color=color, zorder=3,
                       bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1))
     radius = max(np.hypot(*xy[nm]) for nm in names)
@@ -459,7 +460,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       map_ax.legend(loc="lower right", fontsize=8)
 
   # 結果の文字列を作る
-  def result_message(picks, res):
+  #   label ... 拠点名の表示(画面は読み替えた正式名。ログ欄へのテキスト出力は内部名のまま)
+  def result_message(picks, res, label=station_names.full):
     s_picks = current_s_picks()
     # 開始時刻はウィンドウのタイトルにあるので書かない(行数を減らすため)
     #   見出しの行は「◆」で始め、注意の行は「※」で始める。見出しの値を赤にするときは WARN_MARK を付ける
@@ -469,7 +471,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     t_first = min((picks[nm] for nm in used), default=None)
     for nm in names:
       if picks[nm] is None:
-        lines.append(f"  {nm}: 検出なし")
+        lines.append(f"  {label(nm)}: 検出なし")
         continue
       mark = " (手動)" if nm in manual else ""
       mark += " (除外)" if nm in excluded else ""
@@ -479,7 +481,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
         sp += " (計算に使わない)" if nm in s_excluded and nm not in excluded else ""
       else:
         sp = "  S波 検出なし"
-      lines.append(f"  {nm}: {format_time(ref_time + picks[nm])[11:]}  +{diff:.3f} 秒{mark}{sp}")
+      lines.append(f"  {label(nm)}: {format_time(ref_time + picks[nm])[11:]}  +{diff:.3f} 秒{mark}{sp}")
     if res.get("azimuth") is not None:
       lines.append(f"◆到来方向: {res['azimuth']:.0f}° ({direction_name(res['azimuth'])})"
                    f"  見かけの速度: {res['app_v']:.1f} km/s  残差: {res['plane_rms']:.3f} 秒")
@@ -770,7 +772,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     log_message("--- 震源推定 ---")
     for k, s in sliders.items():
       log_message(f"{k}: {s.val}")
-    for line in plain(result_message(current_picks(), state["result"] or {})).splitlines():
+    for line in plain(result_message(current_picks(), state["result"] or {}, label=str)).splitlines():
       log_message(line)
   btn_print.on_clicked(print_result)
 

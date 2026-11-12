@@ -13,6 +13,7 @@ from plot_common import NM_TO_CM, get_component_color
 from ps_picker import plot_ps_arrival_time
 from hypocenter_window import plot_hypocenter
 import shortcuts
+import station_names as display_names   # 拠点名の読み替え(この中の関数 station_names と別の名前にする)
 
 # 成分の並び順: U(上下)、N(南北)、E(東西)
 COMP_ORDER = ["U", "N", "E"]
@@ -121,7 +122,7 @@ def draw_vertical(fig, ordered_st, title_str):
   )
 
   for tr, ax in zip(ordered_st, axes):
-    plot_trace(ax, tr, f"{tr.stats.station}\n({tr.stats.channel})")
+    plot_trace(ax, tr, f"{display_names.short(tr.stats.station)}\n({tr.stats.channel})")
   # 縦軸のラベルを、目盛りの数字の左側にそろえて置く(数字の桁が多くても重ならないように)
   fig.align_ylabels(axes)
 
@@ -148,7 +149,7 @@ def draw_station_grid(fig, ordered_st, title_str):
       plot_trace(ax, tr, f"({tr.stats.channel})")
       axes.append(ax)
     # 拠点名を枠の上に表示し、縦軸のラベルの位置を揃える
-    axes[0].set_title(station, fontsize=11)
+    axes[0].set_title(display_names.full(station), fontsize=11)
     fig.align_ylabels(axes)
     # 各拠点の一番下に時間の目盛を表示(ラベルは下の段だけ)
     show_time_axis(axes[-1], with_label=idx // 2 == 1)
@@ -174,7 +175,7 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
   wave_win = tk.Toplevel(parent)
   # ウィンドウのタイトル(拠点名と期間)
   start_time, end_time = period_strings(ordered_st)
-  title_stations = ", ".join(dict.fromkeys(tr.stats.station for tr in ordered_st))
+  title_stations = ", ".join(dict.fromkeys(display_names.full(tr.stats.station) for tr in ordered_st))
   wave_win.title(f"波形表示 - {title_stations} ({start_time} - {end_time})")
 
   # Pyplotのグローバル管理からこのfigを外す（他のplt.show()に巻き込まれなくする）
@@ -227,16 +228,17 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
   # 読み込まれたデータから重複のない拠点名リストを作成
   stations = sorted(list(set(tr.stats.station for tr in ordered_st)))
 
-  # 拠点名のドロップダウン（コンボボックス）
+  # 拠点名のドロップダウン（コンボボックス）。表示は読み替えた名前(station_names)で、選んだら内部名に戻す
   ttk.Label(control_frame, text="拠点名:").pack(side=tk.LEFT, padx=(0, 5))
-  station_combobox = ttk.Combobox(control_frame, values=stations, state="readonly", width=15)
+  station_combobox = ttk.Combobox(control_frame, values=[display_names.full(s) for s in stations],
+                                  state="readonly", width=15)
   if stations:
-    station_combobox.set(stations[0])  # 初期選択
+    station_combobox.current(0)  # 初期選択
   station_combobox.pack(side=tk.LEFT, padx=(0, 10))
 
   # 選択中の拠点の波形データで analyze を呼ぶ(震度推定・P波・S波検出で共通)
   def run_for_station(analyze):
-    selected_station = station_combobox.get()
+    selected_station = display_names.internal(station_combobox.get())
     if not selected_station:
       messagebox.showwarning("警告", "拠点名が選択されていません。")
       return
@@ -245,7 +247,7 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
 
     # 該当拠点のデータが空でないかチェック
     if len(station_st) == 0:
-      messagebox.showerror("エラー", f"拠点 [{selected_station}] の波形データが見つかりません。")
+      messagebox.showerror("エラー", f"拠点 [{station_combobox.get()}] の波形データが見つかりません。")
       return
 
     analyze(station_st)

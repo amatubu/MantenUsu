@@ -17,6 +17,7 @@ from log_common import log_message
 import app_paths
 import external_stations
 import shortcuts
+import station_names
 
 STACK_ROWS = 60  # 1時間 = 60分 = 60段
 
@@ -156,7 +157,8 @@ class StackFigure:
 
     # 全体タイトル(この図のタイトルとして設定する)
     date_title = start_dt.strftime("%Y/%m/%d %H:00")
-    self.fig.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station}.{comp}", fontsize=12)
+    self.fig.suptitle(f"有珠満点地震計 1時間スタック波形 ({date_title}) - チャンネル: {station_names.full(station)}.{comp}",
+                      fontsize=12)
 
 # 1時間スタック波形の表示ウィンドウ(前後の時間への移動・拠点と成分の切り替えつき)
 #   start_dt      ... 最初に表示する1時間の開始日時(datetime)
@@ -221,7 +223,7 @@ class StackWindow:
 
     # グラフ上部左側に、拠点ボタン(上段)と成分ボタン(下段)を配置
     self.station_buttons = self._make_button_row(
-      self.stations, y=0.930, width=0.085, on_click=self.set_station)
+      self.stations, y=0.930, width=0.085, on_click=self.set_station, label=station_names.short)
     self.comp_buttons = self._make_button_row(
       self.comps, y=0.905, width=0.06, on_click=self.set_comp)
     # 成分ボタンの右に、重ね表示のトグルボタンと「凡例」ボタンを配置
@@ -346,11 +348,12 @@ class StackWindow:
     self.log(f"画像を保存しました: {path}")
 
   # 横一列のボタンを作って、{名前: Button} を返す
-  def _make_button_row(self, names, y, width, on_click, height=0.02):
+  #   label ... ボタンに出す文字を名前から作る関数(拠点の読み替え。押したときに渡すのは名前のまま)
+  def _make_button_row(self, names, y, width, on_click, height=0.02, label=str):
     buttons = {}
     for i, name in enumerate(names):
       ax = self.fig.add_axes([0.07 + i * (width + 0.005), y, width, height])
-      btn = Button(ax, name)
+      btn = Button(ax, label(name))
       btn.label.set_fontsize(8)
       btn.on_clicked(lambda _event, n=name: on_click(n))
       buttons[name] = btn
@@ -495,7 +498,7 @@ class StackWindow:
     # ウィンドウのタイトル(既定の「Figure 1」の代わり。時間・拠点・成分の切り替えに追従)
     if self.fig.canvas.manager is not None:
       self.fig.canvas.manager.set_window_title(
-        f"1時間スタック波形 - {self.station}.{self.comp} ({self.dt.strftime('%Y/%m/%d %H:00')})")
+        f"1時間スタック波形 - {station_names.full(self.station)}.{self.comp} ({self.dt.strftime('%Y/%m/%d %H:00')})")
     if self._vnet_info is not None:
       self._vnet_info.config(text=f"{self.dt:%Y/%m/%d %H}時・{self.comp}")
     self._refresh_buttons()
