@@ -203,6 +203,14 @@ MAX_LOCAL_RMS = 0.15
 #   近い地震で到着時刻の検出がずれているとみなす
 #   (有珠山直下の地震の候補で、検出がずれて残差が大きくなったものも S-P時間は 0.8〜1.2秒だった)
 FAR_MIN_SP = 3.0
+# P波がほぼ同時に届いた(真下に近い向きから来た)とみなす、平面波の見かけの速度 [km/s] と残差 [秒]
+#   遠くの大きな地震(海外の深発地震など)の P波は、拠点の配置によらずほぼ同時に届き、平面波によく合う
+#   (2026/2/23 02:04 のボルネオ島北部の深発地震 M7.1(4600 km)は 8拠点で 0.15 秒以内にそろい、103 km/s・0.05 秒)
+#   山頂の下の近い地震も見かけの速度は大きく出ることがあるが、波面が曲がっているので平面波には合わない(残差 0.25〜0.35 秒)
+#   このときに近い地震として求めると、拠点の真下の深い所(深さ 10〜30 km)に震源が置かれてしまう
+STEEP_APP_V = 15.0
+STEEP_PLANE_RMS = 0.1
+STEEP_MIN_STATIONS = 4
 
 # P波・S波の到着時刻から震源を求める(グリッドサーチ)
 #   pos ... 観測した拠点の座標 [km] の配列 (n, 3)。3列目は高さ(海面からの高度。上が正)
@@ -352,7 +360,8 @@ LOCAL_KINDS = (KIND_LOCAL, KIND_LOCAL_POOR, KIND_LOCAL_FEW)
 #   confirmed ... 到着時刻を手で確かめたか(震源推定の画面で保存したもの)。False で到着時刻が CONFIRM_OBSERVATIONS より
 #                 少ないときは、残差が小さくても近い地震(到着時刻少)とする(残差が大きいときは近い地震(残差大)のまま)
 # 戻り値: dict(kind, loc(locate_grid_ps の結果 または None), far(estimate_far の結果 または None),
-#              azimuth, app_v, plane_rms, n_p, n_s, lat, lon)
+#              azimuth, app_v, plane_rms, n_p, n_s, lat, lon,
+#              steep(P波がほぼ同時に届いた。STEEP_APP_V。S-P時間が短いか無いときは kind は決まらない))
 def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=None, confirmed=True):
   used = sorted(picks)
   used_s = [nm for nm in used if nm in s_picks]
@@ -368,6 +377,13 @@ def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=No
                          np.array([o[2] for o in obs]))
     res["loc"] = loc
   sp_times = [s_picks[nm] - picks[nm] for nm in used_s]
+  # P波がほぼ同時に届いたときは、近い地震としては求めない(遠くの大きな地震か、真下の深い地震。S波で見分ける)
+  #   S-P時間が FAR_MIN_SP 以上なら、遠い地震としての推定(下)に進む
+  res["steep"] = (len(used) >= STEEP_MIN_STATIONS and res["app_v"] is not None
+                  and res["app_v"] >= STEEP_APP_V and res["plane_rms"] <= STEEP_PLANE_RMS)
+  if res["steep"] and np.mean(sp_times or [0]) < FAR_MIN_SP:
+    res["loc"] = None   # 真下の深い所に置かれた震源は使わない(配置図にも描かない)
+    return res
   if loc is not None and not loc["at_edge"] and (loc["rms"] <= MAX_LOCAL_RMS or np.mean(sp_times or [0]) < FAR_MIN_SP):
     if loc["rms"] > MAX_LOCAL_RMS:
       res["kind"] = KIND_LOCAL_POOR

@@ -167,3 +167,39 @@ def test_too_few_stations(setup):
   picks = {nm: picks[nm] for nm in ("Hokudai", "Mimatsu")}
   res = h.locate_event(xyz, picks, {nm: s_picks[nm] for nm in picks}, proj)
   assert res["kind"] == h.KIND_NONE and res["azimuth"] is None
+
+
+# --- P波がほぼ同時に届いたとき(遠くの大きな地震・真下の深い地震) ---
+
+def test_near_simultaneous_p_is_not_local(setup):
+  # 海外の深発地震のように、真下に近い向きから来て P波がほぼ同時に届く(見かけの速度 100 km/s)
+  proj, xyz = setup
+  picks, _s = far_arrivals(xyz, 218.0, 0.0, app_v=100.0)
+  res = h.locate_event(xyz, picks, {}, proj)
+  assert res["steep"] and res["app_v"] == pytest.approx(100.0, rel=1e-3)
+  assert res["kind"] == h.KIND_NONE and res["loc"] is None and res["lat"] is None
+
+
+def test_near_simultaneous_p_with_short_s_p_is_not_local(setup):
+  # P波のあとの別の揺れを S波として拾っても(S-P 1 秒)、近い地震にはしない
+  proj, xyz = setup
+  picks, s_picks = far_arrivals(xyz, 218.0, 1.0, app_v=100.0)
+  res = h.locate_event(xyz, picks, s_picks, proj)
+  assert res["steep"] and res["kind"] == h.KIND_NONE and res["loc"] is None
+
+
+def test_near_simultaneous_p_with_long_s_p_is_far(setup):
+  # S-P時間が長ければ、これまでどおり遠い地震として推定する
+  proj, xyz = setup
+  picks, s_picks = far_arrivals(xyz, 218.0, 30.0, app_v=50.0)
+  res = h.locate_event(xyz, picks, s_picks, proj)
+  assert res["steep"] and res["kind"] == h.KIND_FAR
+
+
+def test_local_quake_under_array_is_not_steep(setup):
+  # 拠点の真ん中の真下の浅い地震は、見かけの速度が大きくても平面波に合わないので、近い地震のまま
+  proj, xyz = setup
+  picks, s_picks = arrivals(xyz, (0.0, 0.0, 1.0))
+  res = h.locate_event(xyz, picks, s_picks, proj)
+  assert not res["steep"] and res["kind"] == h.KIND_LOCAL
+

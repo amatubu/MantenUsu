@@ -22,6 +22,7 @@ from hypocenter import (load_stations, LocalProjection, pick_p_arrivals, locate_
                         pick_filtered, refine_p, pick_s, HORIZONTAL_RANGE,
                         LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, OMORI_K, S_EXCLUDED_DEFAULT, far_method_text,
                         MIN_OBSERVATIONS, CONFIRM_OBSERVATIONS, MAX_LOCAL_RMS, depth_text)
+from quake_features import dominant_frequency
 from plot_common import NM_TO_CM, get_component_color
 import gsi_tiles
 from ps_picker import load_params, save_params
@@ -98,6 +99,9 @@ DISPLAY_BAND = (2.0, 20.0)
 XLIM_SPAN_RATIO = 0.45
 XLIM_BEFORE_RATIO = 0.2
 XLIM_MIN_WIDTH = 3.0
+
+# 卓越周波数を求める始まり: 各拠点の P波の DOMINANT_BEFORE 秒前(そこから10秒間。quake_features.dominant_frequency)
+DOMINANT_BEFORE = 0.2
 
 # 波形のグラフに書く、P波の差(P波の線の左)と S-P時間(S波の線の右)の縦の位置(グラフの高さの割合)
 #   P波は上にそろえ、S波は下にそろえる(P波と S波が近い拠点でも重ならないように)
@@ -541,8 +545,16 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
                    f"  見かけの速度: {res['app_v']:.1f} km/s  残差: {res['plane_rms']:.3f} 秒")
     else:
       lines.append(f"◆到来方向: {WARN_MARK}3拠点以上の到着時刻が必要です")
+    # 揺れの卓越周波数(近い地震は 4〜16 Hz、遠くの大きな地震は低い)
+    freq = dominant_frequency_text(picks)
+    if freq:
+      lines.append(f"◆卓越周波数: {freq}")
     loc = res.get("loc")
-    if loc is None:
+    if res.get("steep") and res.get("far") is None:
+      # P波がほぼ同時に届いた(真下に近い向きから来た)ときは、近い地震の震源は書かない(拠点の真下の深い所に置かれてしまうため)
+      lines.append(f"◆震源: {WARN_MARK}P波がほぼ同時に届いたため、近い地震としては求めません")
+      lines.append("  ※遠くの大きな地震(海外の地震など)か、真下の深い地震です。S波(S-P時間)を確かめてください")
+    elif loc is None:
       lines.append(f"◆震源: {WARN_MARK}P波 3拠点以上と、P波・S波を合わせて {MIN_OBSERVATIONS}つ以上の到着時刻が必要です")
     elif loc["at_edge"]:
       # 遠い地震として推定できたときは、その結果だけを書く(行数を減らすため)
@@ -616,6 +628,26 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   def station_info(nm, picks, t_first):
     p_text, s_text, unused = station_info_parts(nm, picks, t_first)
     return "  ".join(t for t in (p_text, s_text + (" (計算に使わない)" if unused else "")) if t)
+
+  # 卓越周波数の行の値: 拠点ごとに、上下動(フィルターなし)の P波の少し前から10秒間の卓越周波数を求め(地震の候補の解析と同じ。
+  #   quake_features.dominant_frequency)、中央値と範囲を書く(計算から外した拠点は使わない)。P波が無いときは None
+  #   近い地震は 4〜16 Hz ほど。遠くの大きな地震は 1 Hz 以下が中心だが、満点地震計は固有周波数 2 Hz より遅い揺れを
+  #   感じにくいので 2 Hz ほどに出る(2026/2/23 02:04 のボルネオ島北部の深発地震 M7.1)
+  def dominant_frequency_text(picks):
+    values = []
+    for nm in names:
+      if picks[nm] is None or nm in excluded:
+        continue
+      tr = traces[nm]
+      f = dominant_frequency(tr, picks[nm] - DOMINANT_BEFORE - (tr.stats.starttime - ref_time))
+      if f is not None:
+        values.append(f)
+    if not values:
+      return None
+    text = f"{np.median(values):.1f} Hz"
+    if len(values) > 1:
+      text += f"({min(values):.1f}〜{max(values):.1f} Hz)"
+    return text + f"  上下動・P波から10秒・{len(values)}拠点の中央値"
 
   # 推定マグニチュードの行(満点の拠点の最大振幅と震源距離から。magnitude.py)
   #   深さが上限だけ決まる浅い震源は、深さの範囲の中ほどで震源距離を計算する

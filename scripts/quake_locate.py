@@ -246,7 +246,7 @@ def locate_all(candidates, load_hour, stations, proj, on_result=None):
 #   結果も同じとみなす(到着時刻を手直しして保存したり、自動に戻したりすると、その候補だけ計算し直す)
 #   locate_candidate や locate_event の中身を変えたら LOCATE_CACHE_VERSION を上げて、作り直させる
 #   (中身は Python の pickle。このアプリが書いたファイルだけを読む)
-LOCATE_CACHE_VERSION = 1
+LOCATE_CACHE_VERSION = 2   # 2: P波がほぼ同時に届いたときは近い地震にしない(steep)
 LOCATE_CACHE_FILE = app_paths.OUTPUT_DIR / "quake_locate" / f"locate_v{LOCATE_CACHE_VERSION}.pkl"
 
 # 候補の結果を保存するときの見分け方
@@ -426,6 +426,9 @@ def check_title(cand, r):
   elif r["kind"] == KIND_FAR:
     line2 = (f"遠い地震として: 到来方向 {r['azimuth']:.0f}°  震央距離 {far['distance']:.0f} km"
              f"({far_method_text(far)})  震央 北緯 {far['lat']:.2f}° 東経 {far['lon']:.2f}°")
+  elif r.get("steep"):
+    line2 = (f"震源は求めません: P波がほぼ同時に届いた(見かけの速度 {r['app_v']:.0f} km/s)。"
+             "遠くの大きな地震か、真下の深い地震")
   else:
     line2 = "震源は決まりませんでした(P波・S波の到着時刻が足りない)"
   q = cand["jma"]
