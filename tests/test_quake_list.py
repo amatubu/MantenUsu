@@ -199,3 +199,26 @@ def test_set_memo_saves_and_clears(user_files):
   quake_list.set_memo(e, "")
   quake_list.save(lists)
   assert quake_list.load()[USU][0]["fields"]["メモ"] == ""
+
+
+# --- 有珠山付近の地震の震源の更新(地震の候補の震源の画面の「有珠山リストの震源を更新」) ---
+
+def test_update_usu_locations_keeps_memo(user_files):
+  from datetime import datetime
+  import quake_locate
+  lists = empty_lists()
+  lists[USU] = [entry("2026-03-04 22:58:30", "2026-03-04 22:59:00", 深さ="1.7", メモ="KBBY で大きい", らしさ="高",
+                      **{"深さ[km]": "1.7", "山頂から": "0.9 km 西", "残差[秒]": "0.135"})]
+  quake_list.save(lists)
+  start = datetime(2026, 3, 4, 22, 58, 30)
+  cand = {"start": start, "end": datetime(2026, 3, 4, 22, 59, 0), "jma": None, "row": {}}
+  loc = {"x": 0.0, "y": 0.0, "depth": 0.6, "origin": 8.36, "rms": 0.106, "at_edge": False, "at_top": False,
+         "depth_min": 0.3, "depth_max": 1.1}
+  r = {"kind": quake_locate.LOCAL_KINDS[0], "loc": loc, "ref": start, "lat": 42.5432, "lon": 140.8274}
+  other = ({"start": datetime(2026, 3, 5, 1, 0, 0), "end": datetime(2026, 3, 5, 1, 0, 30), "jma": None, "row": {}}, r)
+  assert quake_list.update_usu_locations([(cand, r), other]) == 1   # 一覧に無い候補は何もしない
+  e = quake_list.load()[USU][0]
+  assert e["fields"]["深さ[km]"] == "0.6" and e["fields"]["残差[秒]"] == "0.106"
+  assert e["fields"]["発生時刻(推定)"].startswith("2026-03-04 22:58:38.3")
+  assert e["fields"]["メモ"] == "KBBY で大きい" and e["fields"]["らしさ"] == "高"
+  assert e["end"] == "2026-03-04 22:59:00"

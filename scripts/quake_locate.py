@@ -29,6 +29,7 @@ import quake_detect
 from quake_features import USU_SUMMIT
 import pick_store
 import external_stations
+import velocity_model
 # 判定(KIND_*)は震源推定の画面と共通(hypocenter.py)
 from hypocenter import (LocalProjection, pick_filtered, refine_p, pick_s, locate_event,
                         LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, S_EXCLUDED_DEFAULT, far_method_text,
@@ -153,7 +154,9 @@ def locate_candidate(st, cand, stations, proj):
     if sp > FAR_SP_SECONDS:
       s_search = max(s_search, sp + S_SEARCH_MARGIN)
   # k ... 遠い地震の距離の大森係数。None なら走時表で求める(震源推定の画面で大森公式にして保存したときだけ k を使う)
+  #   layered ... 深さで速度が変わる構造(velocity_model。既定)で求めるか。震源推定の画面で一様にして保存したときだけ一様
   vp, vp_vs, k = LOCAL_VP, LOCAL_VP_VS, None
+  layered = velocity_model.DEFAULT == velocity_model.GRADIENT
   excluded, s_excluded = set(), set(S_EXCLUDED_DEFAULT)
 
   path, record = pick_store.find_record(t0, t1)
@@ -175,6 +178,8 @@ def locate_candidate(st, cand, stations, proj):
     vp, vp_vs = params.get("vp", vp), params.get("vp_vs", vp_vs)
     if params.get("far_omori"):
       k = params.get("omori_k")
+    if isinstance(params.get("velocity_layered"), (int, float)):
+      layered = bool(params["velocity_layered"])
     s_search = params.get("s_search", s_search)
   else:
     # P波(短い STA/LTA で検出し、AIC 法で決め直す)
@@ -201,8 +206,9 @@ def locate_candidate(st, cand, stations, proj):
   used_s = {nm: t for nm, t in s_picks.items() if nm in used and nm not in s_excluded}
   xyz = {nm: np.array([*proj.to_xy(*stations[nm][:2]), stations[nm][2] / 1000]) for nm in used}
   # 震源推定の画面で保存した到着時刻は、手で確かめたものとして扱う(到着時刻が5つでも近い地震にする)
-  result = locate_event(xyz, used, used_s, proj, vp, vp_vs, k, confirmed=path is not None)
-  result.update(picks=picks, s_picks=s_picks, excluded=sorted(excluded), s_used=sorted(used_s), ref=t0,
+  model = velocity_model.get(velocity_model.GRADIENT) if layered else None
+  result = locate_event(xyz, used, used_s, proj, vp, vp_vs, k, confirmed=path is not None, model=model)
+  result.update(layered=layered, picks=picks, s_picks=s_picks, excluded=sorted(excluded), s_used=sorted(used_s), ref=t0,
                 traces=w, s_search=s_search, k=k, manual=path.name if path else "", external=external)
   return result
 
@@ -246,7 +252,7 @@ def locate_all(candidates, load_hour, stations, proj, on_result=None):
 #   結果も同じとみなす(到着時刻を手直しして保存したり、自動に戻したりすると、その候補だけ計算し直す)
 #   locate_candidate や locate_event の中身を変えたら LOCATE_CACHE_VERSION を上げて、作り直させる
 #   (中身は Python の pickle。このアプリが書いたファイルだけを読む)
-LOCATE_CACHE_VERSION = 2   # 2: P波がほぼ同時に届いたときは近い地震にしない(steep)
+LOCATE_CACHE_VERSION = 3   # 2: P波がほぼ同時に届いたときは近い地震にしない(steep)、3: 深さで速度が変わる構造を既定にした
 LOCATE_CACHE_FILE = app_paths.OUTPUT_DIR / "quake_locate" / f"locate_v{LOCATE_CACHE_VERSION}.pkl"
 
 # 候補の結果を保存するときの見分け方
@@ -635,7 +641,10 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
     fig.text(0.07 + width + 0.03, 0.195, "\n".join(lines), fontsize=7, va="top", linespacing=1.15)
   others = len(items) - len(local)
   #   3行に分け、断面図の深さの縮尺の比は align_sections で短い2行目の後ろに入れる({scale})
-  template = (f"P波・S波の到着時刻から推定({manual_note(items)})。均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g})、"
+  n_uniform = sum(1 for _c, r in items if not r.get("layered", True))
+  structure = "深さで速度が変わる構造(有珠山の先行研究の P波速度構造、vp/vs は中間)" + (
+    f"(一様な構造にして保存した {n_uniform}件を除く)" if n_uniform else "")
+  template = (f"P波・S波の到着時刻から推定({manual_note(items)})。{structure}、"
               f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。\n"
               + f"深さは海面からの深さ(拠点の高度を考慮)。白抜きは残差 {GOOD_RMS:g}秒以上か、要確認の判定(残差大・到着時刻少)。"
               + "{scale}\n"

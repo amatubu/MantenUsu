@@ -1,7 +1,8 @@
 # hypocenter_window.py
 # 震源推定の画面: 拠点ごとに P波(上下動)・S波(水平動)の到着時刻を検出し、震源(または到来方向)を推定して表示する
 #   P波は STA/LTA で検出したあと AIC 法で決め直し、S波は P波のあとの水平動に AIC 法を使う(hypocenter.py)
-#   震源は P波・S波の到着時刻から求める(均質な速度構造。拠点の高度を考え、深さは海面からの深さ)
+#   震源は P波・S波の到着時刻から求める(深さで速度が変わる構造(velocity_model。既定)か、均質な速度構造。
+#   拠点の高度を考え、深さは海面からの深さ)
 #   到来方向は P波の到着時刻だけから求める(遠い地震は位置が決まらないため)
 #   到着時刻(手で直したものを含む)とパラメータは「到着時刻を保存」で output/picks に保存し(pick_store.py)、
 #   同じ範囲を開いたときに読み込んで再現する
@@ -35,6 +36,7 @@ import external_stations
 import magnitude
 import shortcuts
 import station_names
+import velocity_model
 from obspy.geodetics import gps2dist_azimuth
 
 # 文字に打ち消し線を引く(matplotlib の文字には打ち消し線の指定が無いため、文字の形の範囲の中ほどに横線を描く)
@@ -80,6 +82,14 @@ FAR_OMORI_DEFAULT = False
 # 保存したパラメータ(設定ファイルの "params"、または保存した到着時刻の "params")から far_omori を読む
 def read_far_omori(params, default=FAR_OMORI_DEFAULT):
   val = (params or {}).get("far_omori")
+  return bool(val) if isinstance(val, (int, float)) else default
+
+# 近い地震の震源を、深さで速度が変わる構造(velocity_model。既定)で求めるか(パラメータ velocity_layered: 1 なら勾配、0 なら一様)
+#   一様のときは P波の速度・vp/vs のスライダーを使う
+LAYERED_DEFAULT = velocity_model.DEFAULT == velocity_model.GRADIENT
+
+def read_layered(params, default=LAYERED_DEFAULT):
+  val = (params or {}).get("velocity_layered")
   return bool(val) if isinstance(val, (int, float)) else default
 
 def read_settings_params(path):
@@ -339,6 +349,9 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   initial = load_params(SETTINGS_FILE, SLIDER_SPECS, DEFAULT_PARAMS)
   initial.update(overrides or {})
   far_omori = read_far_omori(read_settings_params(SETTINGS_FILE))
+  # 速度の構造は、前回の設定ではなく既定(勾配)から始める(保存した到着時刻があれば、そのときの構造)
+  #   地震の候補の震源(quake_locate)と同じ構造で求めるため。前回の設定から始めると、候補の画面と違う震源を指してしまう
+  layered = LAYERED_DEFAULT
   # この範囲で保存した到着時刻(最初の P波が範囲内にあるもの)
   record_path, record = pick_store.find_record(t_ref, end_time)
   if record is not None:
@@ -347,14 +360,17 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       if key in limits:
         initial[key] = min(max(float(val), limits[key][0]), limits[key][1])
     far_omori = read_far_omori(record.get("params"), far_omori)
+    layered = read_layered(record.get("params"), layered)
   sliders = {}
   top, step_y = 0.54, 0.026
   for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
     # 大森係数 k のスライダーは短くし、右に距離の求め方の切り替えボタンを置く
-    width = 0.12 if key == "omori_k" else 0.20
+    #   P波の速度のスライダーも短くし、右に速度の構造の切り替えボタンを置く
+    width = 0.12 if key in ("omori_k", "vp") else 0.20
     sax = fig.add_axes([0.73, top - i * step_y, width, 0.019])
     sliders[key] = Slider(sax, label, vmin, vmax, valinit=initial[key], valstep=vstep)
   k_row_y = top - [spec[0] for spec in SLIDER_SPECS].index("omori_k") * step_y
+  vp_row_y = top - [spec[0] for spec in SLIDER_SPECS].index("vp") * step_y
 
   # --- 状態: 自動検出の結果、手で指定した時刻、計算から外した拠点 ---
   #   horizontal ... 水平動を表示している(クリックで S波を指定する)
@@ -362,7 +378,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   #                      保存した時刻を使う。P波の検出のパラメータを変えたら P波、P波か S波を探す範囲が変わったら S波を捨てる)
   state = {"auto": {}, "pick_params": None, "result": None, "filtered": True, "layer": MAP_LAYERS[0],
            "p_thr": None, "jma": None, "horizontal": False, "auto_s": {}, "fixed": {}, "fixed_s": {},
-           "record_path": record_path, "far_omori": far_omori}
+           "record_path": record_path, "far_omori": far_omori,
+           "layered": layered}
   manual = {}
   manual_s = {}
   excluded = set()
@@ -592,8 +609,9 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     else:
       lat, lon = proj.to_latlon(loc["x"], loc["y"])
       depth = f"深さ {depth_text(loc)}(海面下)"
+      velocity = velocity_model.NAMES[velocity_model.GRADIENT if state["layered"] else velocity_model.UNIFORM]
       lines.append(f"◆震源(P波 {res['n_p']}・S波 {res['n_s']}): 北緯 {lat:.4f}° 東経 {lon:.4f}° {depth}")
-      lines.append(f"  発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒")
+      lines.append(f"  発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒  速度: {velocity}")
       if loc["rms"] > MAX_LOCAL_RMS:
         lines.append("  ※残差が大きく、遠い地震か、到着時刻の検出がずれています")
         if res.get("far") is None:
@@ -734,7 +752,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # ==========================================
   # スライダーの値と、遠い地震の距離の求め方(far_omori)
   def current_params():
-    return {**{k: sl.val for k, sl in sliders.items()}, "far_omori": 1.0 if state["far_omori"] else 0.0}
+    return {**{k: sl.val for k, sl in sliders.items()}, "far_omori": 1.0 if state["far_omori"] else 0.0,
+            "velocity_layered": 1.0 if state["layered"] else 0.0}
 
   def update(_=None):
     params = current_params()
@@ -807,7 +826,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     used = {nm: picks[nm] for nm in names if picks[nm] is not None and nm not in excluded}
     used_s = {nm: s_picks[nm] for nm in used if s_picks[nm] is not None and nm not in s_excluded}
     res = locate_event(xyz, used, used_s, proj, params["vp"], params["vp_vs"],
-                       params["omori_k"] if state["far_omori"] else None)
+                       params["omori_k"] if state["far_omori"] else None,
+                       model=velocity_model.get(velocity_model.GRADIENT) if state["layered"] else None)
     state["result"] = res
 
     message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ
@@ -922,6 +942,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       s.eventson = True
     state["far_omori"] = FAR_OMORI_DEFAULT
     show_far_method()
+    state["layered"] = LAYERED_DEFAULT
+    show_velocity()
     update()
   btn_reset.on_clicked(reset)
 
@@ -1074,6 +1096,28 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   btn_far.on_clicked(toggle_far)
   show_far_method()
 
+  # --- 近い地震の速度の構造の切り替え(勾配(先行研究) ⇔ 一様)。一様のときだけ P波の速度・vp/vs のスライダーを使う ---
+  vel_ax = fig.add_axes([0.885, vp_row_y - 0.004, 0.095, 0.027])
+  def velocity_label():
+    return f"速度: {velocity_model.NAMES[velocity_model.GRADIENT if state['layered'] else velocity_model.UNIFORM]}"
+  btn_velocity = Button(vel_ax, velocity_label())
+  btn_velocity.label.set_fontsize(9)
+  def show_velocity():
+    for key in ("vp", "vp_vs"):
+      sl = sliders[key]
+      sl.set_active(not state["layered"])
+      color = "#aaaaaa" if state["layered"] else "black"
+      sl.label.set_color(color)
+      sl.valtext.set_color(color)
+      sl.poly.set_alpha(0.3 if state["layered"] else 1.0)
+    btn_velocity.label.set_text(velocity_label())
+  def toggle_velocity(_):
+    state["layered"] = not state["layered"]
+    show_velocity()
+    update()
+  btn_velocity.on_clicked(toggle_velocity)
+  show_velocity()
+
   # --- 閉じるとき: 保存していない到着時刻の変更があれば、保存するか確かめる ---
   #   はい = 保存して閉じる、いいえ = 保存せずに閉じる、キャンセル = 閉じない
   def request_close():
@@ -1113,7 +1157,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   state["saved_key"], state["saved_snap"] = picks_key(), snapshot()
   refresh_unsaved()
   fig._widgets = (sliders, btn_auto, btn_reset, btn_print, btn_save, btn_filter, btn_layer, btn_comp, btn_far,
-                  btn_undo, btn_revert)
+                  btn_undo, btn_revert, btn_velocity)
   plt.show()
 
 if __name__ == "__main__":

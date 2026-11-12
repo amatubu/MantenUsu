@@ -311,6 +311,31 @@ def toggle_usu(cand, r, add):
   save(lists)
   return True
 
+# 有珠山付近の地震の一覧にある地震の震源(発生時刻・深さ・山頂から・残差・気象庁の M)を、
+#   地震の候補の震源の画面で求め直した結果で置き換える(速度の構造を変えたときや、到着時刻を手直ししたとき)
+#   pairs ... [(候補, 震源の結果)]。一覧に無い候補は何もしない
+#   メモ・らしさ・終了は一覧のものを残し、画像は新しいものが無ければ一覧のものを残す
+#   戻り値 ... 置き換えた件数
+def update_usu_locations(pairs, lists=None):
+  lists = lists if lists is not None else load()
+  by_start = {e["start"]: e for e in lists[USU]}
+  n = 0
+  for cand, r in pairs:
+    entry = by_start.get(cand["start"].strftime(TIME_FORMAT))
+    if entry is None:
+      continue
+    new = usu_entry_from_location(cand, r)
+    fields = entry.setdefault("fields", {})
+    for key in ("発生時刻(推定)", "深さ[km]", "山頂から", "残差[秒]", "気象庁の M"):
+      fields[key] = new["fields"][key]
+    entry["time"] = new["time"]
+    if new["image"]:
+      entry["image"] = new["image"]
+    n += 1
+  if n:
+    save(lists)
+  return n
+
 # 有珠山付近の地震の一覧を、地震の候補の一覧の形式(quake_locate.read_candidates で読める CSV)で書き出す
 #   地震リストの画面の「地図にプロット」で、地震の候補の震源の画面に渡すために使う
 #   気象庁の震源は、既知の地震の一覧に同じ開始の地震があれば、その発震時刻で取得済みの震源リストから引く

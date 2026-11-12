@@ -1,12 +1,14 @@
 # hypocenter.py
 # 4拠点のP波到着時刻から、震源の位置と地震の発生時刻を推定する(画面は hypocenter_window.py)
-#   - 近い地震: 均質な速度構造を仮定し、震源の位置(x, y, 深さ)と発生時刻をグリッドサーチで求める
+#   - 近い地震: 速度構造(均質、または深さで速度が変わる構造。velocity_model)を仮定し、
+#     震源の位置(x, y, 深さ)と発生時刻をグリッドサーチで求める
 #   - 遠い地震: P波が平面波として届くとみなし、到来方向と見かけの速度を求める
 #     (拠点の間隔が数kmしかないため、遠い地震は P波だけでは距離が決まらない)
 import numpy as np
 from obspy.signal.trigger import recursive_sta_lta
 
 import sp_distance
+import velocity_model
 
 # 拠点の緯度・経度・高度が入っているチャンネル表(etc フォルダ)
 STATION_TABLE = "manten_ch.tbl"
@@ -220,7 +222,11 @@ STEEP_MIN_STATIONS = 4
 #   at_edge ... 水平方向・深い方の端で最良になった(範囲外)、at_top ... 浅い方の端(深さが決まらない)
 #   depth_min・depth_max ... 残差がほぼ同じ(最小の残差から DEPTH_RMS_TOL まで)になる深さの範囲 [km]
 #                           深さごとに震央を探し直して残差を比べる(深さがどこまで確かかの目安)
-def locate_grid_ps(pos, t, v, horizontal=HORIZONTAL_RANGE, depth=DEPTH_RANGE, top=-1.0):
+#   travel ... 走時を返す関数 travel(gx, gy, gz)(形 gx.shape + (n,))。None なら均質な構造(直線の走時 = 距離 / v)
+#              深さで速度が変わる構造では velocity_model.travel_function を渡す
+def locate_grid_ps(pos, t, v, horizontal=HORIZONTAL_RANGE, depth=DEPTH_RANGE, top=-1.0, travel=None):
+  if travel is None:
+    travel = _straight_travel(pos, v)
   center = (0.0, 0.0, (top + depth) / 2)
   half = (horizontal, horizontal, (depth - top) / 2)
   lows, highs = (-horizontal, -horizontal, top), (horizontal, horizontal, depth)
@@ -228,20 +234,27 @@ def locate_grid_ps(pos, t, v, horizontal=HORIZONTAL_RANGE, depth=DEPTH_RANGE, to
     axes = [np.arange(max(c - h, lo), min(c + h, hi) + step / 2, step)
             for c, h, lo, hi in zip(center, half, lows, highs)]
     gx, gy, gz = np.meshgrid(*axes, indexing="ij")
-    dist = np.sqrt((gx[..., None] - pos[:, 0]) ** 2 + (gy[..., None] - pos[:, 1]) ** 2
-                   + (gz[..., None] + pos[:, 2]) ** 2)
-    travel = dist / v
-    origin = (t - travel).mean(axis=-1)
-    rms = np.sqrt(((t - travel - origin[..., None]) ** 2).mean(axis=-1))
+    tt = travel(gx, gy, gz)
+    origin = (t - tt).mean(axis=-1)
+    rms = np.sqrt(((t - tt - origin[..., None]) ** 2).mean(axis=-1))
     k = np.unravel_index(np.argmin(rms), rms.shape)
     center = (gx[k], gy[k], gz[k])
     half = (step * 2,) * 3
     best_rms, best_origin = float(rms[k]), float(origin[k])
   x, y, z = (float(c) for c in center)
-  depth_min, depth_max = _depth_range(pos, t, v, x, y, best_rms, top, depth)
+  depth_min, depth_max = _depth_range(travel, t, x, y, best_rms, top, depth)
   return dict(x=x, y=y, depth=z, origin=best_origin, rms=best_rms,
               at_edge=(max(abs(x), abs(y)) >= horizontal - 0.5) or z >= depth - 0.5,
               at_top=z <= top + 0.05, depth_min=depth_min, depth_max=depth_max)
+
+# 均質な構造の走時(直線。拠点の高度を考える)を返す関数
+def _straight_travel(pos, v):
+  def travel(gx, gy, gz):
+    gx, gy, gz = (np.asarray(a, float) for a in (gx, gy, gz))
+    dist = np.sqrt((gx[..., None] - pos[:, 0]) ** 2 + (gy[..., None] - pos[:, 1]) ** 2
+                   + (gz[..., None] + pos[:, 2]) ** 2)
+    return dist / v
+  return travel
 
 # 残差がほぼ同じとみなす幅: 最小の残差の DEPTH_RMS_TOL 倍(小さすぎるときは DEPTH_RMS_MIN 秒)まで
 #   DEPTH_RMS_MIN は到着時刻の読み取りの精度(約0.01秒)程度
@@ -255,17 +268,16 @@ DEPTH_SCAN_HORIZONTAL = 3.0
 DEPTH_SCAN_STEP = 0.1
 
 # 深さを固定して(震央は best の近くで探し直して)残差を求め、残差がほぼ同じになる深さの範囲を返す
-def _depth_range(pos, t, v, bx, by, best_rms, top, bottom):
+def _depth_range(travel, t, bx, by, best_rms, top, bottom):
   limit = best_rms + max(best_rms * DEPTH_RMS_TOL, DEPTH_RMS_MIN)
   hx = np.arange(bx - DEPTH_SCAN_HORIZONTAL, bx + DEPTH_SCAN_HORIZONTAL + 1e-9, DEPTH_SCAN_STEP)
   hy = np.arange(by - DEPTH_SCAN_HORIZONTAL, by + DEPTH_SCAN_HORIZONTAL + 1e-9, DEPTH_SCAN_STEP)
   gx, gy = np.meshgrid(hx, hy, indexing="ij")
   ok = []
   for z in np.arange(top, bottom + 1e-9, DEPTH_SCAN_STEP):
-    dist = np.sqrt((gx[..., None] - pos[:, 0]) ** 2 + (gy[..., None] - pos[:, 1]) ** 2 + (z + pos[:, 2]) ** 2)
-    travel = dist / v
-    origin = (t - travel).mean(axis=-1)
-    rms = np.sqrt(((t - travel - origin[..., None]) ** 2).mean(axis=-1)).min()
+    tt = travel(gx, gy, np.full_like(gx, z))
+    origin = (t - tt).mean(axis=-1)
+    rms = np.sqrt(((t - tt - origin[..., None]) ** 2).mean(axis=-1)).min()
     if rms <= limit:
       ok.append(float(z))
     elif ok and z > max(ok) + 1.0:
@@ -355,6 +367,7 @@ LOCAL_KINDS = (KIND_LOCAL, KIND_LOCAL_POOR, KIND_LOCAL_FEW)
 #   s_picks ... {拠点名: S波の到着時刻 [秒]}(計算に使う拠点だけ。picks にある拠点に限る)
 #   proj    ... 平面座標(緯度・経度に直すのと、遠い地震の推定の起点(拠点の中心)に使う)
 #   vp, vp_vs, k ... P波の速度 [km/s]、vp/vs、遠い地震の距離に使う大森係数 [km/s](None なら走時表で求める)
+#   model ... 深さで速度が変わる構造(velocity_model.Model)。None なら均質な構造(vp・vp_vs)
 #   近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として到来方向と S-P時間から震央を推定する
 #   (S-P時間が短いのに残差が大きいときは、遠い地震ではなく検出のずれとみなし、近い地震(残差大)とする)
 #   confirmed ... 到着時刻を手で確かめたか(震源推定の画面で保存したもの)。False で到着時刻が CONFIRM_OBSERVATIONS より
@@ -362,7 +375,7 @@ LOCAL_KINDS = (KIND_LOCAL, KIND_LOCAL_POOR, KIND_LOCAL_FEW)
 # 戻り値: dict(kind, loc(locate_grid_ps の結果 または None), far(estimate_far の結果 または None),
 #              azimuth, app_v, plane_rms, n_p, n_s, lat, lon,
 #              steep(P波がほぼ同時に届いた。STEEP_APP_V。S-P時間が短いか無いときは kind は決まらない))
-def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=None, confirmed=True):
+def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=None, confirmed=True, model=None):
   used = sorted(picks)
   used_s = [nm for nm in used if nm in s_picks]
   res = dict(kind=KIND_NONE, loc=None, far=None, azimuth=None, app_v=None, plane_rms=None,
@@ -370,11 +383,18 @@ def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=No
   if len(used) >= 3:
     res["azimuth"], res["app_v"], res["plane_rms"] = fit_plane_wave(
       np.array([xyz[nm][:2] for nm in used]), np.array([picks[nm] for nm in used]))
-  obs = [(xyz[nm], picks[nm], vp) for nm in used] + [(xyz[nm], s_picks[nm], vp / vp_vs) for nm in used_s]
+  obs = [(xyz[nm], picks[nm], vp, "P") for nm in used] + [(xyz[nm], s_picks[nm], vp / vp_vs, "S") for nm in used_s]
   loc = None
   if len(used) >= 3 and len(obs) >= MIN_OBSERVATIONS:
-    loc = locate_grid_ps(np.array([o[0] for o in obs]), np.array([o[1] for o in obs]),
-                         np.array([o[2] for o in obs]))
+    pos = np.array([o[0] for o in obs])
+    t_obs = np.array([o[1] for o in obs])
+    if model is None:
+      loc = locate_grid_ps(pos, t_obs, np.array([o[2] for o in obs]))
+    else:
+      # 深さで速度が変わる構造(velocity_model)。走時表の範囲の中で探す(vp・vp_vs は使わない)
+      loc = locate_grid_ps(pos, t_obs, None, horizontal=velocity_model.LAYERED_HORIZONTAL,
+                           depth=velocity_model.LAYERED_DEPTH,
+                           travel=velocity_model.travel_function(model, pos, [o[3] for o in obs]))
     res["loc"] = loc
   sp_times = [s_picks[nm] - picks[nm] for nm in used_s]
   # P波がほぼ同時に届いたときは、近い地震としては求めない(遠くの大きな地震か、真下の深い地震。S波で見分ける)

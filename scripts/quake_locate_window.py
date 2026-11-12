@@ -69,7 +69,8 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
                        "「保存して一覧に反映」を押すと、この一覧と図に反映します(到着時刻は output/picks に保存され、"
                        "次に開いたときやバッチ処理でも使います)。一覧の CSV と図は「一覧と図を保存」で保存します。"
                        "「有珠山リストに追加・外す」で、選んだ候補を地震リストの有珠山付近の地震に加えます(✓ の行は加え済み。"
-                       "もう一度押すと外します)。",
+                       "もう一度押すと外します)。「有珠山リストの震源を更新」で、加え済みの候補の震源を、この画面の結果で"
+                       "置き換えます(到着時刻を手直しして保存した候補は、自動で置き換えます)。",
             wraplength=760, justify=tk.LEFT, foreground="#555555").pack(anchor="w", pady=(6, 0))
 
   # --- 右: 震央の地図と断面図 ---
@@ -180,6 +181,9 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
       return
     items[k] = (cand, new_r)
     state["unsaved"] = state["unsaved"] or unsaved
+    # 地震リストの「有珠山付近の地震」にある候補なら、その震源も置き換える(手直しした到着時刻で求め直した震源にそろえる)
+    if f"{cand['start']:%Y-%m-%d %H:%M:%S}" in usu["starts"] and quake_list.update_usu_locations([(cand, new_r)]):
+      log_message(f"地震リストの有珠山付近の地震の震源を更新しました: {cand['start']:%Y-%m-%d %H:%M:%S}")
     draw_figure()
     fill_table(k)
     on_select()
@@ -245,6 +249,20 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     fill_table(k)
     on_select()
 
+  # 有珠山リストにある候補すべての震源を、この画面の結果で置き換える(速度の構造を変えたあとなど)
+  def update_usu():
+    listed = [(c, r) for c, r in items if f"{c['start']:%Y-%m-%d %H:%M:%S}" in usu["starts"]]
+    if not listed:
+      messagebox.showinfo("有珠山リスト", "この一覧には、有珠山付近の地震の一覧にある候補がありません。", parent=win)
+      return
+    if not messagebox.askyesno("有珠山リスト", f"有珠山付近の地震の一覧にある {len(listed)}件の震源"
+                               "(発生時刻・深さ・山頂から・残差)を、この画面の結果で置き換えますか?\n"
+                               "(メモと有珠山の地震らしさはそのまま残します)", parent=win):
+      return
+    n = quake_list.update_usu_locations(listed)
+    log_message(f"地震リストの有珠山付近の地震の震源を更新しました: {n}件")
+    messagebox.showinfo("有珠山リスト", f"{n}件の震源を更新しました。", parent=win)
+
   # この画面が前に出たら、有珠山リストの印を読み直す(地震リストの画面で外したときなど)
   def on_focus(event):
     if event.widget is win:
@@ -292,6 +310,7 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   ttk.Button(buttons, text=shortcuts.with_label("自動に戻す", "r"), command=revert).pack(side=tk.LEFT, padx=(8, 0))
   ttk.Button(buttons, text=shortcuts.with_label("一覧と図を保存", "s"), command=save).pack(side=tk.LEFT, padx=(8, 0))
   ttk.Button(buttons, text=shortcuts.with_label("有珠山リストに追加・外す", "u"), command=toggle_usu).pack(side=tk.LEFT, padx=(8, 0))
+  ttk.Button(buttons, text="有珠山リストの震源を更新", command=update_usu).pack(side=tk.LEFT, padx=(8, 0))
   shortcuts.bind(win, "u", toggle_usu)
   shortcuts.bind(win, "Return", open_event, modifier=False)
   shortcuts.bind(win, "KP_Enter", open_event, modifier=False)
