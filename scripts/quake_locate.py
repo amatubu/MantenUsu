@@ -34,7 +34,7 @@ import velocity_model
 from hypocenter import (LocalProjection, pick_filtered, refine_p, pick_s, locate_event,
                         LOCAL_VP, LOCAL_VP_VS, LOCAL_S_SEARCH, S_EXCLUDED_DEFAULT, far_method_text,
                         KIND_LOCAL, KIND_LOCAL_POOR, KIND_LOCAL_FEW, KIND_FAR, KIND_NONE, LOCAL_KINDS,
-                        depth_text, depth_short, depth_for_plot)
+                        depth_text, depth_short, depth_for_plot, is_shallow)
 from plot_common import NM_TO_CM
 
 # 候補の前後、波形を使う範囲 [秒](揺れの始まりの前・終わりの後)
@@ -538,7 +538,9 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   half_y = max([MAP_HALF[1]] + [abs(p[1]) + 1 for p in points])
   # 地図の縦横比を保つ
   half_x, half_y = max(half_x, half_y * MAP_HALF[0] / MAP_HALF[1]), max(half_y, half_x * MAP_HALF[1] / MAP_HALF[0])
-  zmax = max([5.0] + [p[2] + 1 for p in points])
+  # 断面図の深さの範囲は、震源の深さの範囲(縦の線)の深い方の端も入るようにする
+  zmax = max([5.0] + [p[2] + 1 for p in points]
+             + [r["loc"]["depth_max"] + 0.5 for _cand, r in local if r["loc"].get("depth_max") is not None])
 
   # 地図の幅(南北断面の深さの縮尺を地図とそろえても、右に入るように少し狭くしている)
   width = 0.60
@@ -574,7 +576,10 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
 
   # 3つの図に同じものを描く(fx, fy で東・北・深さのどれを横軸・縦軸にするかを決める)
   #   label_external ... ほかの機関の観測点の名前を書く(東西断面では、重ならないように欄外に引き出して書く)
-  def plot_all(ax, fx, fy, label_external=True):
+  #   depth_axis ... 断面図で深さを表す軸("x" か "y")。震源の深さの範囲(残差がほぼ同じになる深さ)を線で描く
+  #     両端に横棒を付ける。浅い方が決まらないもの(「◯ km より浅い」)は、深い方の端だけに横棒を付け、
+  #     線を図の上端(海面より上 1 km)まで延ばして、上が開いていることを示す
+  def plot_all(ax, fx, fy, label_external=True, depth_axis=None):
     for nm, (la, lo, el) in {**stations, **external}.items():
       x, y = proj.to_xy(la, lo)
       z = -el / 1000
@@ -588,6 +593,16 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
     for (cand, r), (x, y, z) in zip(local, points):
       good = r["kind"] == KIND_LOCAL and r["loc"]["rms"] < GOOD_RMS
       ax.plot(fx(x, y, z), fy(x, y, z), "o", color="red" if good else "none", markeredgecolor="red", ms=6, zorder=6)
+      lo, hi = r["loc"].get("depth_min"), r["loc"].get("depth_max")
+      if depth_axis and hi is not None:
+        shallow = is_shallow(r["loc"])
+        z0 = -1.0 if shallow else lo
+        cap = "_" if depth_axis == "y" else "|"
+        line_x, line_y = [fx(x, y, z0), fx(x, y, hi)], [fy(x, y, z0), fy(x, y, hi)]
+        ax.plot(line_x, line_y, color="red", lw=1.0, alpha=0.6 if good else 0.4, zorder=5.5, solid_capstyle="butt")
+        ends = [1] if shallow else [0, 1]
+        ax.plot([line_x[i] for i in ends], [line_y[i] for i in ends], cap, color="red", ms=7, mew=1.0,
+                alpha=0.6 if good else 0.4, ls="", zorder=5.5)
       q = cand["jma"]
       if q:
         jx, jy = proj.to_xy(q["緯度"], q["経度"])
@@ -595,8 +610,8 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
         ax.plot(fx(jx, jy, jz), fy(jx, jy, jz), "x", color="teal", ms=7, mew=1.8, zorder=6)
         ax.plot([fx(x, y, z), fx(jx, jy, jz)], [fy(x, y, z), fy(jx, jy, jz)], color="teal", lw=0.8, ls=":", zorder=5)
   plot_all(axm, lambda x, y, z: x, lambda x, y, z: y)
-  plot_all(axe, lambda x, y, z: x, lambda x, y, z: z, label_external=False)
-  plot_all(axn, lambda x, y, z: z, lambda x, y, z: y)
+  plot_all(axe, lambda x, y, z: x, lambda x, y, z: z, label_external=False, depth_axis="y")
+  plot_all(axn, lambda x, y, z: z, lambda x, y, z: y, depth_axis="x")
   for i, (x, y, _z) in enumerate(points, 1):
     axm.annotate(str(i), (x, y), textcoords="offset points", xytext=(4, 3), fontsize=7.5, color="darkred",
                  weight="bold", zorder=7)
@@ -623,6 +638,7 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   handles = [Line2D([], [], marker="o", color="red", ls="", label=f"推定した震源(残差 {GOOD_RMS:g}秒未満)"),
              Line2D([], [], marker="o", color="none", markeredgecolor="red", ls="",
                     label=f"推定した震源(残差 {GOOD_RMS:g}秒以上・要確認)"),
+             Line2D([], [], marker="|", color="red", alpha=0.6, ms=10, mew=1.5, ls="", label="深さの範囲(断面図。上が開いた線は「より浅い」)"),
              Line2D([], [], marker="x", color="teal", mew=2, ls="", label="気象庁の震源"),
              Line2D([], [], marker="^", color="black", ls="", label="拠点"),
              # 画面(listing=False)は図が小さく凡例が切れるので、2行にする
