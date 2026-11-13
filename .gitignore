@@ -19,6 +19,7 @@ UsuMantenViewer-mac/
 *.pptx
 ._*
 jma_hypocenter/*
+world_quakes/*
 notes/*
 reports/*
 etc/train_timetable.csv

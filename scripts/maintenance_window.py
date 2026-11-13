@@ -22,6 +22,7 @@ import app_paths
 import cache_manager
 import external_stations
 import jma_hypocenter
+import world_quakes
 import quake_detect
 import station_names
 from cache_dialog import OutputCacheDialog
@@ -110,6 +111,21 @@ class MaintenanceWindow:
               text="不足分の取得では、取得済みの最後の日も、暫定値の更新を確かめるため取り直します。\n"
                    "期間の終わりを空けると、始めの1日だけ取り直します。前回との違いは実行ログに表示します。\n"
                    f"気象庁のサーバーに負担をかけないよう、1日ごとに {jma_hypocenter.REQUEST_INTERVAL:g}秒あけて取得します。"
+              ).pack(anchor="w", pady=(8, 0))
+
+    # 世界の大きな地震(USGS。TODO 33)
+    ttk.Separator(jma).pack(fill=tk.X, pady=10)
+    ttk.Label(jma, text=f"世界の大きな地震(USGS、M{world_quakes.MIN_MAGNITUDE:g} 以上)",
+              font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(0, 6))
+    self.lbl_world = ttk.Label(jma, text="", justify=tk.LEFT)
+    self.lbl_world.pack(anchor="w")
+    row = ttk.Frame(jma)
+    row.pack(fill=tk.X, pady=(8, 0))
+    self.add_button(row, "不足分を取得", self.fetch_world).pack(side=tk.LEFT)
+    ttk.Label(jma, foreground="#666666", justify=tk.LEFT,
+              text="気象庁の震源リストには海外の地震が無いため、海外の大きな地震の揺れを見分けるのに使います。\n"
+                   "取得していない月と、取得済みの最後の月・今月を取り直します(USGS の値は後から改訂されることがあります)。\n"
+                   "時刻は日本時間で、月ごとに world_quakes フォルダに保存します。"
               ).pack(anchor="w", pady=(8, 0))
 
     # --- 地震の候補の検出 ---
@@ -294,6 +310,18 @@ class MaintenanceWindow:
       text += "\n昨日まで取得済みです"
     self.lbl_jma.config(text=text)
 
+    w = world_quakes.summary()
+    if w["last"] is None:
+      text = "取得済みの月はありません"
+    else:
+      text = f"取得済み: {w['saved']}か月({w['first']:%Y-%m}〜{w['last']:%Y-%m})、地震 {w['count']}件"
+    if w["missing"]:
+      text += f"\n取得していない月: {len(w['missing'])}か月({', '.join(f'{m:%Y-%m}' for m in w['missing'][:6])}"
+      text += "…)" if len(w["missing"]) > 6 else ")"
+    else:
+      text += "\n今月まで取得済みです"
+    self.lbl_world.config(text=text)
+
     zip_days = set(jma_hypocenter.zip_days())
     rms_days = quake_detect.rms_cache_days()
     todo = sorted(zip_days - set(rms_days))
@@ -438,6 +466,24 @@ class MaintenanceWindow:
   def on_fetched(self, result):
     log_message(f"気象庁の震源リスト: 保存 {result['done']}日、取得できなかった日 {result['failed']}日、"
                 f"前回と違った日 {result['changed']}日" + ("(中止しました)" if self.cancel else ""))
+    if self.on_change:
+      self.on_change()
+
+  # --- 世界の大きな地震(USGS) ---
+  def fetch_world(self):
+    try:
+      months, todo = world_quakes.plan_months()
+    except ValueError as e:
+      messagebox.showinfo("情報", str(e), parent=self.win)
+      return
+    log_message("世界の大きな地震: " + world_quakes.describe_plan(months, todo))
+    self.run_in_thread("世界の大きな地震の取得", len(todo),
+                       lambda log, cancelled, progress: world_quakes.fetch_months(todo, log, cancelled, progress),
+                       self.on_world_fetched)
+
+  def on_world_fetched(self, result):
+    log_message(f"世界の大きな地震: 保存 {result['done']}か月(地震 {result['count']}件)、"
+                f"取得できなかった月 {result['failed']}か月" + ("(中止しました)" if self.cancel else ""))
     if self.on_change:
       self.on_change()
 

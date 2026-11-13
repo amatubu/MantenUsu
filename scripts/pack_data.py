@@ -51,6 +51,7 @@ ITEMS = [
   ("data", "output/quake_rms", "*.npz", "地震の候補の検出に使う揺れの大きさ(RMS)。作り直すと1日あたり数十秒〜数分"),
   ("data", "output/quake_features", "*.json", "地震の候補ごとの波形の解析結果"),
   ("data", "jma_hypocenter", "*.csv", "気象庁の震源リスト(取り直すと1日あたり2秒以上)"),
+  ("data", "world_quakes", "*.csv", "世界の大きな地震(USGS。取り直すと1か月あたり2秒以上)"),
   ("data", "batch_plots/quakes", "*.csv", "地震の候補の一覧・見逃し?の一覧"),
 ]
 # 再配布できないもの(--private を付けたときだけ入れる)

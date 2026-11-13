@@ -156,6 +156,7 @@ OUTPUT_DIR = DATA_DIR / "output"                       # WINファイル・SAC�
 ZIPS_DIR = DATA_DIR / "daily_zips"                     # 日ごとのZIPファイル
 BATCH_PLOTS_DIR = DATA_DIR / "batch_plots"             # バッチ処理で保存する画像
 JMA_HYPOCENTER_DIR = DATA_DIR / "jma_hypocenter"       # 気象庁の震源リスト(日ごとのCSV)
+WORLD_QUAKES_DIR = DATA_DIR / "world_quakes"           # 世界の大きな地震(USGS。月ごとのCSV)
 VNET_DIR = DATA_DIR / "v-net"                          # ほかの機関の観測点の波形の ZIP(防災科研のページからダウンロード)
 
 
