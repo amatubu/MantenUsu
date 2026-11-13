@@ -136,12 +136,13 @@ _arrival_cache = {}   # (USGS の ID, 拠点の緯度, 経度) → 揺れの届�
 
 # 拠点に揺れが届く見込み(走時表 iasp91。気象庁の震源リストの到達見込み(jma_match)と同じ)
 #   戻り値 ... 地震の dict に次を加えたもの
-#     dist_km, deg ... 震央距離 [km]・[度] / far ... FAR_DEG より遠い
+#     dist_km, deg ... 震央距離 [km]・[度] / azimuth ... 拠点から見た震央の方位 [度] / far ... FAR_DEG より遠い
 #     waves ... [(名前, 時刻)]。最初に届く P波(遠いと Pdiff・PKP など)・S波(同じく SKS など)・表面波
 def arrivals(q, site):
   key = (q["USGS の ID"], round(site[0], 3), round(site[1], 3))
   if key not in _arrival_cache:
-    dist_km = gps2dist_azimuth(site[0], site[1], q["緯度"], q["経度"])[0] / 1000
+    dist_m, azimuth, _ = gps2dist_azimuth(site[0], site[1], q["緯度"], q["経度"])
+    dist_km = dist_m / 1000
     deg = kilometers2degrees(dist_km)
     waves = []
     for phases in (P_PHASES, S_PHASES):
@@ -151,7 +152,7 @@ def arrivals(q, site):
       if a is not None:
         waves.append((a.name, q["日時"] + timedelta(seconds=a.time)))
     waves.append(("表面波", q["日時"] + timedelta(seconds=dist_km / SURFACE_WAVE_KMS)))
-    _arrival_cache[key] = dict(dist_km=dist_km, deg=deg, far=deg > FAR_DEG, waves=waves)
+    _arrival_cache[key] = dict(dist_km=dist_km, deg=deg, azimuth=azimuth, far=deg > FAR_DEG, waves=waves)
   return dict(q, **_arrival_cache[key])
 
 # 期間 [t0, t1] に揺れ(P波・S波・表面波のどれか)が届く見込みの地震(気象庁の震源リストにある地震は除く)
@@ -163,6 +164,11 @@ def arrivals_in_window(t0, t1, site):
     if any(t0 <= t <= t1 for _name, t in a["waves"]) and not in_jma_list(q):
       out.append(a)
   return out
+
+# 画面に書く地震の説明(地名・M・深さ・震央距離の順。震源リストの地震の書き方とそろえる)
+def describe_arrival(a):
+  m = "" if a["M"] is None else f" M{a['M']:g}"
+  return f"{a['震央地名']}{m} 深さ {a['深さ[km]']:.0f} km 震央距離 {a['deg']:.0f}°"
 
 # 取得済みの月
 def saved_months():

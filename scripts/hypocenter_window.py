@@ -37,6 +37,7 @@ import magnitude
 import shortcuts
 import station_names
 import velocity_model
+import world_quakes
 from obspy.geodetics import gps2dist_azimuth
 
 # 文字に打ち消し線を引く(matplotlib の文字には打ち消し線の指定が無いため、文字の形の範囲の中ほどに横線を描く)
@@ -64,12 +65,59 @@ SLIDER_SPECS = [
   ("p_lta",  "P波 LTA [秒]",       1.0, 60.0, 0.5),
   ("p_thr",  "P波 閾値",           1.0, 8.0,  0.1),
   ("window", "同時検出の幅 [秒]",  0.5, 10.0, 0.5),
-  # 遠い地震の S波も探せるよう、上限は60秒にしている(2026/8/23 22:45 の浦河沖(188 km)の S-P時間の見込みは約21秒)
-  ("s_search", "S波を探す範囲 [秒]", 0.5, 60.0, 0.5),
+  # 国内の遠い地震の S波も探せるよう、上限は200秒にしている(2026/8/23 22:45 の浦河沖(188 km)の S-P時間の見込みは
+  #   約21秒。200秒で震央距離 約2000 km(九州・沖縄本島の手前まで)。遠い地震の距離を求める表(sp_distance.py)も 2000 km まで)。
+  #   海外の地震(S-P時間が数分〜10分)は、自動の検出では P波の揺れの中の変化を拾いやすいので、水平動の表示で S波を手で指定する。
+  #   近い地震の数秒も細かく合わせられるよう、目盛りは対数にする(LOG_SLIDERS)
+  ("s_search", "S波を探す範囲 [秒]", 0.5, 200.0, 0.5),
   ("vp",     "P波の速度 [km/s]",   2.0, 8.0,  0.1),
   ("vp_vs",  "vp/vs",              1.5, 2.2,  0.01),
   ("omori_k", "大森係数 k [km/s]",  5.0, 10.0, 0.1),
 ]
+
+# 目盛りを対数にするスライダー(値の範囲が広いもの)
+LOG_SLIDERS = {"s_search"}
+
+# 対数の目盛りのスライダー(matplotlib の Slider は目盛りが等間隔なので、0〜1 の位置のスライダーを包んで値に直す)
+#   val・set_val・on_changed は値(秒など)でやり取りする。ほかの属性(label・valtext・poly・set_active・eventson)は
+#   中の Slider のものを使う。値は、60 までは vstep 刻み、60 より上は 5 刻みに丸める
+class LogSlider:
+  def __init__(self, ax, label, vmin, vmax, valinit, vstep):
+    self.vmin, self.vmax, self.vstep = vmin, vmax, vstep
+    object.__setattr__(self, "_slider", Slider(ax, label, 0.0, 1.0, valinit=self._pos(valinit)))
+    self._slider.on_changed(lambda _pos: self._show())
+    self._show()
+
+  def _pos(self, val):
+    return float(np.log(min(max(val, self.vmin), self.vmax) / self.vmin) / np.log(self.vmax / self.vmin))
+
+  def _value(self, pos):
+    v = self.vmin * (self.vmax / self.vmin) ** pos
+    step = self.vstep if v <= 60 else 5.0
+    return float(min(max(round(v / step) * step, self.vmin), self.vmax))
+
+  def _show(self):
+    self._slider.valtext.set_text(f"{self.val:g}")
+
+  @property
+  def val(self):
+    return self._value(self._slider.val)
+
+  def set_val(self, val):
+    self._slider.set_val(self._pos(val))
+    self._show()
+
+  def on_changed(self, func):
+    return self._slider.on_changed(lambda _pos: func(self.val))
+
+  def __getattr__(self, name):
+    return getattr(self._slider, name)
+
+  def __setattr__(self, name, value):
+    if name in ("vmin", "vmax", "vstep"):
+      object.__setattr__(self, name, value)
+    else:
+      setattr(self._slider, name, value)
 
 # パラメータのデフォルト値(速度などは、地震の候補をまとめて計算する処理と同じ値。hypocenter.py を参照)
 DEFAULT_PARAMS = dict(p_sta=2.5, p_lta=10.0, p_thr=2.6, window=3.0, s_search=LOCAL_S_SEARCH, vp=LOCAL_VP,
@@ -214,6 +262,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # 検出に関わる線の色(P波・S波検出と同じく、P波=赤・S波=マゼンタ。手で直した時刻はオレンジ・紫の実線)
   # 気象庁の震源リストの地震(震央・到達見込み)は青緑
   p_color, manual_color, cft_color, jma_color = "red", "darkorange", "gray", "teal"
+  # 世界の大きな地震(USGS)の揺れの届く見込みは茶(参考。到着時刻とは照合しない)
+  world_color = "#8c564b"
   s_color, s_manual_color = "magenta", "purple"
 
   # 気象庁の震源リストで、この期間に揺れが届きそうな地震(取得済みのときだけ。到達見込みは拠点の中心で計算)
@@ -224,6 +274,13 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     jma_hits, jma_available = jma_match.quakes_in_window(t_ref, end_time, (proj.lat0, proj.lon0))
   except Exception as e:
     log_message(f"気象庁の震源リストを読み込めませんでした: {e}")
+  # 世界の大きな地震(USGS、world_quakes.py で取得したもの)で、この期間に揺れ(P波・S波・表面波)が届きそうな地震
+  #   気象庁の震源リストにある地震は除く(そちらで示す)
+  world_hits = []
+  try:
+    world_hits = world_quakes.arrivals_in_window(t_ref, end_time, (proj.lat0, proj.lon0))
+  except Exception as e:
+    log_message(f"世界の大きな地震を読み込めませんでした: {e}")
 
   # ==========================================
   # 図のレイアウト: 左に拠点ごとの波形(上下動・水平動)、右上に拠点の配置図、右下にパラメータと結果
@@ -309,6 +366,17 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     pick_lines[name] = ax.axvline(0, color=p_color, ls="--", lw=1.2, visible=False)
     s_lines[name] = ax.axvline(0, color=s_color, ls="--", lw=1.2, visible=False)
     jma_lines[name] = ax.axvline(0, color=jma_color, ls=":", lw=1.5, visible=False)
+    # 世界の大きな地震の揺れの届く見込み(波の名前は一番上のグラフにだけ、線の左の中ほどに書く。
+    #   上端・下端は拠点名・P波の差・S-P時間の文字と重なるため)
+    for wq in world_hits:
+      for wave, t in wq["waves"]:
+        x = (t - t_ref).total_seconds()
+        if 0 <= x <= (end_time - t_ref).total_seconds():
+          ax.axvline(x, color=world_color, ls="-.", lw=1.2)
+          if i == 0:
+            ax.annotate(f"海外 {wave}", xy=(x, 0.5), xycoords=ax.get_xaxis_transform(), xytext=(-2, 0),
+                        textcoords="offset points", ha="right", va="center", fontsize=8, color=world_color,
+                        annotation_clip=True, bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=1))
     # 水平動(はじめは表示しない。「波形」のボタンで上下動と切り替える)
     hor_lines[name] = {c: ax.plot(t, f, lw=0.5, color=get_component_color(c), visible=False)[0]
                        for c, (t, _raw, f) in hor_display[name].items()}
@@ -317,7 +385,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # 線の意味(グラフの下に書く)
   fig.text(left, 0.008, "線: 赤の破線 = P波(自動)、橙の実線 = P波(手で指定)、マゼンタの破線 = S波(自動)、\n"
            "紫の実線 = S波(手で指定)(薄い線は計算に使わない S波)、青緑の点線 = 気象庁の震源からの P波の到達見込み、"
-           "灰色 = CFT(右の軸)と閾値", fontsize=8, color="#333333", va="bottom", linespacing=1.3)
+           "灰色 = CFT(右の軸)と閾値" + ("、茶の一点鎖線 = 海外の大きな地震の揺れの到達見込み" if world_hits else ""), fontsize=8, color="#333333", va="bottom", linespacing=1.3)
 
   # CFT の線と閾値の線(内容は update() で設定)
   cft_lines, thr_lines = {}, {}
@@ -368,7 +436,10 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     #   P波の速度のスライダーも短くし、右に速度の構造の切り替えボタンを置く
     width = 0.12 if key in ("omori_k", "vp") else 0.20
     sax = fig.add_axes([0.73, top - i * step_y, width, 0.019])
-    sliders[key] = Slider(sax, label, vmin, vmax, valinit=initial[key], valstep=vstep)
+    if key in LOG_SLIDERS:
+      sliders[key] = LogSlider(sax, label, vmin, vmax, initial[key], vstep)
+    else:
+      sliders[key] = Slider(sax, label, vmin, vmax, valinit=initial[key], valstep=vstep)
   k_row_y = top - [spec[0] for spec in SLIDER_SPECS].index("omori_k") * step_y
   vp_row_y = top - [spec[0] for spec in SLIDER_SPECS].index("vp") * step_y
 
@@ -556,6 +627,15 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
                         arrowprops=dict(arrowstyle="->", color=jma_color, lw=2, ls="--"), zorder=4)
         map_ax.plot([], [], "--", color=jma_color, lw=2,
                     label=f"{label} の方位 {q['azimuth']:.0f}° ({direction_name(q['azimuth'])})")
+    # 世界の大きな地震: いつも地図の範囲の外なので、方位を示す
+    for wq in world_hits:
+      az = np.radians(wq["azimuth"])
+      length = half_y * 0.8
+      map_ax.annotate("", xy=(length * np.sin(az), length * np.cos(az)), xytext=(0, 0),
+                      arrowprops=dict(arrowstyle="->", color=world_color, lw=2, ls="-."), zorder=4)
+      m = "" if wq["M"] is None else f" M{wq['M']:g}"
+      map_ax.plot([], [], "-.", color=world_color, lw=2,
+                  label=f"海外の地震{m} の方位 {wq['azimuth']:.0f}° ({direction_name(wq['azimuth'])})")
     draw_background(half_x, half_y)
     map_ax.set_xlim(-half_x, half_x)
     map_ax.set_ylim(-half_y, half_y)
@@ -642,6 +722,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
 
     # 気象庁の震源リストの地震(最初の P波に合うものを選ぶ)と、推定した結果との比較
     lines += ["◆" + jma_text[0]] + jma_text[1:]
+    lines += world_lines(p_abs)
     if q is not None:
       if loc is not None and not loc["at_edge"] and loc["rms"] <= MAX_LOCAL_RMS:
         qx, qy = proj.to_xy(q["緯度"], q["経度"])
@@ -679,6 +760,26 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   #   quake_features.dominant_frequency)、中央値と範囲を書く(計算から外した拠点は使わない)。P波が無いときは None
   #   近い地震は 4〜16 Hz ほど。遠くの大きな地震は 1 Hz 以下が中心だが、満点地震計は固有周波数 2 Hz より遅い揺れを
   #   感じにくいので 2 Hz ほどに出る(2026/2/23 02:04 のボルネオ島北部の深発地震 M7.1)
+  # 世界の大きな地震(参考。到着時刻とは照合しない)。この期間に揺れが届きそうな地震があるときだけ書く
+  #   p_abs ... 最初の P波の到着時刻(datetime)または None。最初に届く波との差を書く
+  def world_lines(p_abs):
+    if not world_hits:
+      return []
+    out = ["◆海外の大きな地震(USGS、参考):"]
+    for wq in world_hits:
+      out.append(f" {wq['日時']:%m/%d %H:%M:%S} {world_quakes.describe_arrival(wq)}")
+      # 到達見込みは、この記録の時間の中に届く波だけを書く(行を短くするため)
+      #   最初に届く波(P波など)が入っていれば、検出した P波との差も書く
+      waves = [(wave, t) for wave, t in wq["waves"] if t_ref <= t <= end_time]
+      text = (f" 方位 {wq['azimuth']:.0f}° ({direction_name(wq['azimuth'])})  到達見込み "
+              + " / ".join(f"{wave} {(t - t_ref).total_seconds():.1f} 秒" for wave, t in waves))
+      if p_abs is not None and waves and waves[0] == wq["waves"][0]:
+        text += f"(検出した P波との差 {(p_abs - waves[0][1]).total_seconds():+.1f} 秒)"
+      out.append(text)
+      if wq["far"]:
+        out.append(f" ※震央距離が {world_quakes.FAR_DEG:g}° を超え、P波・S波は核の陰に入るため見えにくい")
+    return out
+
   def dominant_frequency_text(picks):
     values = []
     for nm in names:

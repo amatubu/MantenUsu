@@ -149,8 +149,7 @@ class QuakeOverlay:
                            linestyle=":" if surface else "-")
         text = name
         if first:
-          m = "" if q["M"] is None else f" M{q['M']:g}"
-          text = f"海外: {q['震央地名']}{m} 深さ {q['深さ[km]']:.0f} km 震央距離 {q['deg']:.0f}° {name}"
+          text = f"海外: {world_quakes.describe_arrival(q)} {name}"
           if q["far"]:
             text += f"({world_quakes.FAR_DEG:g}° 超で見えにくい)"
           first = False
