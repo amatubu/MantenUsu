@@ -54,3 +54,34 @@ def test_plan_months_refetches_last_and_this_month(world_dir, monkeypatch):
   # 終わりが今月より先でも、今月までにする
   months, _todo = wq.plan_months(datetime(2026, 3, 1), datetime(2026, 12, 1))
   assert months[-1] == datetime(2026, 4, 1)
+
+
+def test_arrivals_in_window_skips_jma_duplicates(world_dir, tmp_path, monkeypatch):
+  import jma_hypocenter
+  monkeypatch.setattr(jma_hypocenter, "csv_path", lambda day: tmp_path / "jma" / f"{day:%Y%m%d}.csv")
+  quakes = wq.parse_usgs(USGS_CSV)
+  wq.save_csv(wq.csv_path(datetime(2026, 2, 1)), quakes[:1])
+  usu = (42.544, 140.839)
+  # ボルネオ島北部の深発地震: P波 02:04:42 ごろ(2026/2/23 の満点の P波は 02:04:42.5)
+  found = wq.arrivals_in_window(datetime(2026, 2, 23, 2), datetime(2026, 2, 23, 3), usu)
+  assert len(found) == 1
+  a = found[0]
+  assert 41 < a["deg"] < 43 and not a["far"]
+  names = [n for n, _t in a["waves"]]
+  assert names == ["P", "S", "表面波"]
+  p = a["waves"][0][1]
+  assert abs((p - datetime(2026, 2, 23, 2, 4, 42, 500000)).total_seconds()) < 2.0
+  # 揺れの届かない時間には出ない
+  assert wq.arrivals_in_window(datetime(2026, 2, 23, 1), datetime(2026, 2, 23, 1, 59), usu) == []
+  # 気象庁の震源リストに同じ地震(時刻・震央が近い)があれば除く
+  q = quakes[0]
+  jma_hypocenter.save_csv(jma_hypocenter.csv_path(datetime(2026, 2, 23)),
+                          [dict(q, 日時=q["日時"].replace(microsecond=0), 緯度=q["緯度"] + 0.3, 震央地名="ボルネオ")])
+  assert wq.arrivals_in_window(datetime(2026, 2, 23, 2), datetime(2026, 2, 23, 3), usu) == []
+
+
+def test_far_quake_is_flagged(world_dir):
+  # チリ(約 150°): P波・S波が核の陰に入る
+  q = wq.parse_usgs(USGS_CSV)[1]
+  a = wq.arrivals(q, (42.544, 140.839))
+  assert a["deg"] > wq.FAR_DEG and a["far"]

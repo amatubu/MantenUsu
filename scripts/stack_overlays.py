@@ -1,6 +1,7 @@
 # stack_overlays.py
 # 1時間スタック波形の画面に重ねて表示するもの(画面上部のトグルボタンでオン・オフする)
-#   地震 ... 気象庁の震源リストの地震の到達見込みと、地震の候補(震源リストと照合したもの・照合できないもの)
+#   地震 ... 気象庁の震源リストの地震の到達見込みと、地震の候補(震源リストと照合したもの・照合できないもの)、
+#            世界の大きな地震(USGS、world_quakes.py で取得)の揺れの届く見込み(参考。候補とは照合しない)
 #   列車 ... JR の時刻表と対応した列車の揺れ・貨物列車の候補(線路に近い拠点だけ)
 #   どちらも、ほかの処理(jma_match・quake_detect・train_day_plot)の結果を重ねるだけで、基準はそちらと同じ
 #   画面(stack_plot.StackWindow)とバッチ処理の画像保存で共通。1つの重ね表示は次を持つ
@@ -16,6 +17,7 @@ import jma_hypocenter
 import jma_match
 import quake_detect
 import train_day_plot
+import world_quakes
 from stack_plot import STACK_ROWS, add_span, add_label
 from log_common import log_message
 import station_names
@@ -25,6 +27,8 @@ COLOR_MATCHED = "#9467bd"   # 震源リストと照合した地震の候補
 COLOR_UNKNOWN = "#e377c2"   # 震源リストに無い地震の候補(未知の地震かもしれない)
 COLOR_P, COLOR_S = "#d62728", "#2ca02c"   # 震源リストの地震の P波・S波の到達見込み
 COLOR_JMA_TEXT = "#1f4e9c"   # 震源リストの地震の文字(貨物列車の候補の赤と区別する)
+COLOR_SURFACE = "#8c564b"    # 世界の大きな地震の表面波の到達見込み(点線)
+COLOR_WORLD_TEXT = "#00666b"   # 世界の大きな地震の文字
 # 検出結果が無い日の注意書きの高さ(軸の下端からの割合。横軸の目盛りの下、横軸の名前と同じ高さ)
 NO_RMS_NOTE_Y = -0.034
 # 到達見込みを描く震源リストの地震の、見込みの振幅(log A)の下限
@@ -36,12 +40,23 @@ MIN_DRAW_LOG_AMP = jma_match.ONSET_CHECK_LOG_AMP
 def _day_start(dt):
   return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
+# 到達見込みの線(1時間の開始からの秒 t)の横に文字を書く
+#   ふつうは線の右。文字が長く右端で切れるため、段の後半(30 秒より後)の線は線の左に書く
+def _line_label(ax, t, text, color):
+  label = add_label(ax, t + 0.3, text, color)
+  if t % 60 > 30:
+    label.set_x(t % 60 - 0.3)
+    label.set_ha("right")
+  return label
+
 # 地震: 震源リストの地震の到達見込みと、地震の候補
 #   stations ... {拠点名: (緯度, 経度, 高度)}(到達見込みの計算と、震源リストとの照合に使う)
 class QuakeOverlay:
   name = "地震"
   legend = ("地震: 帯 紫=震源リストと照合した地震の候補、桃=震源リストに無い地震の候補(×は雑音の倍率)\n"
-            "　　 縦線=震源リストの地震の到達見込み(赤 P波・緑 S波、青い文字は地名・M・距離)")
+            "　　 縦線=震源リストの地震の到達見込み(赤 P波・緑 S波、青い文字は地名・M・深さ・震央距離)\n"
+            f"　　 海外の M{world_quakes.MIN_MAGNITUDE:g} 以上の地震(USGS)も同じ赤・緑の線と茶の点線(表面波)で示す"
+            f"(緑青の文字は地名・M・深さ・震央距離。{world_quakes.FAR_DEG:g}° を超えると P波・S波は見えにくい)")
 
   def __init__(self, stations, log=log_message):
     self.stations = stations
@@ -50,8 +65,9 @@ class QuakeOverlay:
 
   def available(self, dt, station):
     day = _day_start(dt)
-    if quake_detect.load_rms_cache(day) is None and not jma_hypocenter.csv_path(day).exists():
-      return False, "この日の RMS(--detect-quakes で保存)も震源リスト(jma_hypocenter.py で取得)もありません"
+    if (quake_detect.load_rms_cache(day) is None and not jma_hypocenter.csv_path(day).exists()
+        and not world_quakes.csv_path(world_quakes.month_start(day)).exists()):
+      return False, "この日の RMS(--detect-quakes で保存)も震源リスト(jma_hypocenter.py・world_quakes.py で取得)もありません"
     return True, ""
 
   # その日の地震の候補。RMS は前後の日もつなぎ、日の境目の雑音の基準をそろえる
@@ -115,8 +131,30 @@ class QuakeOverlay:
           artists += ax.plot([x, x], [row - 0.45, row + 0.45], color=color, lw=1.2, zorder=3)
       s = sec(q["p_time"])
       if 0 <= s < STACK_ROWS * 60 and q["日時"] not in labeled:
-        # 帯の文字(段の上端の左)と重ならないよう、P波の線の右に書く
-        artists.append(add_label(ax, s + 0.3, f"{q['震央地名']} M{q['M']:g} {q['dist_km']:.0f} km", COLOR_JMA_TEXT))
+        # 帯の文字(段の上端の左)と重ならないよう、P波の線の横に書く
+        artists.append(_line_label(ax, s, f"{q['震央地名']} M{q['M']:g} 深さ {q['深さ[km]']:g} km 震央距離 {q['dist_km']:.0f} km", COLOR_JMA_TEXT))
+
+    # 世界の大きな地震(参考。地震の候補とは照合しない。気象庁の震源リストにある地震は上で描くので除く)
+    #   1時間の中で最初に見える線に地名・M・震央距離を書き、ほかの線には波の名前だけを書く
+    for q in world_quakes.arrivals_in_window(t0, t1, site[:2]):
+      first = True
+      for name, t in q["waves"]:
+        s = sec(t)
+        if not 0 <= s < STACK_ROWS * 60:
+          continue
+        row, x = int(s // 60), s % 60
+        surface = name == "表面波"
+        color = COLOR_SURFACE if surface else COLOR_P if name.upper().startswith("P") else COLOR_S
+        artists += ax.plot([x, x], [row - 0.45, row + 0.45], color=color, lw=1.2, zorder=3,
+                           linestyle=":" if surface else "-")
+        text = name
+        if first:
+          m = "" if q["M"] is None else f" M{q['M']:g}"
+          text = f"海外: {q['震央地名']}{m} 深さ {q['深さ[km]']:.0f} km 震央距離 {q['deg']:.0f}° {name}"
+          if q["far"]:
+            text += f"({world_quakes.FAR_DEG:g}° 超で見えにくい)"
+          first = False
+        artists.append(_line_label(ax, s, text, COLOR_WORLD_TEXT))
     return artists
 
 # 列車: 時刻表と対応した揺れ・貨物列車の候補(train_day_plot と同じ解析)
