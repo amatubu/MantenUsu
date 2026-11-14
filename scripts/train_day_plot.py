@@ -527,9 +527,15 @@ def parse_date(text):
   except ValueError:
     return None
 
+# ラベルにこの言葉を含む行は、洞爺駅の発車時刻ではなく、拠点の近くで人が見た通過のおおよその時刻
+#   (列車通過記録から日付を限って加えた貨物列車の行。種別「貨物」・列車名「通過記録」)
+PASSING_RECORD_WORDS = ("通過記録",)
+
 # 揺れに付ける列車名(洞爺駅の発車時刻つき)。例: 08:43発 特急北斗 函館方面
+#   通過記録の行は発車時刻ではないので「頃」を付ける。例: 02:25頃 貨 通過記録
 def train_name(t, label):
-  return f"{hhmmss(t)[:5]}発 {label}"
+  suffix = "頃" if any(w in label for w in PASSING_RECORD_WORDS) else "発"
+  return f"{hhmmss(t)[:5]}{suffix} {label}"
 
 # 日の始まりからの秒を時刻にする(前後の日の分は、その日の時刻にする)
 def hhmmss(sec):
