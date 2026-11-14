@@ -252,7 +252,8 @@ def locate_all(candidates, load_hour, stations, proj, on_result=None):
 #   結果も同じとみなす(到着時刻を手直しして保存したり、自動に戻したりすると、その候補だけ計算し直す)
 #   locate_candidate や locate_event の中身を変えたら LOCATE_CACHE_VERSION を上げて、作り直させる
 #   (中身は Python の pickle。このアプリが書いたファイルだけを読む)
-LOCATE_CACHE_VERSION = 3   # 2: P波がほぼ同時に届いたときは近い地震にしない(steep)、3: 深さで速度が変わる構造を既定にした
+LOCATE_CACHE_VERSION = 4   # 2: P波がほぼ同時に届いたときは近い地震にしない(steep)、3: 深さで速度が変わる構造を既定にした、
+                           # 4: その構造の vp/vs を 1.74 の側に寄せた
 LOCATE_CACHE_FILE = app_paths.OUTPUT_DIR / "quake_locate" / f"locate_v{LOCATE_CACHE_VERSION}.pkl"
 
 # 候補の結果を保存するときの見分け方
@@ -661,7 +662,7 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   if items and n_uniform == len(items):
     structure = f"均質な速度構造(P波 {LOCAL_VP:g} km/s、vp/vs {LOCAL_VP_VS:g}。保存したパラメータがあればその値)"
   else:
-    structure = "深さで速度が変わる構造(有珠山の先行研究の P波速度構造、vp/vs は中間)" + (
+    structure = "深さで速度が変わる構造(有珠山の先行研究の P波速度構造、vp/vs は 1.74 寄り)" + (
       f"(一様な構造にして保存した {n_uniform}件を除く)" if n_uniform else "")
   template = (f"P波・S波の到着時刻から推定({manual_note(items)})。{structure}、"
               f"S波は {'・'.join(sorted(S_EXCLUDED_DEFAULT))} を除く。\n"
