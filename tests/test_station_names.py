@@ -31,22 +31,24 @@ def test_bundled_file_and_switch(tmp_path, monkeypatch):
   monkeypatch.setattr(app_paths, "USER_DIR", tmp_path)
   # アプリに付けるファイルには発表用の名前が書いてある
   table = station_names.reload(ETC_DIR / "station_names.txt")
-  assert table["Bamba"] == ("Irie", "Irie")
-  assert "Mimatsu" not in table
+  assert table["Nizaemn"] == ("Nizaemon", "Nizaemn")
+  assert table["Hokudai"] == ("Kawaminami", "KWMNM")
+  assert "Bamba" not in table and "Mimatsu" not in table
   assert station_names.load(ETC_DIR / "no_such_file.txt") == {}
   try:
     # 切り替えがオフ(既定)なら内部名のまま
     assert not station_names.is_enabled()
-    assert station_names.full("Bamba") == "Bamba"
-    assert station_names.internal("Irie") == "Irie"
+    assert station_names.full("Hokudai") == "Hokudai"
+    assert station_names.internal("Kawaminami") == "Kawaminami"
     # 入れると読み替え、settings.json に覚えておく(次に起動したときも使う)
     station_names.set_enabled(True)
-    assert station_names.full("Bamba") == "Irie"
+    assert station_names.full("Hokudai") == "Kawaminami"
+    assert station_names.full("Bamba") == "Bamba"
     assert app_paths.load_settings()["station_names"] is True
     monkeypatch.setattr(station_names, "_enabled", None)   # 起動し直したのと同じ
     assert station_names.is_enabled()
     station_names.set_enabled(False)
-    assert station_names.short("Nizaemn") == "Nizaemn"
+    assert station_names.short("Hokudai") == "Hokudai"
     assert app_paths.load_settings()["station_names"] is False
   finally:
     station_names.reload()

@@ -11,7 +11,7 @@
 #   略称   ... 波形の縦軸・配置図の注記など、狭い所に使う(省くと正式名)
 #   名前には空白と「.」を使えない(「拠点名.成分」の形で使うため)
 #   書いていない拠点(Mimatsu など)は、内部名のまま出す
-Bamba    Irie          Irie     # 入江
-Nizaemn  Takinomachi   Takino   # 滝之町
-Hokudai  SobetsuOnsen  Sobetsu  # 壮瞥温泉の近く
-#Mimatsu  Mimatsu       Mimatsu
+#Bamba    Irie          Irie     # 洞爺湖町入江
+Nizaemn  Nizaemon   Nizaemn   # 壮瞥町滝之町
+Hokudai  Kawaminami  KWMNM  # 壮瞥温泉の近く
+#Mimatsu  Mimatsu       Mimatsu  # 三松正夫記念館
