@@ -1,36 +1,48 @@
 {
   "version": 1,
-  "saved": "2026-11-04T20:31:41",
+  "saved": "2026-11-13T01:23:36",
   "stations": {
+    "ATIK": {
+      "p": "2026-01-29T12:23:27.560000",
+      "p_manual": false,
+      "s": "2026-01-29T12:23:28.310000",
+      "s_manual": false
+    },
     "Hokudai": {
       "p": "2026-01-29T12:23:27.420000",
       "p_manual": false,
-      "s": "2026-01-29T12:23:28.472000",
-      "s_manual": false
+      "s": "2026-01-29T12:23:28.281674",
+      "s_manual": true
     },
     "KBBY": {
       "p": "2026-01-29T12:23:26.950000",
       "p_manual": false,
-      "s": "2026-01-29T12:23:28.180000",
-      "s_manual": false
+      "s": "2026-01-29T12:23:27.515333",
+      "s_manual": true
     },
     "Mimatsu": {
       "p": "2026-01-29T12:23:27.548000",
       "p_manual": false,
-      "s": "2026-01-29T12:23:28.548000",
-      "s_manual": false
+      "s": "2026-01-29T12:23:28.105793",
+      "s_manual": true
     },
     "Nizaemn": {
       "p": "2026-01-29T12:23:28.204000",
       "p_manual": false,
-      "s": "2026-01-29T12:23:29.712000",
-      "s_manual": false
+      "s": "2026-01-29T12:23:29.349526",
+      "s_manual": true
     },
     "USOV": {
       "p": "2026-01-29T12:23:27.870000",
       "p_manual": false,
-      "s": "2026-01-29T12:23:29.730000",
-      "s_manual": false
+      "s": "2026-01-29T12:23:28.791414",
+      "s_manual": true
+    },
+    "USSW": {
+      "p": "2026-01-29T12:23:27.650000",
+      "p_manual": false,
+      "s": "2026-01-29T12:23:28.545496",
+      "s_manual": true
     },
     "USUA": {
       "p": "2026-01-29T12:23:27.259640",
@@ -40,14 +52,7 @@
     }
   },
   "excluded": [],
-  "s_excluded": [
-    "Hokudai",
-    "KBBY",
-    "Mimatsu",
-    "Nizaemn",
-    "USOV",
-    "USUA"
-  ],
+  "s_excluded": [],
   "params": {
     "p_sta": 2.1,
     "p_lta": 10.0,
@@ -56,6 +61,7 @@
     "s_search": 3.0,
     "vp": 3.0,
     "vp_vs": 1.73,
-    "omori_k": 8.0
+    "omori_k": 8.0,
+    "far_omori": 0.0
   }
 }

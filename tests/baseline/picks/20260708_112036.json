@@ -1,54 +1,66 @@
 {
   "version": 1,
-  "saved": "2026-11-04T20:41:57",
+  "saved": "2026-11-12T21:14:04",
   "stations": {
+    "ATIK": {
+      "p": "2026-07-08T11:20:36.569548",
+      "p_manual": true,
+      "s": "2026-07-08T11:20:39.050000",
+      "s_manual": false
+    },
     "Bamba": {
       "p": "2026-07-08T11:20:36.312000",
       "p_manual": false,
-      "s": "2026-07-08T11:20:38.684000",
-      "s_manual": false
+      "s": "2026-07-08T11:20:36.894915",
+      "s_manual": true
     },
     "Hokudai": {
       "p": "2026-07-08T11:20:36.628000",
       "p_manual": false,
-      "s": "2026-07-08T11:20:38.908000",
-      "s_manual": false
+      "s": "2026-07-08T11:20:38.022854",
+      "s_manual": true
     },
     "KBBY": {
       "p": "2026-07-08T11:20:36.270000",
       "p_manual": false,
-      "s": "2026-07-08T11:20:37.610000",
-      "s_manual": false
+      "s": "2026-07-08T11:20:37.220282",
+      "s_manual": true
     },
     "Mimatsu": {
       "p": "2026-07-08T11:20:36.780000",
       "p_manual": false,
-      "s": "2026-07-08T11:20:38.860000",
-      "s_manual": false
+      "s": "2026-07-08T11:20:37.936089",
+      "s_manual": true
+    },
+    "Nizaemn": {
+      "p": "2026-07-08T11:20:37.328350",
+      "p_manual": true,
+      "s": "2026-07-08T11:20:39.779836",
+      "s_manual": true
     },
     "USOV": {
-      "p": "2026-07-08T11:20:36.572480",
+      "p": "2026-07-08T11:20:36.439401",
       "p_manual": true,
-      "s": "2026-07-08T11:20:38.300000",
-      "s_manual": false
+      "s": "2026-07-08T11:20:37.372120",
+      "s_manual": true
+    },
+    "USSW": {
+      "p": "2026-07-08T11:20:36.830000",
+      "p_manual": false,
+      "s": "2026-07-08T11:20:38.109618",
+      "s_manual": true
     },
     "USUA": {
       "p": "2026-07-08T11:20:36.060000",
       "p_manual": false,
-      "s": "2026-07-08T11:20:37.250000",
-      "s_manual": false
+      "s": "2026-07-08T11:20:37.025062",
+      "s_manual": true
     }
   },
-  "excluded": [
-    "Nizaemn"
-  ],
+  "excluded": [],
   "s_excluded": [
-    "Bamba",
-    "Hokudai",
-    "KBBY",
-    "Mimatsu",
-    "USOV",
-    "USUA"
+    "ATIK",
+    "Nizaemn"
   ],
   "params": {
     "p_sta": 2.1,
@@ -58,6 +70,7 @@
     "s_search": 3.0,
     "vp": 3.0,
     "vp_vs": 1.73,
-    "omori_k": 8.0
+    "omori_k": 8.0,
+    "far_omori": 0.0
   }
 }
