@@ -1,4 +1,7 @@
 */*.zip
+# 拠点ごとの元の ZIP(処理済みを入れる下のフォルダも)
+source_zips/
+raw/
 tools/*
 output/*
 service_account/*
@@ -33,3 +36,6 @@ docs/manual/_build/
 # テスト(pytest)の作業ファイル
 .pytest_cache/
 tests/__pycache__/
+
+# カメラ(ATOM Cam 2)の録画(列車の映像・音声との比較用)
+videos/
