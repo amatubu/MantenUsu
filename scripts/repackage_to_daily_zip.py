@@ -78,6 +78,16 @@ def print_stale_caches(appended, output_base=None, dry_run=False):
   print("  地震の候補の検出は、この日を含めて探し直してください(前の候補の一覧は消さなくてかまいません)。")
 
 
+# エラーになった元の ZIP を、最後にもう一度表示する(途中のエラーは、長い一覧に埋もれて見落としやすいため)
+def print_failed(failed):
+  if not failed:
+    return
+  print(f"\n※ エラーで処理できなかった元の ZIP が {len(failed)} 個あります(この ZIP の WIN ファイルは入っていないか、途中までです):")
+  for name, e in failed:
+    print(f"    {name}: {e}")
+  print("  直してから、もう一度実行してください(入っている WIN ファイルは二重に入りません)。")
+
+
 def main():
   parser = argparse.ArgumentParser(description="拠点ごとの元の ZIP を、日ごとの ZIP(YYMMDD.zip)にまとめ直す")
   parser.add_argument("--source", type=Path, default=SOURCE_ZIPS_DIR,
@@ -124,6 +134,8 @@ def main():
   # 日ごとの ZIP に入っている(入れる)WIN ファイルの名前(日ごとに1回だけ読む)と、日ごとに加える数
   daily_names = {}
   added = {}
+  # 読めなかった・途中でエラーになった元の ZIP と、そのエラー(最後にもう一度表示する)
+  failed = []
 
   # 各Zipファイルに対する処理
   for z_file in zip_files:
@@ -186,6 +198,7 @@ def main():
     # エラー発生時の処理
     except Exception as e:
       print(f"  -> エラーが発生しました ({z_file.name}): {e}")
+      failed.append((z_file.name, e))
 
   # 処理の出力
   new_days = sorted(d for d in added if d not in existed)
@@ -211,6 +224,7 @@ def main():
   else:
     print("できた日ごとの ZIP は、Googleドライブのフォルダに保存してください(使う側は --download-zips で受け取ります)")
   print_stale_caches(appended, dry_run=dry_run)
+  print_failed(failed)
 
 if __name__ == "__main__":
   main()

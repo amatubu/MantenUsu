@@ -1,8 +1,9 @@
-# cf_card_window.py
-# ロガー(EDR-X7000)の CF カードを読み込む(イメージにする)・初期化する画面(Mac 専用。UsuMantenViewer とは別に動かす)
-#   使い方(プロジェクトのフォルダで): python3 scripts/cf_card_window.py
+# UsuMantenCFTool.py
+# ロガー(EDR-X7000)の CF カードを読み込む(イメージにする)・初期化する・WIN に変換する画面(UsuMantenViewer の CF カードのメンテナンスツール。Mac 専用。UsuMantenViewer とは別に動かす)
+#   使い方(プロジェクトのフォルダで): python3 scripts/UsuMantenCFTool.py
+#   バージョンは UsuMantenViewer(APP_VERSION)とは別に付ける(TOOL_VERSION)
 #
-#   読み込み ... カードの中身をそのままイメージ(raw/image/<拠点名>_<日付>out_<番号>.img)にし、SHA-256 を .sha256 に書く
+#   読み込み ... カードの中身をそのままイメージ(raw/image/<拠点名>_<記録の開始の日>in_<番号>.img)にし、SHA-256 を .sha256 に書く
 #               もう一度読んで同じかも確かめる(Win32 Disk Imager や dd とハッシュで比べていたのの代わり)
 #               2 枚使う設定のカードなら、1 枚目のあとに取り出して、2 枚目を入れると続けて読む
 #               読み終えたら、記録の期間・抜け・GPS との時刻のずれ・カードがいっぱいかを表示する(raw_to_win.py --info と同じ)
@@ -10,6 +11,11 @@
 #               設定値は、ソフトが保存した設定値のファイルを元にし、位置・標高はチャンネル表(etc/manten_ch.tbl)の値にできる
 #               書く前に、カードにいま入っているもの(拠点ID・記録の有無・読み込んだイメージがあるか)を見せて確かめる
 #               2 枚使う設定なら、1 枚目のあとに取り出して、2 枚目を入れると同じ設定値を続けて書く
+#
+#   変換     ... 読み込んだイメージ(1 回の回収の分)を WIN にする(raw_to_win.py と同じ。変換ツールの代わり)
+#               書き出し先は、拠点ごとの ZIP(source_zips/<拠点ID>_<拠点名>(YYMMDD-YYMMDD).zip。変換ツールの ZIP と同じ形)か、
+#               日ごとの ZIP(daily_zips/<YYMMDD>.zip)に直接書き足す(repackage_to_daily_zip.py でまとめ直したのと同じ)
+#               読み込みのあとに続けて変換することも、前に読み込んだイメージ・抽出ツールの raw を選んで変換することもできる
 #
 #   カードを開くときに、macOS のパスワード(Touch ID)の画面が出る(1 枚ごとに 1 回。authopen。cf_card.py を参照)
 #   CF カードにはファイルシステムが無いので、入れると macOS が「読み取れないディスク」と言う。「無視」を押す
@@ -27,11 +33,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cf_card                                  # noqa: E402
 import make_cf_image                            # noqa: E402
 import raw_to_win                               # noqa: E402
+import repackage_to_daily_zip                   # noqa: E402
+from app_paths import DATA_DIR, ZIPS_DIR        # noqa: E402
 from cf_card import CardError, Cancelled        # noqa: E402
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 ETC_DIR = PROJECT_DIR / "etc"
 IMAGE_DIR = PROJECT_DIR / "raw" / "image"
+SOURCE_ZIPS_DIR = DATA_DIR / "source_zips"
+TOOL_VERSION = "1.0.0"   # このツールのバージョン(UsuMantenViewer とは別)
 POLL_MS = 100            # 別スレッドの結果と進み具合を見る間隔
 DISK_POLL_MS = 1500      # カードの抜き差しを見る間隔
 
@@ -39,7 +49,7 @@ DISK_POLL_MS = 1500      # カードの抜き差しを見る間隔
 class CfCardWindow:
   def __init__(self, root):
     self.root = root
-    root.title("CF カード(読み込み・初期化)")
+    root.title(f"UsuMantenCFTool {TOOL_VERSION} — CF カード(読み込み・初期化・変換)")
     self.calls = queue.Queue()     # 別スレッドから画面側で呼んでほしい関数
     self.progress = None           # (済んだ, 全体, 段階)
     self.cancel = False
@@ -78,10 +88,14 @@ class CfCardWindow:
     self.var_read_verify = tk.BooleanVar(value=True)
     ttk.Checkbutton(rd, text="もう一度読んで、同じか確かめる(時間は倍になる)",
                     variable=self.var_read_verify).pack(anchor="w", pady=(6, 0))
+    self.var_read_convert = tk.BooleanVar(value=True)
+    ttk.Checkbutton(rd, text="読み終えたら、続けて WIN に変換する(書き出し先は「変換」タブで選ぶ)",
+                    variable=self.var_read_convert).pack(anchor="w", pady=(2, 0))
     self.btn(rd, "読み込む", self.start_read).pack(anchor="w", pady=(8, 0))
     ttk.Label(rd, foreground="#666666", justify=tk.LEFT,
-              text="イメージの名前は <拠点名>_<今日の日付>out_<カードの番号>.img(例: bamba_20261115out_1.img)。\n"
-                   "2 枚使う設定なら、1 枚目を読み終えると止まるのでカードを取り出し、2 枚目を入れると続けて読みます。"
+              text="イメージの名前は <拠点名>_<記録の開始の日>in_<カードの番号>.img(例: bamba_20260826in_1.img)。\n"
+                   "2 枚使う設定なら、1 枚目を読み終えると止まるのでカードを取り出し、2 枚目を入れると続けて読みます。\n"
+                   "初期化したままのカード(記録なし)は読みません。"
               ).pack(anchor="w", pady=(8, 0))
 
     # --- 初期化 ---
@@ -122,6 +136,34 @@ class CfCardWindow:
     ttk.Label(ini, foreground="#666666", justify=tk.LEFT,
               text="書く前に、カードの中身(拠点ID・記録の有無・読み込んだイメージがあるか)を見せて確かめます。\n"
                    "2 枚使う設定なら、1 枚目を書き終えると止まるのでカードを取り出し、2 枚目を入れると同じ設定値を続けて書きます。"
+              ).pack(anchor="w", pady=(8, 0))
+
+    # --- 変換 ---
+    cv = ttk.Frame(notebook, padding=10)
+    notebook.add(cv, text="変換")
+    self.notebook = notebook
+    self.tab_convert = cv
+    row = ttk.Frame(cv)
+    row.pack(fill=tk.X)
+    ttk.Label(row, text="イメージ・raw:").pack(side=tk.LEFT, anchor="n")
+    self.lst_images = tk.Listbox(row, height=3, width=60)
+    self.lst_images.pack(side=tk.LEFT, padx=(4, 0))
+    self.btn(row, "選ぶ", self.choose_images).pack(side=tk.LEFT, padx=(4, 0), anchor="n")
+    self.convert_images = []
+    ttk.Label(cv, text="書き出し先:").pack(anchor="w", pady=(8, 0))
+    self.var_convert_to = tk.StringVar(value="source")
+    ttk.Radiobutton(cv, variable=self.var_convert_to, value="source",
+                    text=f"拠点ごとの ZIP({SOURCE_ZIPS_DIR}/<拠点ID>_<拠点名>(YYMMDD-YYMMDD).zip)"
+                    ).pack(anchor="w", padx=(12, 0))
+    ttk.Radiobutton(cv, variable=self.var_convert_to, value="daily",
+                    text=f"日ごとの ZIP に直接書き足す({ZIPS_DIR}/YYMMDD.zip)"
+                    ).pack(anchor="w", padx=(12, 0))
+    self.btn(cv, "WIN に変換する", self.start_convert).pack(anchor="w", pady=(8, 0))
+    ttk.Label(cv, foreground="#666666", justify=tk.LEFT,
+              text="1 回の回収の分(カード 2 枚なら 2 つとも)を選びます。カードのイメージ(.img)のほか、\n"
+                   "Windows の抽出ツールが取り出した raw(.raw)も選べます。GPS による時刻の補正は、変換ツールと同じくします。\n"
+                   "日ごとの ZIP には、もう入っている WIN ファイルは書きません。書いている間は UsuMantenViewer を閉じてください。\n"
+                   "書き足した日の ZIP は、Googleドライブのフォルダに保存し直してください。"
               ).pack(anchor="w", pady=(8, 0))
 
     # --- 進み具合・ログ ---
@@ -178,6 +220,17 @@ class CfCardWindow:
     if d:
       self.var_folder.set(d)
 
+  def choose_images(self):
+    ps = filedialog.askopenfilenames(initialdir=str(IMAGE_DIR), filetypes=[("イメージ・raw", "*.img *.raw"), ("すべて", "*")])
+    if ps:
+      self.set_convert_images([Path(p) for p in ps])
+
+  def set_convert_images(self, paths):
+    self.convert_images = sorted(paths)
+    self.lst_images.delete(0, tk.END)
+    for p in self.convert_images:
+      self.lst_images.insert(tk.END, p.name)
+
   def choose_setting_file(self):
     p = filedialog.askopenfilename(initialdir=str(cf_card.SETTING_DIR) if cf_card.SETTING_DIR.is_dir() else None)
     if p:
@@ -187,8 +240,9 @@ class CfCardWindow:
   # ---------------------------------------------------------------- 別スレッド
 
   # fn を別スレッドで動かし、終わったら画面側で on_done(結果) を呼ぶ(エラーは画面側でログに書く)
+  #   中止の印(self.cancel)はここでは戻さない。続けて動かす処理(カードを開く → 読む、準備 → 変換)の
+  #   途中で押された「中止」が、次の処理で消えないように。戻すのは、ボタンで新しく始めるとき(start_*)
   def run(self, fn, on_done, on_error=None):
-    self.cancel = False
     self.set_busy(True)
 
     def body():
@@ -210,6 +264,12 @@ class CfCardWindow:
     self.lbl_progress.configure(text="")
     if on_error:
       on_error()
+
+  # 新しい処理を始めるとき: 前の処理の「終わりました」・100% のままにしない
+  def clear_progress(self, text=""):
+    self.progress = None
+    self.bar["value"] = 0
+    self.lbl_progress.configure(text=text)
 
   def report(self, done, total, stage):
     self.progress = (done, total, stage, time.monotonic())
@@ -305,6 +365,7 @@ class CfCardWindow:
   # ---------------------------------------------------------------- 読み込み
 
   def start_read(self):
+    self.cancel = False
     disk = self.selected_disk()
     if not disk:
       messagebox.showinfo("CF カード", "CF カードが見つかりません。")
@@ -324,19 +385,28 @@ class CfCardWindow:
       return
     which = f"{session['card']} 枚目のカード" if session["images"] else "カード"
     self.log(f"--- {which}を読み込みます({disk.node})。パスワードの画面が出たら入力してください。")
+    self.clear_progress("カードを開いています")
     state = {}
 
     def open_card():
       state["dev"] = cf_card.Device.open(disk)
-      return cf_card.card_info(state["dev"].head())
+      info = cf_card.card_info(state["dev"].head())
+      state["started"] = cf_card.record_start(state["dev"]) if info.has_data else None
+      return info
 
     def opened(info):
       dev = state["dev"]
-      self.log(cf_card.card_summary(info))
-      problem = self.read_problem(info, session)
+      started = state["started"]
+      self.log(cf_card.card_summary(info)
+               + (f"・記録の開始 {started:%Y-%m-%d %H:%M:%S}" if started else ""))
+      problem = self.read_problem(info, session, started)
       if problem:
         dev.close()
         self.log(f"エラー: {problem}")
+        return
+      if self.cancel:
+        dev.close()
+        self.log("中止しました。")
         return
       # 初期化したままのカード(番号なし・記録なし)は読まない。2 枚使う設定で 2 枚目まで記録しなかったときもここ
       if not info.has_data:
@@ -352,7 +422,8 @@ class CfCardWindow:
       session["station"] = session["station"] or info.station
       name = self.station_name(info.station)
       session["name"] = name
-      out = folder / cf_card.image_name(name, index)
+      session["started"] = session.get("started") or started
+      out = folder / cf_card.image_name(name, index, session["started"])
       if out.exists() and not messagebox.askyesno("CF カード", f"{out.name} はもうあります。上書きしますか?",
                                                    default=messagebox.NO):
         dev.close()
@@ -380,11 +451,14 @@ class CfCardWindow:
     self.run(open_card, opened)
 
   # 読み込もうとしたカードがおかしいとき、その理由
-  def read_problem(self, info, session):
+  def read_problem(self, info, session, started=None):
     if not info.station:
       return "ロガーのカードではないようです。"
     if session["station"] and info.station != session["station"]:
       return f"1 枚目と違う拠点のカードです(1 枚目 {session['station']}、このカード {info.station})。"
+    if session.get("started") and started and started != session["started"]:
+      return (f"1 枚目と記録の開始が違います(別の回収のカード?。1 枚目 {session['started']:%Y-%m-%d %H:%M:%S}、"
+              f"このカード {started:%Y-%m-%d %H:%M:%S})。")
     if session["card"] > 1 and info.index and info.index < session["card"]:
       return f"{info.index} 枚目のカードです({session['card']} 枚目を入れてください)。"
     return None
@@ -408,7 +482,7 @@ class CfCardWindow:
     # この回で読まなかったカード(先に読んであった 1 枚目など)も、同じ日の名前のイメージがあれば合わせて調べる
     have = {self.image_index(p) for p in images}
     for i in range(1, session.get("cards", 1) + 1):
-      other = images[0].with_name(cf_card.image_name(session["name"], i))
+      other = images[0].with_name(cf_card.image_name(session["name"], i, session.get("started")))
       if i not in have and other.exists():
         self.log(f"{i} 枚目は、先に読んであった {other.name} を合わせて調べます。")
         images.append(other)
@@ -433,6 +507,12 @@ class CfCardWindow:
       for line in lines:
         self.log(line)
       self.lbl_progress.configure(text="読み込みが終わりました")
+      self.set_convert_images(images)
+      if self.var_read_convert.get():
+        if self.cancel:
+          self.log("中止したので、WIN への変換はしません。")
+        else:
+          self.start_convert(fresh=False)
     self.run(info, done, lambda: [self.log(line) for line in lines])
 
   # ---------------------------------------------------------------- 初期化
@@ -500,6 +580,7 @@ class CfCardWindow:
       raise make_cf_image.SettingError(f"数字が読めません: {e}")
 
   def start_write(self):
+    self.cancel = False
     disk = self.selected_disk()
     if not disk:
       messagebox.showinfo("CF カード", "CF カードが見つかりません。")
@@ -515,6 +596,7 @@ class CfCardWindow:
     setting = session["setting"]
     desc = make_cf_image.describe(setting)
     self.log(f"--- {session['card']} 枚目を初期化します({disk.node})。パスワードの画面が出たら入力してください。")
+    self.clear_progress("カードを開いています")
     state = {}
 
     def open_card():
@@ -538,6 +620,10 @@ class CfCardWindow:
       else:
         saved = "記録はありません。"
       self.log(saved)
+      if self.cancel:
+        dev.close()
+        self.log("中止しました。")
+        return
       new = "\n".join(f"  {k}: {v}" for k, v in desc.items() if v is not None)
       warn = info.has_data and not images
       ok = messagebox.askyesno(
@@ -570,6 +656,110 @@ class CfCardWindow:
       self.run(write, done)
 
     self.run(open_card, opened)
+
+
+  # ---------------------------------------------------------------- 変換
+
+  def start_convert(self, fresh=True):
+    if fresh:
+      self.cancel = False
+    images = list(self.convert_images)
+    if not images:
+      messagebox.showinfo("CF カード", "変換するイメージを選んでください。")
+      return
+    daily = self.var_convert_to.get() == "daily"
+    self.log(f"--- WIN に変換します: {', '.join(p.name for p in images)}")
+    self.clear_progress("変換の準備(記録の範囲を調べています)")
+    lines = []
+    state = {}
+
+    def prepare():
+      files, start = raw_to_win.open_inputs(images, lines.append)
+      header = files[0].header
+      offsets, gains = raw_to_win.calibration_for(header, raw_to_win.load_cal(), lines.append)
+      corrections = raw_to_win.gps_corrections(files)
+      raw_to_win.print_corrections(corrections, start, True, lines.append)
+      state.update(files=files, start=start, header=header, offsets=offsets, gains=gains, corrections=corrections)
+      return raw_to_win.record_range(files, start)
+
+    def prepared(span):
+      for line in lines:
+        self.log(line)
+      if self.cancel:
+        self.log("中止しました。")
+        self.lbl_progress.configure(text="")
+        return
+      header = state["header"]
+      name = self.station_name(header["station"])
+      a, b = span
+      period = f"{a:%Y-%m-%d %H:%M} 〜 {b:%Y-%m-%d %H:%M}"
+      if daily:
+        if not messagebox.askyesno("CF カード", f"{name}({header['station']})の {period} の WIN を、\n"
+                                   f"{ZIPS_DIR} の日ごとの ZIP に書き足します。\n\n"
+                                   "UsuMantenViewer を開いていたら、先に閉じてください。続けますか?"):
+          self.log("変換をやめました。")
+          self.lbl_progress.configure(text="")
+          return
+        writer = raw_to_win.DailyZipWriter(ZIPS_DIR)
+        target = ZIPS_DIR
+      else:
+        target = SOURCE_ZIPS_DIR / raw_to_win.source_zip_name(header["station"], name, state["files"], state["start"])
+        if not target.exists() and not messagebox.askyesno(
+            "CF カード", f"{name}({header['station']})の {period} の WIN を、拠点ごとの ZIP\n"
+            f"{target}\nに書きます。続けますか?"):
+          self.log("変換をやめました。")
+          self.lbl_progress.configure(text="")
+          return
+        if target.exists():
+          if not messagebox.askyesno("CF カード", f"{target.name} はもうあります。上書きしますか?",
+                                     default=messagebox.NO):
+            self.log("変換をやめました。")
+            self.lbl_progress.configure(text="")
+            return
+          target.unlink()
+        writer = raw_to_win.ZipWriter(target, header["station"])
+      self.log(f"{period} を {target} に書いています...")
+      self.lbl_progress.configure(text="変換(全体の 0%)")
+      self.convert(state, writer, target, daily)
+    self.run(prepare, prepared, lambda: [self.log(line) for line in lines])
+
+  def convert(self, s, writer, target, daily):
+    lines = []
+
+    def progress(done, total):
+      if self.cancel:
+        raise Cancelled()
+      self.report(done, total, "変換")
+
+    def work():
+      return raw_to_win.convert(s["files"], s["start"], s["header"], s["offsets"], s["gains"], writer,
+                                s["corrections"], progress, lines.append)
+
+    def done(w):
+      for line in lines:
+        self.log(line)
+      self.log(f"変換しました: WIN ファイル {w.count} 個 → {target}")
+      if daily:
+        raw_to_win.print_daily_result(w, self.log)
+        if w.appended:
+          stale = repackage_to_daily_zip.stale_caches(set().union(*w.appended.values()))
+          if stale:
+            self.log("※ 書き足した日について、アプリが前の ZIP から作った次の結果は古いまま使われます。"
+                     "アプリを閉じて、消してください:")
+            for p in stale:
+              self.log(f"    {p}{'/' if p.is_dir() else ''}")
+          self.log("※ 地震の候補の検出は、書き足した日を含めて探し直してください。")
+        if w.added:
+          self.log("新しくできた日・書き足した日の ZIP は、Googleドライブのフォルダに保存してください。")
+      self.lbl_progress.configure(text="変換が終わりました")
+
+    def failed():
+      for line in lines:
+        self.log(line)
+      if daily and writer.added:
+        self.log(f"※ 書き終えた日の ZIP はそのまま残っています: {', '.join(sorted(writer.added))}"
+                 "(もう一度変換すると、残りの分だけを書きます)")
+    self.run(work, done, failed)
 
 
 def main():

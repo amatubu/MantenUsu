@@ -1,6 +1,6 @@
 # cf_card.py
 # ロガー(EDR-X7000)の CF カードを Mac で読み込む(イメージにする)・初期化する処理(Mac 専用)
-#   画面は cf_card_window.py。ここは画面に触れない処理だけ
+#   画面は UsuMantenCFTool.py。ここは画面に触れない処理だけ
 #
 #   カードのデバイス(/dev/rdiskN)は root でないと開けないので、macOS の authopen を使う:
 #     authopen が macOS の標準のパスワード(Touch ID)の画面を出して、デバイスを開き、開いたファイルを
@@ -23,6 +23,7 @@ from datetime import date
 from pathlib import Path
 
 import make_cf_image
+import raw_to_win
 from make_cf_image import CARD_SIZE, SETTING_SIZE, FILL, SettingError
 
 CHUNK = 4 << 20             # 読み書きの単位(512 の倍数)
@@ -264,10 +265,31 @@ def read_card(dev, out, verify=True, progress=None, cancelled=None):
   return digest
 
 
-# イメージの名前: <拠点名>_<日付>out_<カードの番号>.img(例: bamba_20261115out_1.img)
-def image_name(name, index, day=None):
-  day = day or date.today()
-  return f"{name.lower()}_{day:%Y%m%d}out_{index}.img"
+# イメージの名前: <拠点名>_<記録の開始の日>in_<カードの番号>.img(例: bamba_20260826in_1.img)
+#   記録の開始の日がわからないときは、<今日の日付>out(前の名前の付け方。例: bamba_20261115out_1.img)
+#   記録の開始は 1 回の回収の分で同じなので、1 枚目と 2 枚目は同じ日の名前になる。前に読んだカードを読み直しても同じ名前
+def image_name(name, index, started=None):
+  if started:
+    return f"{name.lower()}_{started:%Y%m%d}in_{index}.img"
+  return f"{name.lower()}_{date.today():%Y%m%d}out_{index}.img"
+
+
+# カードの記録の開始時刻(日本時間。最初の 'G' レコードの時刻)。limit までに見つからない・読めなければ None
+#   1 枚目はヘッダーのすぐ後ろにある。2 枚目は 'G' レコードまで数百 KB 読むことがある
+def record_start(dev, limit=64 << 20):
+  step = 1 << 20
+  for off in range(SETTING_SIZE, min(limit, dev.size), step):
+    b = dev.pread(min(step, dev.size - off), off)
+    for k in range(0, len(b) - SETTING_SIZE + 1, SETTING_SIZE):
+      c = b[k]
+      if c == ord("G"):
+        try:
+          return raw_to_win.gps_start_time(b[k:k + SETTING_SIZE])
+        except ValueError:
+          return None
+      if c == FILL:
+        return None
+  return None
 
 
 # ---------------------------------------------------------------- 初期化する

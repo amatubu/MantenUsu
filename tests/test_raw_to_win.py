@@ -152,7 +152,7 @@ def test_two_cards_and_zip_output(tmp_path, monkeypatch):
   out = tmp_path / "out.zip"
   assert rw.main([str(tmp_path / "x_1.raw"), str(tmp_path / "x_2.raw"), "-o", str(out)]) == 0
   names = sorted(zipfile.ZipFile(out).namelist())
-  assert names[0] == "out/251206/0970355225_2512061152.win" and len(names) == 3
+  assert names[0] == "0970355225/251206/0970355225_2512061152.win" and len(names) == 3
   # 同じものを --verify で比べると、全部一致する
   assert rw.main([str(tmp_path / "x_1.raw"), str(tmp_path / "x_2.raw"), "--verify", str(out)]) == 0
 
@@ -270,3 +270,55 @@ def test_no_gps_correction_option(tmp_path, capsys):
   assert "251206115251,1" in capsys.readouterr().out
   assert rw.main([str(tmp_path / "a.raw"), "--info", "--no-gps-correction"]) == 0
   assert "補正しません" in capsys.readouterr().out
+
+
+def converted_inputs(tmp_path, monkeypatch, seconds=130):
+  rng = np.random.default_rng(5)
+  write_raw(tmp_path / "x_1.raw", rng.integers(-500, 500, (seconds * 250, 3)))
+  files, start = rw.open_inputs([tmp_path / "x_1.raw"])
+  header = files[0].header
+  offs, gains = [[0] * 3] * 2, [[1.0] * 3] * 2
+  return files, start, header, offs, gains
+
+
+def test_source_zip_name(tmp_path, monkeypatch):
+  files, start, *_ = converted_inputs(tmp_path, monkeypatch)
+  assert rw.source_zip_name("0970355225", "Mimatsu", files, start) == "0970355225_Mimatsu(251206-251206).zip"
+
+
+def test_daily_zip_writer_appends_only_missing(tmp_path, monkeypatch):
+  files, start, header, offs, gains = converted_inputs(tmp_path, monkeypatch)
+  daily = tmp_path / "daily"
+  daily.mkdir()
+  # 前からある日の ZIP(ほかの拠点のファイルと、同じ分のファイルが 1 つ入っている)
+  with zipfile.ZipFile(daily / "251206.zip", "w") as z:
+    z.writestr("1070432003/251206/1070432003_2512061152.win", b"other")
+    z.writestr("0970355225/251206/0970355225_2512061152.win", b"old")
+  w = rw.convert(files, start, header, offs, gains, rw.DailyZipWriter(daily))
+  names = sorted(zipfile.ZipFile(daily / "251206.zip").namelist())
+  assert names == ["0970355225/251206/0970355225_2512061152.win", "0970355225/251206/0970355225_2512061153.win",
+                   "0970355225/251206/0970355225_2512061154.win", "1070432003/251206/1070432003_2512061152.win"]
+  assert zipfile.ZipFile(daily / "251206.zip").read("0970355225/251206/0970355225_2512061152.win") == b"old"
+  assert (w.count, w.skipped, w.added) == (2, 1, {"251206": 2})
+  assert w.appended == {"251206": {datetime(2025, 12, 6, 11)}}
+  assert not list(daily.glob("*.part"))
+  # 同じものを ZIP にした中身と同じ
+  out = tmp_path / "src.zip"
+  rw.convert(files, start, header, offs, gains, rw.ZipWriter(out, "0970355225"))
+  src = zipfile.ZipFile(out)
+  assert src.read("0970355225/251206/0970355225_2512061153.win") == \
+      zipfile.ZipFile(daily / "251206.zip").read("0970355225/251206/0970355225_2512061153.win")
+
+
+def test_convert_stopped_leaves_no_partial_zip(tmp_path, monkeypatch):
+  files, start, header, offs, gains = converted_inputs(tmp_path, monkeypatch)
+
+  def stop(done, total):
+    raise KeyboardInterrupt
+  out = tmp_path / "src.zip"
+  with pytest.raises(KeyboardInterrupt):
+    rw.convert(files, start, header, offs, gains, rw.ZipWriter(out, "0970355225"), progress=stop)
+  daily = tmp_path / "daily"
+  with pytest.raises(KeyboardInterrupt):
+    rw.convert(files, start, header, offs, gains, rw.DailyZipWriter(daily), progress=stop)
+  assert sorted(p.name for p in tmp_path.iterdir()) == ["x_1.raw"]

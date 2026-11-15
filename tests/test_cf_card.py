@@ -4,7 +4,7 @@ import hashlib
 import os
 import plistlib
 import sys
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -222,4 +222,18 @@ def test_latest_setting_file(tmp_path):
 def test_deg_min_and_name():
   assert cf_card.deg_min(42.53533) == (42, 32.1198)
   assert cf_card.deg_min(140.99999999) == (141, 0.0)
-  assert cf_card.image_name("Bamba", 2, date(2026, 11, 15)) == "bamba_20261115out_2.img"
+  assert cf_card.image_name("Bamba", 2, datetime(2026, 8, 26, 8, 17)) == "bamba_20260826in_2.img"
+  assert cf_card.image_name("Bamba", 1) == f"bamba_{date.today():%Y%m%d}out_1.img"
+
+
+def test_record_start(tmp_path):
+  g = (b"G\0" + b"20060422025241").ljust(1024, b"\0")
+  w = bytes([ord("W")]) * 1024
+  for name, body, want in [("card1", g + w, datetime(2025, 12, 6, 11, 52, 41)),
+                           ("card2", w * 40 + g, datetime(2025, 12, 6, 11, 52, 41)),  # 2 枚目: 'W' のあとに 'G'
+                           ("blank", b"", None),
+                           ("broken", bytes([ord("G")]) + bytes(1023), None)]:
+    card = tmp_path / name
+    card.write_bytes((setting() + body).ljust(SIZE, b"\xff"))
+    with device(card) as dev:
+      assert cf_card.record_start(dev) == want, name

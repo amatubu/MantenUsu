@@ -74,3 +74,20 @@ def test_dry_run_writes_nothing(tmp_path, monkeypatch, capsys):
   assert "合計 3 個" in text
   assert "260827.zip  2 個" in text and "260826.zip  1 個" in text
   assert "書き足すことになります: 260826" in text and "stack_20260826_09" in text
+
+
+def test_failed_zip_is_repeated_at_the_end(tmp_path, monkeypatch, capsys):
+  src, out = tmp_path / "src", tmp_path / "out"
+  src.mkdir()
+  make_source(src / "a.zip", ["card/260901/0970355243_2609010000.win"])
+  (src / "b.zip").write_bytes(b"not a zip")
+  monkeypatch.setattr(sys, "argv", ["rp", "--source", str(src), "--output", str(out)])
+  rp.main()
+  text = capsys.readouterr().out
+  tail = text.split("エラーで処理できなかった元の ZIP が 1 個あります")[1]
+  assert "b.zip" in tail and "a.zip" not in tail
+  assert zipfile.ZipFile(out / "260901.zip").namelist() == ["0970355243/260901/0970355243_2609010000.win"]
+  # エラーが無ければ出さない
+  (src / "b.zip").unlink()
+  rp.main()
+  assert "エラーで処理できなかった" not in capsys.readouterr().out

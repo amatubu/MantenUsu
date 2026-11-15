@@ -3,11 +3,14 @@
 #   入力は、抽出ツールが取り出した raw(例: 0970355225_2512060252_1.raw)か、CF カードをそのままイメージにしたもの
 #   1回の回収の分(カード2枚など)は、まとめて指定する(順番は問わない。サンプルの通し番号で並べる)
 #   出力は、変換ツールと同じ構成: <出力>/<YYMMDD>/<拠点ID>_<YYMMDDhhmm>.win(時刻は日本時間)
-#   出力先を .zip にすると、ZIP に書く(中は <ZIPの名前>/<YYMMDD>/... 。repackage_to_daily_zip.py の元の ZIP に使える)
+#   出力先を .zip にすると、ZIP に書く(中は <拠点ID>/<YYMMDD>/... 。変換ツールの ZIP と同じで、source_zips の元の ZIP に使える)
+#   --daily を付けると、出力先を日ごとの ZIP のフォルダ(daily_zips)として、<YYMMDD>.zip に直接書き足す
+#   (repackage_to_daily_zip.py でまとめ直したのと同じ形。もう入っている WIN ファイルは書かない)
 #
 # 使い方(プロジェクトのフォルダで):
 #   python3 scripts/raw_to_win.py <raw...> --info                  ... ヘッダー・記録の範囲・壊れた所を表示する
 #   python3 scripts/raw_to_win.py <raw...> -o <フォルダ か .zip>   ... WIN に変換する
+#   python3 scripts/raw_to_win.py <raw...> -o <daily_zips> --daily  ... WIN にして、日ごとの ZIP に直接書き足す
 #   python3 scripts/raw_to_win.py <raw...> --verify <ZIP か フォルダ>   ... 書かずに、変換ツールの WIN と1バイトずつ比べる
 #   python3 scripts/raw_to_win.py <raw...> --fit <ZIP か フォルダ> [--save-cal]
 #                                          ... 変換ツールの WIN から、拠点の校正値(オフセット・ゲイン)を求める
@@ -42,6 +45,8 @@
 #   (V + a) × g ではわずかに合わない所がある(積がちょうど整数の付近。変換ツールの計算の順序の違いとみられる)
 import argparse
 import hashlib
+import os
+import shutil
 import struct
 import sys
 import zipfile
@@ -626,6 +631,8 @@ def main(argv=None):
   ap = argparse.ArgumentParser(description="ロガーの raw(CF カードの中身)を 1 分ごとの WIN にする")
   ap.add_argument("raw", nargs="+", help="raw ファイルか、CF カードのイメージ(1 回の回収の分をまとめて)")
   ap.add_argument("-o", "--output", help="出力先のフォルダ(.zip にすると ZIP に書く)")
+  ap.add_argument("--daily", action="store_true",
+                  help="-o のフォルダを日ごとの ZIP(daily_zips)として、YYMMDD.zip に直接書き足す(もう入っている WIN は書かない)")
   ap.add_argument("--info", action="store_true", help="ヘッダーと記録の範囲を表示するだけ")
   ap.add_argument("--verify", metavar="REF", help="変換ツールの WIN(ZIP かフォルダ)と比べる(書かない)")
   ap.add_argument("--fit", metavar="REF", help="変換ツールの WIN(ZIP かフォルダ)から校正値を求める")
@@ -657,52 +664,193 @@ def main(argv=None):
       return run_verify(files, start, header, offsets, gains, Reference(args.verify), corrections)
     if not args.output:
       ap.error("-o(出力先)か --info・--verify・--fit を指定してください")
-    return run_convert(files, start, header, offsets, gains, Path(args.output), corrections)
+    return run_convert(files, start, header, offsets, gains, Path(args.output), corrections, args.daily)
   except RawError as e:
     print(f"エラー: {e}")
     return 1
 
 
-def run_convert(files, start, header, offsets, gains, out, corrections=()):
-  count = [0]
-  if out.suffix.lower() == ".zip":
-    if out.exists():
-      raise RawError(f"{out} はもうあります(上書きしません)")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    top = out.stem
-    pending = {}
-    zf = zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED)
+# ---------------------------------------------------------------- 書き出し
 
-    # ZIP は追記ができないので、分が分かれたときに備えて、1 つ前の分だけ持っておく
-    def sink(name, blob, t, w, coarse, append):
-      if append:
-        pending[name] += blob
-        return
-      for k in list(pending):
-        zf.writestr(f"{top}/{k}", pending.pop(k))
-      pending[name] = blob
-      count[0] += 1
-      if count[0] % 10000 == 0:
-        print(f"  {count[0]} ファイル({t:%Y-%m-%d %H:%M})")
+# 記録の最初と最後の時刻(日本時間)
+def record_range(files, start):
+  return (start + timedelta(seconds=files[0].first_idx / SR),
+          start + timedelta(seconds=max(f.last_frame() for f in files) / SR))
+
+
+# 拠点ごとの ZIP の名前(例: 0970355243_Hokudai(260826-261115).zip。変換ツールの ZIP の名前に似せる)
+def source_zip_name(station, name, files, start):
+  a, b = record_range(files, start)
+  return f"{station}_{name}({a:%y%m%d}-{b:%y%m%d}).zip"
+
+
+# フォルダに書く: <フォルダ>/<YYMMDD>/<拠点ID>_<YYMMDDhhmm>.win
+class FolderWriter:
+  def __init__(self, folder):
+    self.folder = Path(folder)
+    self.count = 0
+
+  def add(self, name, blob, append):
+    p = self.folder / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "ab" if append else "wb") as fh:
+      fh.write(blob)
+    self.count += 0 if append else 1
+
+  def close(self, ok):
+    pass
+
+
+# 1 つの ZIP に書く: 中は <拠点ID>/<YYMMDD>/<拠点ID>_<YYMMDDhhmm>.win(変換ツールの ZIP と同じ。source_zips に置ける)
+#   書いている間は .part にし、終わったら名前を変える(中止・エラーのときは消す)
+class ZipWriter:
+  def __init__(self, path, top):
+    self.path = Path(path)
+    if self.path.exists():
+      raise RawError(f"{self.path} はもうあります(上書きしません)")
+    self.path.parent.mkdir(parents=True, exist_ok=True)
+    self.part = self.path.with_name(self.path.name + ".part")
+    self.zf = zipfile.ZipFile(self.part, "w", zipfile.ZIP_DEFLATED)
+    self.top = top
+    self.pending = {}     # ZIP は追記ができないので、分が分かれたときに備えて、1 つ前の分だけ持っておく
+    self.count = 0
+
+  def flush(self):
+    for k in list(self.pending):
+      self.zf.writestr(f"{self.top}/{k}", self.pending.pop(k))
+
+  def add(self, name, blob, append):
+    if append:
+      self.pending[name] += blob
+      return
+    self.flush()
+    self.pending[name] = blob
+    self.count += 1
+
+  def close(self, ok):
     try:
-      write_minutes(correct_frames(iter_frames(files), corrections), start, header, offsets, gains, sink)
-      for k in list(pending):
-        zf.writestr(f"{top}/{k}", pending.pop(k))
+      if ok:
+        self.flush()
     finally:
-      zf.close()
+      self.zf.close()
+    if ok:
+      os.replace(self.part, self.path)
+    else:
+      self.part.unlink(missing_ok=True)
+
+
+# 日ごとの ZIP(daily_zips/<YYMMDD>.zip。中は <拠点ID>/<YYMMDD>/<拠点ID>_<YYMMDDhhmm>.win)に、直接書き足す
+#   repackage_to_daily_zip.py と同じく、同じ名前の WIN ファイルがもう入っていれば書かない
+#   1 日分をためてから書く。前からある日の ZIP は、写しに書き足してから置き換える(途中で止まっても壊さない)
+#   中止・エラーのときは、書き終えた日はそのまま残し、書いている途中の日は書かない
+class DailyZipWriter:
+  def __init__(self, folder):
+    self.folder = Path(folder)
+    self.day = None
+    self.buf = {}
+    self.added = {}       # {日(YYMMDD): 書いた WIN ファイルの数}
+    self.appended = {}    # {前からあった日: 書き足した時間(datetime)の集まり}
+    self.skipped = 0      # もう入っていたので書かなかった数
+    self.count = 0
+
+  def add(self, name, blob, append):
+    if append:
+      self.buf[name] += blob
+      return
+    day = name.split("/")[0]
+    if day != self.day:
+      self.flush()
+      self.day = day
+    self.buf[name] = blob
+
+  def flush(self):
+    if not self.buf:
+      return
+    path = self.folder / f"{self.day}.zip"
+    existed = path.exists()
+    have = set()
+    if existed:
+      with zipfile.ZipFile(path) as z:
+        have = set(z.namelist())
+    items = {}
+    for name, blob in self.buf.items():
+      base = name.split("/")[-1]
+      key = f"{base[:10]}/{name}"
+      if key not in have:
+        items[key] = blob
+    self.skipped += len(self.buf) - len(items)
+    self.buf = {}
+    if not items:
+      return
+    self.folder.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(path.name + ".part")
+    if existed:
+      shutil.copyfile(path, part)
+    try:
+      with zipfile.ZipFile(part, "a" if existed else "w", zipfile.ZIP_DEFLATED) as z:
+        for key in sorted(items):
+          z.writestr(key, items[key])
+      os.replace(part, path)
+    except BaseException:
+      part.unlink(missing_ok=True)
+      raise
+    self.added[self.day] = len(items)
+    self.count += len(items)
+    if existed:
+      self.appended[self.day] = {datetime.strptime(k.split("_")[-1][:8], "%y%m%d%H") for k in items}
+
+  def close(self, ok):
+    if ok:
+      self.flush()
+    self.buf = {}
+
+
+# WIN にして writer に書く。progress(済んだ秒, 全体の秒) は 1 分ごとに呼ぶ(例外を投げると止まる)
+def convert(files, start, header, offsets, gains, writer, corrections=(), progress=None, report=print):
+  a, b = record_range(files, start)
+  total = max((b - a).total_seconds(), 1)
+
+  def sink(name, blob, t, w, coarse, append):
+    writer.add(name, blob, append)
+    if progress and not append:
+      progress(min((t - a).total_seconds(), total), total)
+  ok = False
+  try:
+    write_minutes(correct_frames(iter_frames(files, report), corrections), start, header, offsets, gains, sink)
+    ok = True
+  finally:
+    writer.close(ok)
+  return writer
+
+
+def run_convert(files, start, header, offsets, gains, out, corrections=(), daily=False):
+  if daily:
+    writer = DailyZipWriter(out)
+  elif out.suffix.lower() == ".zip":
+    writer = ZipWriter(out, header["station"])
   else:
-    def sink(name, blob, t, w, coarse, append):
-      p = out / name
-      p.parent.mkdir(parents=True, exist_ok=True)
-      with open(p, "ab" if append else "wb") as fh:
-        fh.write(blob)
-      if not append:
-        count[0] += 1
-        if count[0] % 10000 == 0:
-          print(f"  {count[0]} ファイル({t:%Y-%m-%d %H:%M})")
-    write_minutes(correct_frames(iter_frames(files), corrections), start, header, offsets, gains, sink)
-  print(f"WIN ファイル: {count[0]} 個 → {out}")
+    writer = FolderWriter(out)
+  last = [0]
+
+  def progress(done, total):
+    if writer.count // 10000 > last[0]:
+      last[0] = writer.count // 10000
+      print(f"  {writer.count} ファイル({start + timedelta(seconds=files[0].first_idx / SR + done):%Y-%m-%d %H:%M})")
+  convert(files, start, header, offsets, gains, writer, corrections, progress)
+  print(f"WIN ファイル: {writer.count} 個 → {out}")
+  if daily:
+    print_daily_result(writer)
   return 0
+
+
+def print_daily_result(writer, report=print):
+  new = sorted(d for d in writer.added if d not in writer.appended)
+  if new:
+    report(f"新しくできた日: {len(new)} 日({new[0]}〜{new[-1]})")
+  for d in sorted(writer.appended):
+    report(f"前からある日に書き足した: {d}.zip  {writer.added[d]} 個")
+  if writer.skipped:
+    report(f"もう入っていたので書かなかった WIN ファイル: {writer.skipped} 個")
 
 
 def run_verify(files, start, header, offsets, gains, ref, corrections=()):
