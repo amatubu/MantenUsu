@@ -16,6 +16,8 @@
 #               書き出し先は、拠点ごとの ZIP(source_zips/<拠点ID>_<拠点名>(YYMMDD-YYMMDD).zip。変換ツールの ZIP と同じ形)か、
 #               日ごとの ZIP(daily_zips/<YYMMDD>.zip)に直接書き足す(repackage_to_daily_zip.py でまとめ直したのと同じ)
 #               読み込みのあとに続けて変換することも、前に読み込んだイメージ・抽出ツールの raw を選んで変換することもできる
+#               いくつかの拠点・回収の分をまとめて選ぶと、回収(拠点と記録の開始)ごとに順に変換する
+#   読み込み・初期化・変換のそれぞれに、かかった時間をログに出す(読み込み・初期化は、段階ごとの速さ MB/s も)
 #
 #   カードを開くときに、macOS のパスワード(Touch ID)の画面が出る(1 枚ごとに 1 回。authopen。cf_card.py を参照)
 #   CF カードにはファイルシステムが無いので、入れると macOS が「読み取れないディスク」と言う。「無視」を押す
@@ -41,9 +43,24 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 ETC_DIR = PROJECT_DIR / "etc"
 IMAGE_DIR = PROJECT_DIR / "raw" / "image"
 SOURCE_ZIPS_DIR = DATA_DIR / "source_zips"
-TOOL_VERSION = "1.0.0"   # このツールのバージョン(UsuMantenViewer とは別)
+TOOL_VERSION = "1.1.0"   # このツールのバージョン(UsuMantenViewer とは別)
 POLL_MS = 100            # 別スレッドの結果と進み具合を見る間隔
 DISK_POLL_MS = 1500      # カードの抜き差しを見る間隔
+
+
+# かかった時間(秒)を「1 時間 2 分 3 秒」のように
+def duration_text(sec):
+  sec = int(round(sec))
+  h, m, s = sec // 3600, sec // 60 % 60, sec % 60
+  if h:
+    return f"{h} 時間 {m} 分 {s} 秒"
+  return f"{m} 分 {s} 秒" if m else f"{s} 秒"
+
+
+# カードの読み書きの段階ごとの、量・時間・速さ(例: 「読み込み 4.08 GB を 4 分 32 秒(15.0 MB/s)」)
+def speed_text(size, stats):
+  return "、".join(f"{stage} {size / 1e9:.2f} GB を {duration_text(sec)}({size / 1e6 / sec:.1f} MB/s)"
+                   for stage, sec in stats.items() if sec > 0)
 
 
 class CfCardWindow:
@@ -146,7 +163,7 @@ class CfCardWindow:
     row = ttk.Frame(cv)
     row.pack(fill=tk.X)
     ttk.Label(row, text="イメージ・raw:").pack(side=tk.LEFT, anchor="n")
-    self.lst_images = tk.Listbox(row, height=3, width=60)
+    self.lst_images = tk.Listbox(row, height=5, width=60)
     self.lst_images.pack(side=tk.LEFT, padx=(4, 0))
     self.btn(row, "選ぶ", self.choose_images).pack(side=tk.LEFT, padx=(4, 0), anchor="n")
     self.convert_images = []
@@ -160,7 +177,8 @@ class CfCardWindow:
                     ).pack(anchor="w", padx=(12, 0))
     self.btn(cv, "WIN に変換する", self.start_convert).pack(anchor="w", pady=(8, 0))
     ttk.Label(cv, foreground="#666666", justify=tk.LEFT,
-              text="1 回の回収の分(カード 2 枚なら 2 つとも)を選びます。カードのイメージ(.img)のほか、\n"
+              text="1 回の回収の分(カード 2 枚なら 2 つとも)を選びます。いくつかの拠点・回収の分をまとめて選ぶと、\n"
+                   "回収ごとに順に変換します。カードのイメージ(.img)のほか、\n"
                    "Windows の抽出ツールが取り出した raw(.raw)も選べます。GPS による時刻の補正は、変換ツールと同じくします。\n"
                    "日ごとの ZIP には、もう入っている WIN ファイルは書きません。書いている間は UsuMantenViewer を閉じてください。\n"
                    "書き足した日の ZIP は、Googleドライブのフォルダに保存し直してください。"
@@ -431,15 +449,19 @@ class CfCardWindow:
         return
       self.log(f"{out} に読み込んでいます...")
       verify = self.var_read_verify.get()
+      t0 = time.monotonic()
+      stats = {}
 
       def read():
         try:
-          return cf_card.read_card(dev, out, verify, self.report, lambda: self.cancel)
+          return cf_card.read_card(dev, out, verify, self.report, lambda: self.cancel, stats)
         finally:
           dev.close()
 
       def done(digest):
-        self.log(f"読み込みました: {out.name}  SHA-256 {digest}" + ("(2 回読んで同じでした)" if verify else ""))
+        self.log(f"読み込みました: {out.name}  SHA-256 {digest}" + ("(2 回読んで同じでした)" if verify else "")
+                 + f"。かかった時間 {duration_text(time.monotonic() - t0)}")
+        self.log(f"  速さ: {speed_text(disk.size, stats)}")
         session["images"].append(out)
         if index < info.cards:
           self.wait_next(disk, session)
@@ -639,15 +661,19 @@ class CfCardWindow:
         self.log("初期化をやめました。")
         return
       verify = self.var_write_verify.get()
+      t0 = time.monotonic()
+      stats = {}
 
       def write():
         try:
-          cf_card.write_card(dev, setting, verify, self.report, lambda: self.cancel)
+          cf_card.write_card(dev, setting, verify, self.report, lambda: self.cancel, stats)
         finally:
           dev.close()
 
       def done(_):
-        self.log(f"{session['card']} 枚目を初期化しました" + ("(読み直して確かめました)" if verify else "") + "。")
+        self.log(f"{session['card']} 枚目を初期化しました" + ("(読み直して確かめました)" if verify else "")
+                 + f"。かかった時間 {duration_text(time.monotonic() - t0)}")
+        self.log(f"  速さ: {speed_text(disk.size, stats)}")
         if session["card"] < desc["カードの枚数"]:
           self.wait_next(disk, session)
         else:
@@ -660,6 +686,9 @@ class CfCardWindow:
 
   # ---------------------------------------------------------------- 変換
 
+  # 選んだイメージ・raw を、回収(拠点と記録の開始)ごとに分けて、順に変換する
+  #   いくつかの拠点の分をまとめて選べる(カードの読み込みだけを先にしておき、あとでまとめて変換する)
+  #   書く前に、全部の回収の書き出し先をまとめて確かめる。途中で中止・エラーになったら、残りの回収はしない
   def start_convert(self, fresh=True):
     if fresh:
       self.cancel = False
@@ -671,95 +700,128 @@ class CfCardWindow:
     self.log(f"--- WIN に変換します: {', '.join(p.name for p in images)}")
     self.clear_progress("変換の準備(記録の範囲を調べています)")
     lines = []
-    state = {}
 
     def prepare():
-      files, start = raw_to_win.open_inputs(images, lines.append)
-      header = files[0].header
-      offsets, gains = raw_to_win.calibration_for(header, raw_to_win.load_cal(), lines.append)
-      corrections = raw_to_win.gps_corrections(files)
-      raw_to_win.print_corrections(corrections, start, True, lines.append)
-      state.update(files=files, start=start, header=header, offsets=offsets, gains=gains, corrections=corrections)
-      return raw_to_win.record_range(files, start)
+      jobs = []
+      cal = raw_to_win.load_cal()
+      for files, start in raw_to_win.open_groups(images, lines.append):
+        header = files[0].header
+        name = self.station_name(header["station"])
+        lines.append(f"{name}({header['station']}): {', '.join(f.path.name for f in files)}")
+        offsets, gains = raw_to_win.calibration_for(header, cal, lines.append)
+        corrections = raw_to_win.gps_corrections(files)
+        raw_to_win.print_corrections(corrections, start, True, lines.append)
+        a, b = raw_to_win.record_range(files, start)
+        jobs.append(dict(files=files, start=start, header=header, offsets=offsets, gains=gains,
+                         corrections=corrections, name=name, period=f"{a:%Y-%m-%d %H:%M} 〜 {b:%Y-%m-%d %H:%M}",
+                         target=ZIPS_DIR if daily else
+                         SOURCE_ZIPS_DIR / raw_to_win.source_zip_name(header["station"], name, files, start)))
+      return jobs
 
-    def prepared(span):
+    def stop(text="変換をやめました。"):
+      self.log(text)
+      self.lbl_progress.configure(text="")
+
+    def prepared(jobs):
       for line in lines:
         self.log(line)
       if self.cancel:
-        self.log("中止しました。")
-        self.lbl_progress.configure(text="")
-        return
-      header = state["header"]
-      name = self.station_name(header["station"])
-      a, b = span
-      period = f"{a:%Y-%m-%d %H:%M} 〜 {b:%Y-%m-%d %H:%M}"
+        return stop("中止しました。")
+      plan = "\n".join(f"  {j['name']}({j['header']['station']}): {j['period']}" for j in jobs)
       if daily:
-        if not messagebox.askyesno("CF カード", f"{name}({header['station']})の {period} の WIN を、\n"
-                                   f"{ZIPS_DIR} の日ごとの ZIP に書き足します。\n\n"
-                                   "UsuMantenViewer を開いていたら、先に閉じてください。続けますか?"):
-          self.log("変換をやめました。")
-          self.lbl_progress.configure(text="")
-          return
-        writer = raw_to_win.DailyZipWriter(ZIPS_DIR)
-        target = ZIPS_DIR
+        ok = messagebox.askyesno("CF カード", f"次の WIN を、\n{ZIPS_DIR} の日ごとの ZIP に書き足します。\n\n{plan}\n\n"
+                                 "UsuMantenViewer を開いていたら、先に閉じてください。続けますか?")
       else:
-        target = SOURCE_ZIPS_DIR / raw_to_win.source_zip_name(header["station"], name, state["files"], state["start"])
-        if not target.exists() and not messagebox.askyesno(
-            "CF カード", f"{name}({header['station']})の {period} の WIN を、拠点ごとの ZIP\n"
-            f"{target}\nに書きます。続けますか?"):
-          self.log("変換をやめました。")
-          self.lbl_progress.configure(text="")
-          return
-        if target.exists():
-          if not messagebox.askyesno("CF カード", f"{target.name} はもうあります。上書きしますか?",
-                                     default=messagebox.NO):
-            self.log("変換をやめました。")
-            self.lbl_progress.configure(text="")
-            return
-          target.unlink()
-        writer = raw_to_win.ZipWriter(target, header["station"])
-      self.log(f"{period} を {target} に書いています...")
-      self.lbl_progress.configure(text="変換(全体の 0%)")
-      self.convert(state, writer, target, daily)
+        ok = messagebox.askyesno("CF カード", "次の WIN を、拠点ごとの ZIP に書きます。\n\n"
+                                 + "\n".join(f"{p}\n    → {j['target']}" for p, j in zip(plan.split("\n"), jobs))
+                                 + "\n\n続けますか?")
+        exist = [j["target"] for j in jobs if j["target"].exists()]
+        if ok and exist:
+          ok = messagebox.askyesno("CF カード", "次の ZIP はもうあります。上書きしますか?\n\n"
+                                   + "\n".join(p.name for p in exist), default=messagebox.NO)
+      if not ok:
+        return stop()
+      self.convert_jobs(jobs, daily)
     self.run(prepare, prepared, lambda: [self.log(line) for line in lines])
 
-  def convert(self, s, writer, target, daily):
-    lines = []
+  # 回収ごとに順に変換する(1 つ終わったら次)
+  def convert_jobs(self, jobs, daily):
+    t_all = time.monotonic()
+    appended = set()   # 日ごとの ZIP に書き足した時間(全部の回収の分)
+    new_days = set()   # この回で新しくできた日(あとの回収がその日に書いても、前からある日とはしない)
+    added = False
 
-    def progress(done, total):
-      if self.cancel:
-        raise Cancelled()
-      self.report(done, total, "変換")
-
-    def work():
-      return raw_to_win.convert(s["files"], s["start"], s["header"], s["offsets"], s["gains"], writer,
-                                s["corrections"], progress, lines.append)
-
-    def done(w):
-      for line in lines:
-        self.log(line)
-      self.log(f"変換しました: WIN ファイル {w.count} 個 → {target}")
+    def finish():
       if daily:
-        raw_to_win.print_daily_result(w, self.log)
-        if w.appended:
-          stale = repackage_to_daily_zip.stale_caches(set().union(*w.appended.values()))
+        if appended:
+          stale = repackage_to_daily_zip.stale_caches(appended)
           if stale:
             self.log("※ 書き足した日について、アプリが前の ZIP から作った次の結果は古いまま使われます。"
                      "アプリを閉じて、消してください:")
             for p in stale:
               self.log(f"    {p}{'/' if p.is_dir() else ''}")
           self.log("※ 地震の候補の検出は、書き足した日を含めて探し直してください。")
-        if w.added:
+        if added:
           self.log("新しくできた日・書き足した日の ZIP は、Googleドライブのフォルダに保存してください。")
+      if len(jobs) > 1:
+        self.log(f"--- {len(jobs)} 個の回収を変換しました。かかった時間(全体) {duration_text(time.monotonic() - t_all)}")
       self.lbl_progress.configure(text="変換が終わりました")
 
-    def failed():
-      for line in lines:
-        self.log(line)
-      if daily and writer.added:
-        self.log(f"※ 書き終えた日の ZIP はそのまま残っています: {', '.join(sorted(writer.added))}"
-                 "(もう一度変換すると、残りの分だけを書きます)")
-    self.run(work, done, failed)
+    def start(i):
+      if i == len(jobs):
+        return finish()
+      j = jobs[i]
+      if self.cancel:
+        self.log("中止しました。")
+        self.lbl_progress.configure(text="")
+        return
+      stage = f"変換 {j['name']}" + (f"({i + 1}/{len(jobs)})" if len(jobs) > 1 else "")
+      if daily:
+        writer = raw_to_win.DailyZipWriter(ZIPS_DIR)
+      else:
+        if j["target"].exists():
+          j["target"].unlink()
+        writer = raw_to_win.ZipWriter(j["target"], j["header"]["station"])
+      self.log(f"{j['name']} の {j['period']} を {j['target']} に書いています...")
+      self.clear_progress(f"{stage}(全体の 0%)")
+      lines = []
+      t0 = time.monotonic()
+
+      def progress(done, total):
+        if self.cancel:
+          raise Cancelled()
+        self.report(done, total, stage)
+
+      def work():
+        return raw_to_win.convert(j["files"], j["start"], j["header"], j["offsets"], j["gains"], writer,
+                                  j["corrections"], progress, lines.append)
+
+      def done(w):
+        nonlocal added
+        for line in lines:
+          self.log(line)
+        self.log(f"変換しました: {j['name']} の WIN ファイル {w.count} 個 → {j['target']}。"
+                 f"かかった時間 {duration_text(time.monotonic() - t0)}")
+        if daily:
+          for d in new_days & set(w.appended):
+            del w.appended[d]
+          new_days.update(d for d in w.added if d not in w.appended)
+          raw_to_win.print_daily_result(w, self.log)
+          appended.update(*w.appended.values())
+          added = added or bool(w.added)
+        start(i + 1)
+
+      def failed():
+        for line in lines:
+          self.log(line)
+        if daily and writer.added:
+          self.log(f"※ {j['name']} の書き終えた日の ZIP はそのまま残っています: {', '.join(sorted(writer.added))}"
+                   "(もう一度変換すると、残りの分だけを書きます)")
+        rest = [x["name"] for x in jobs[i + 1:]]
+        if rest:
+          self.log(f"※ 残りの {', '.join(rest)} は変換していません。")
+      self.run(work, done, failed)
+    start(0)
 
 
 def main():

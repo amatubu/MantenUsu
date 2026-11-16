@@ -42,8 +42,9 @@ def make_g(start="20060422025241"):
 
 
 # 通し番号 first から、frames 個のフレームを、1 レコード per フレーム数で並べた raw を書く
-def write_raw(path, v, first=0, per=140, card=1, gap_after=None, gap=0):
-  recs = [make_header(card=card), make_g()]
+def write_raw(path, v, first=0, per=140, card=1, gap_after=None, gap=0, station="0970355225",
+              start="20060422025241"):
+  recs = [make_header(station, card), make_g(start)]
   idx = first
   for a in range(0, len(v), per):
     if gap_after is not None and a == gap_after:
@@ -322,3 +323,24 @@ def test_convert_stopped_leaves_no_partial_zip(tmp_path, monkeypatch):
   with pytest.raises(KeyboardInterrupt):
     rw.convert(files, start, header, offs, gains, rw.DailyZipWriter(daily), progress=stop)
   assert sorted(p.name for p in tmp_path.iterdir()) == ["x_1.raw"]
+
+
+# いくつかの拠点・回収の分は、回収ごとに分ける(カードの順に並べる)
+def test_open_groups_by_station_and_start(tmp_path):
+  v = np.zeros((500, 3), np.int64)
+  write_raw(tmp_path / "a_2.raw", v, first=500, card=2)
+  write_raw(tmp_path / "a_1.raw", v, card=1)
+  write_raw(tmp_path / "b_1.raw", v, station="1070432003")
+  write_raw(tmp_path / "c_1.raw", v, start="20060501000000")
+  groups = rw.open_groups([tmp_path / n for n in ("b_1.raw", "a_2.raw", "c_1.raw", "a_1.raw")])
+  assert [[f.path.name for f in fs] for fs, _ in groups] == [["a_1.raw", "a_2.raw"], ["c_1.raw"], ["b_1.raw"]]
+  assert groups[0][1] < groups[1][1]
+  assert [fs[0].header["station"] for fs, _ in groups] == ["0970355225", "0970355225", "1070432003"]
+
+
+def test_open_groups_rejects_same_card_twice(tmp_path):
+  v = np.zeros((500, 3), np.int64)
+  write_raw(tmp_path / "a.raw", v)
+  write_raw(tmp_path / "b.raw", v)
+  with pytest.raises(rw.RawError, match="1 枚目が 2 つ"):
+    rw.open_groups([tmp_path / "a.raw", tmp_path / "b.raw"])

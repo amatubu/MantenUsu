@@ -188,47 +188,53 @@ class RawFile:
 # 'W' レコードをまとめて読む(numpy で、レコードの間はまとめて計算する)
 #   recs ... (m, 1024) の uint8
 #   返り値: (通し番号 (m,), フレームの数 (m,), 値 V (フレームの合計, 3) の int32, 粗い記録か (フレームの合計,))
+#   フレームの長さ(4 か 7 バイト)は前のフレームを読まないと決まらないので、まずフレームの位置だけを順に求め、
+#   値はあとでまとめて戻す。レコードは DECODE_BLOCK 個ずつ(大きいとメモリの読み書きで遅くなる)
+DECODE_BLOCK = 512
+
+
 def decode_w(recs, rec_numbers=None):
   recs = np.asarray(recs)
   m = len(recs)
+  if m > DECODE_BLOCK:
+    parts = [decode_w(recs[a:a + DECODE_BLOCK], None if rec_numbers is None else rec_numbers[a:a + DECODE_BLOCK])
+             for a in range(0, m, DECODE_BLOCK)]
+    return tuple(np.concatenate(x) for x in zip(*parts))
   n = (recs[:, 4].astype(np.int64) << 8) | recs[:, 5]
   idx = ((recs[:, 6].astype(np.int64) << 24) | (recs[:, 7].astype(np.int64) << 16)
          | (recs[:, 8].astype(np.int64) << 8) | recs[:, 9])
   maxn = int(n.max()) if m else 0
-  out = np.zeros((m, maxn, 3), np.int32)
-  coarse = np.zeros((m, maxn), bool)
-  pos = np.full(m, 16, np.int64)
-  rows = np.arange(m)
-  r16 = recs.astype(np.int32)
+  # レコードを 1 列に並べ、それぞれの後ろに余白(0)を付ける(はみ出したフレームを読んでも、隣のレコードに届かない)
+  width = RECORD + 8
+  pad = np.zeros((m, width), np.uint8)
+  pad[:, :RECORD] = recs
+  flat = pad.ravel()
+  first = np.arange(m, dtype=np.int32) * width
+  # 1. フレームの位置。制御バイトの 0x40 が立っていれば 7 バイト、でなければ 4 バイト。
+  #    レコードの終わりを越えたら、余白の頭に止める(そこにフレームがあれば、下で、はみ出しとして見つかる)
+  where = np.empty((maxn, m), np.int32)
+  pos, lim = first + 16, first + RECORD
   for k in range(maxn):
-    rows = rows[n[rows] > k]
-    p = pos[rows]
-    if np.any(p >= RECORD):
-      bad = rows[p >= RECORD][0]
-      where = rec_numbers[bad] if rec_numbers is not None else bad
-      raise RawError(f"レコード {where} のフレームが、レコードの外にはみ出します(壊れている?)")
-    c = r16[rows, p]
-    two = (c & 0x40) != 0                        # 値が 2 バイト
-    rough = (c & 0x80) == 0                      # 粗い記録(大きな揺れ)は 6 ビット上
-    shift = np.where(rough, COARSE_SHIFT, 0)
-    coarse[rows, k] = rough
-    over = p + np.where(two, 7, 4) > RECORD
-    if np.any(over):
-      bad = rows[over][0]
-      where = rec_numbers[bad] if rec_numbers is not None else bad
-      raise RawError(f"レコード {where} のフレームが、レコードの外にはみ出します(壊れている?)")
-    for j in range(3):
-      b1 = r16[rows, p + 1 + j]                  # 1 バイトのとき
-      v1 = np.where(b1 >= 128, b1 - 256, b1)
-      hi = r16[rows, np.minimum(p + 1 + 2 * j, RECORD - 1)]
-      lo = r16[rows, np.minimum(p + 2 + 2 * j, RECORD - 1)]
-      v2 = (hi << 8) | lo                        # 2 バイトのとき
-      v2 = np.where(v2 >= 32768, v2 - 65536, v2)
-      v = np.where(two, v2, v1)
-      out[rows, k, j] = (4 * v + ((c >> (2 * j)) & 3)) << shift
-    pos[rows] = p + np.where(two, 7, 4)
+    where[k] = pos
+    pos = np.minimum(pos + 4 + 3 * ((flat[pos] >> 6) & 1), lim)
   valid = np.arange(maxn)[None, :] < n[:, None]
-  return idx, n, out[valid], coarse[valid]
+  q = where.T[valid]                     # 本当にあるフレームの位置(レコードの順、レコードの中はフレームの順)
+  # 2. 値をまとめて戻す
+  c = flat[q].astype(np.int32)
+  two = (c & 0x40) != 0                  # 値が 2 バイト
+  over = q - first[q // width] + np.where(two, 7, 4) > RECORD
+  if np.any(over):
+    bad = int(q[over][0]) // width
+    rec = rec_numbers[bad] if rec_numbers is not None else bad
+    raise RawError(f"レコード {rec} のフレームが、レコードの外にはみ出します(壊れている?)")
+  b = flat[q[:, None] + np.arange(1, 7, dtype=np.int32)]
+  v1 = b[:, 0:3].view(np.int8).astype(np.int32)                            # 1 バイトのとき
+  v2 = ((b[:, 0:6:2].astype(np.uint16) << 8) | b[:, 1:6:2]).view(np.int16).astype(np.int32)   # 2 バイトのとき
+  v = np.where(two[:, None], v2, v1)
+  rough = (c & 0x80) == 0                # 粗い記録(大きな揺れ)は 6 ビット上
+  low = (c[:, None] >> np.array([0, 2, 4], np.int32)) & 3
+  out = (4 * v + low) << np.where(rough, COARSE_SHIFT, 0)[:, None]
+  return idx, n, out.astype(np.int32), rough
 
 
 # 入力ファイル(1回の回収の分)の波形を、続いている区間ごとに順に返す
@@ -585,6 +591,33 @@ def open_inputs(paths, report=print):
                    + ", ".join(f"{t:%Y-%m-%d %H:%M:%S}" for t in sorted(starts)))
   return files, starts.pop()
 
+
+
+# いくつかの拠点・回収の分をまとめて開き、回収(拠点と記録の開始時刻)ごとに分ける
+#   返り値: [(files, start)](拠点ID・記録の開始の順)。files は open_inputs と同じく、カードの順
+#   GPS のレコードが無いファイルは、同じ拠点の回収が 1 つだけならそこに入れる(決められなければエラー)
+def open_groups(paths, report=print):
+  files = [RawFile(p) for p in paths]
+  groups = {}
+  for f in files:
+    if f.start is not None:
+      groups.setdefault((f.header["station"], f.start), []).append(f)
+  for f in files:
+    if f.start is None:
+      keys = [k for k in groups if k[0] == f.header["station"]]
+      if len(keys) != 1:
+        raise RawError(f"{f.path.name}: 記録の開始時刻(GPS のレコード)が無く、どの回収の分か決められません")
+      groups[keys[0]].append(f)
+  out = []
+  for key in sorted(groups):
+    fs = sorted(groups[key], key=lambda f: f.first_idx)
+    seen = {}
+    for f in fs:
+      if f.header["card"] in seen:
+        raise RawError(f"同じ回収の {f.header['card']} 枚目が 2 つあります: {seen[f.header['card']].path.name}, {f.path.name}")
+      seen[f.header["card"]] = f
+    out.append((fs, key[1]))
+  return out
 
 def print_info(files, start, report=print):
   h = files[0].header

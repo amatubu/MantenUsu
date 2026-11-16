@@ -18,6 +18,7 @@ import plistlib
 import re
 import socket
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -234,12 +235,15 @@ def find_image(head, folder):
 
 # デバイスの全部を out に書き、SHA-256 を返す。verify なら、もう一度読んで同じか確かめる
 #   progress(済んだバイト数, 全体のバイト数, 段階の名前) を呼ぶ。cancelled() が真なら Cancelled を出す
-def read_card(dev, out, verify=True, progress=None, cancelled=None):
+#   stats ... 辞書を渡すと、段階ごとにかかった秒を入れる({"読み込み": 秒, "確認": 秒})
+def read_card(dev, out, verify=True, progress=None, cancelled=None, stats=None):
+  stats = {} if stats is None else stats
   out = Path(out)
   tmp = out.with_name(out.name + ".part")
   total = dev.size * (2 if verify else 1)
   sha = hashlib.sha256()
   try:
+    t0 = time.monotonic()
     with open(tmp, "wb") as f:
       for off in range(0, dev.size, CHUNK):
         _check(cancelled)
@@ -248,13 +252,16 @@ def read_card(dev, out, verify=True, progress=None, cancelled=None):
         sha.update(b)
         _report(progress, off + len(b), total, "読み込み")
     digest = sha.hexdigest()
+    stats["読み込み"] = time.monotonic() - t0
     if verify:
+      t0 = time.monotonic()
       sha2 = hashlib.sha256()
       for off in range(0, dev.size, CHUNK):
         _check(cancelled)
         b = dev.pread(min(CHUNK, dev.size - off), off)
         sha2.update(b)
         _report(progress, dev.size + off + len(b), total, "確認(もう一度読む)")
+      stats["確認"] = time.monotonic() - t0
       if sha2.hexdigest() != digest:
         raise CardError("2 回読んだ中身が違います(カードかリーダーの不調?)。イメージは保存しません")
     tmp.replace(out)
@@ -295,12 +302,15 @@ def record_start(dev, limit=64 << 20):
 # ---------------------------------------------------------------- 初期化する
 
 # 先頭に setting(1 KB)、残りを 0xFF で書き、読み直して確かめる
-def write_card(dev, setting, verify=True, progress=None, cancelled=None):
+#   stats ... 辞書を渡すと、段階ごとにかかった秒を入れる({"書き込み": 秒, "確認": 秒})
+def write_card(dev, setting, verify=True, progress=None, cancelled=None, stats=None):
+  stats = {} if stats is None else stats
   if len(setting) != SETTING_SIZE:
     raise CardError("設定値は 1024 バイトのはずです")
   total = dev.size * (2 if verify else 1)
   fill = bytes([FILL]) * CHUNK
   first = setting + fill[:CHUNK - SETTING_SIZE]
+  t0 = time.monotonic()
   for off in range(0, dev.size, CHUNK):
     _check(cancelled)
     n = min(CHUNK, dev.size - off)
@@ -310,13 +320,16 @@ def write_card(dev, setting, verify=True, progress=None, cancelled=None):
     os.fsync(dev.fd)
   except OSError:
     pass   # raw デバイスでは使えないことがある(書き込みはキャッシュを通らない)
+  stats["書き込み"] = time.monotonic() - t0
   if verify:
+    t0 = time.monotonic()
     for off in range(0, dev.size, CHUNK):
       _check(cancelled)
       n = min(CHUNK, dev.size - off)
       if dev.pread(n, off) != (first if off == 0 else fill)[:n]:
         raise CardError(f"読み直した中身が書いたものと違います({off:,} バイト目から)")
       _report(progress, dev.size + off + n, total, "確認(読み直し)")
+    stats["確認"] = time.monotonic() - t0
 
 
 def _check(cancelled):

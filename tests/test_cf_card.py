@@ -46,7 +46,9 @@ def test_read_card(tmp_path):
   out = tmp_path / "bamba_20261115out_1.img"
   seen = []
   with device(card) as dev:
-    digest = cf_card.read_card(dev, out, verify=True, progress=lambda d, t, s: seen.append((d, t, s)))
+    stats = {}
+    digest = cf_card.read_card(dev, out, verify=True, progress=lambda d, t, s: seen.append((d, t, s)), stats=stats)
+  assert set(stats) == {"読み込み", "確認"} and all(v >= 0 for v in stats.values())
   assert out.read_bytes() == data
   assert digest == hashlib.sha256(data).hexdigest()
   assert (tmp_path / (out.name + ".sha256")).read_text() == f"{digest}  {out.name}\n"
@@ -85,7 +87,9 @@ def test_write_card(tmp_path):
   recorded_card(card)
   s = setting()
   with device(card, write=True) as dev:
-    cf_card.write_card(dev, s, verify=True)
+    stats = {}
+    cf_card.write_card(dev, s, verify=True, stats=stats)
+  assert set(stats) == {"書き込み", "確認"}
   data = card.read_bytes()
   assert data[:1024] == s and set(data[1024:]) == {0xFF} and len(data) == SIZE
   # make_cf_image のイメージと同じ
@@ -237,3 +241,4 @@ def test_record_start(tmp_path):
     card.write_bytes((setting() + body).ljust(SIZE, b"\xff"))
     with device(card) as dev:
       assert cf_card.record_start(dev) == want, name
+
