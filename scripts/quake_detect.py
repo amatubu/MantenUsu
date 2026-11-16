@@ -338,6 +338,14 @@ def ratios_between(info, t0, t1):
   ratios = {nm: float(np.nanmax(seg[i])) for i, nm in enumerate(info["names"]) if np.isfinite(seg[i]).any()}
   return len(ratios), ratios
 
+# かかった時間の表示。例: 8.3秒 / 12分34秒 / 1時間02分05秒
+def format_duration(seconds):
+  if seconds < 60:
+    return f"{seconds:.1f}秒"
+  s = int(round(seconds))
+  h, m, s = s // 3600, s // 60 % 60, s % 60
+  return f"{h}時間{m:02d}分{s:02d}秒" if h else f"{m}分{s:02d}秒"
+
 # 時刻の表示(秒まで)
 def hhmmss(t):
   return t.strftime("%H:%M:%S")

@@ -66,10 +66,10 @@ def load_filtered(t0, t1):
   with tempfile.TemporaryDirectory(prefix="UsuMantenViewer_tm_") as work:
     work = Path(work)
     zips = win_pipeline.find_zips(app_paths.ZIPS_DIR, win_pipeline.target_dates(t0, t1))
-    # WIN ファイルは1分ずつなので、t0 を含む分のファイルから取り出す
-    if win_pipeline.extract_wins_from_zips(zips, t0.replace(second=0, microsecond=0), t1, work) == 0:
+    # WIN ファイルは1分ずつなので、t0 を含む分のファイルから変換する
+    if win_pipeline.zips_to_sacs(zips, t0.replace(second=0, microsecond=0), t1, work,
+                                 app_paths.TOOLS_DIR, app_paths.ETC_DIR) == 0:
       return {}, t0
-    win_pipeline.convert_wins_to_sacs(work, app_paths.TOOLS_DIR, app_paths.ETC_DIR)
     out = {}
     npts = int(round((t1 - t0).total_seconds() * SAMPLING_RATE))
     for path in win_pipeline.find_sacs(work):
@@ -106,9 +106,9 @@ def build_templates():
     with tempfile.TemporaryDirectory(prefix="UsuMantenViewer_tm_") as work:
       work = Path(work)
       zips = win_pipeline.find_zips(app_paths.ZIPS_DIR, win_pipeline.target_dates(hour, hour + timedelta(hours=1)))
-      if win_pipeline.extract_wins_from_zips(zips, hour, hour + timedelta(hours=1), work) == 0:
+      if win_pipeline.zips_to_sacs(zips, hour, hour + timedelta(hours=1), work,
+                                   app_paths.TOOLS_DIR, app_paths.ETC_DIR) == 0:
         return None
-      win_pipeline.convert_wins_to_sacs(work, app_paths.TOOLS_DIR, app_paths.ETC_DIR)
       st = Stream()
       for p in win_pipeline.find_sacs(work):
         st += read(str(p))

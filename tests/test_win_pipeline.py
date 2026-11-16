@@ -1,4 +1,4 @@
-# win_pipeline.py の、外部ツールを使わない部分(日付の扱い・ファイルの整理)のテスト
+# win_pipeline.py の、外部ツールを使わない部分(日付の扱い・ファイルの整理・ZIPの中のWINファイルの集め方)のテスト
 #   変換そのもの(win2sac_32・wchch_32)は test_realdata.py で、手元のデータがあるときだけ確かめる
 import sys
 from datetime import datetime, timedelta
@@ -116,3 +116,80 @@ def test_time_chunks_split_by_clock_time():
   assert [len(c) for c in chunks] == [103, 120, 60]   # 10:00〜11:59(欠測で103個)・12:00〜13:59・14:00〜14:59
   assert sum(chunks, []) == [name(m) for m in minutes]
   assert len(win_pipeline.time_chunks([name(m) for m in range(120)])) == 1
+
+
+def make_zip(path, entries):
+  import zipfile
+  with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+    for name, data in entries.items():
+      zf.writestr(name, data)
+  return path
+
+
+def test_zip_wins_picks_period_and_groups_by_station(tmp_path):
+  z1 = make_zip(tmp_path / "260826.zip", {
+    "1070432002/260826/1070432002_2608260859.win": b"b",
+    "1070432002/260826/1070432002_2608260858.win": b"a",
+    "1070432002/260826/1070432002_2608260900.win": b"c",
+    "1070432002/260826/1070432002_2608260901.win": b"d",   # 期間の外
+    "0970355225/260826/0970355225_2608260858.win": b"x",
+    "1070432002/260826/._1070432002_2608260858.win": b"?",  # Mac の付随ファイル
+    "1070432002/260826/memo.txt": b"?",
+  })
+  # 同じ名前のファイルが後の ZIP にもあれば、後のものを使う(取り出して上書きしたときと同じ)
+  z2 = make_zip(tmp_path / "260826_2.zip", {"0970355225/260826/0970355225_2608260858.win": b"y"})
+  items = win_pipeline.zip_wins([z1, z2], datetime(2026, 8, 26, 8, 58), datetime(2026, 8, 26, 9, 0))
+  assert sorted(items) == ["0970355225", "1070432002"]
+  assert [Path(n).name for _t, _z, n in items["1070432002"]] == [
+    "1070432002_2608260858.win", "1070432002_2608260859.win", "1070432002_2608260900.win"]
+  assert [(t, z) for t, z, _n in items["0970355225"]] == [(datetime(2026, 8, 26, 8, 58), z2)]
+
+
+def test_zip_index_rereads_changed_zip(tmp_path):
+  z = make_zip(tmp_path / "260826.zip", {"1070432002/260826/1070432002_2608260858.win": b"a"})
+  period = (datetime(2026, 8, 26, 8, 0), datetime(2026, 8, 26, 9, 59))
+  assert len(win_pipeline.zip_wins([z], *period)["1070432002"]) == 1
+  # 書き足した ZIP(大きさが変わる)は読み直す
+  make_zip(z, {"1070432002/260826/1070432002_2608260858.win": b"a",
+               "1070432002/260826/1070432002_2608260930.win": b"bb"})
+  assert len(win_pipeline.zip_wins([z], *period)["1070432002"]) == 2
+
+
+def fake_tools(tmp_path, monkeypatch):
+  # 外部ツールの代わりに、つないだ WIN ファイルをそのまま「SAC」として書く
+  tools, etc = tmp_path / "tools", tmp_path / "etc"
+  tools.mkdir(); etc.mkdir()
+  touch(win_pipeline.tool_path(tools, "win2sac_32"))
+  touch(etc / "win.prm"); touch(etc / win_pipeline.CHANNEL_TABLE)
+  def run_win2sac(_w, _p, target_win, station_id, sac_name, _e):
+    (target_win.parent / f"St.U.{sac_name}").write_bytes(target_win.read_bytes())
+  monkeypatch.setattr(win_pipeline, "run_win2sac", run_win2sac)
+  return tools, etc
+
+
+def test_zips_to_sacs_combines_each_station(tmp_path, monkeypatch):
+  tools, etc = fake_tools(tmp_path, monkeypatch)
+  z = make_zip(tmp_path / "260826.zip", {
+    "1070432002/260826/1070432002_2608260859.win": b"b",
+    "1070432002/260826/1070432002_2608260858.win": b"a",
+    "0970355243/260826/0970355243_2608260858.win": b"x",
+  })
+  out = tmp_path / "out"
+  count = win_pipeline.zips_to_sacs([z], datetime(2026, 8, 26, 8, 0), datetime(2026, 8, 26, 9, 0), out, tools, etc)
+  assert count == 3
+  assert (out / "St.U.1070432002_sac").read_bytes() == b"ab"
+  assert (out / "St.U.0970355243_sac").read_bytes() == b"x"
+  assert (out / win_pipeline.CHANNEL_TABLE).exists()
+  # 期間に WIN ファイルが無いときは何もしない
+  assert win_pipeline.zips_to_sacs([z], datetime(2026, 8, 27), datetime(2026, 8, 27, 1), tmp_path / "none", tools, etc) == 0
+  assert not (tmp_path / "none").exists()
+
+
+def test_zips_to_sacs_raises_station_errors(tmp_path, monkeypatch):
+  tools, etc = fake_tools(tmp_path, monkeypatch)
+  def broken(*_a):
+    raise RuntimeError("broken")
+  monkeypatch.setattr(win_pipeline, "run_win2sac", broken)
+  z = make_zip(tmp_path / "260826.zip", {"1070432002/260826/1070432002_2608260858.win": b"a"})
+  with pytest.raises(RuntimeError):
+    win_pipeline.zips_to_sacs([z], datetime(2026, 8, 26, 8), datetime(2026, 8, 26, 9), tmp_path / "out", tools, etc)

@@ -1,11 +1,14 @@
 # win_pipeline.py
 # WINファイルの抽出(日ごとのZIPから)・拠点ごとの結合・SACファイルへの変換
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 
 from log_common import log_message
@@ -160,6 +163,92 @@ def extract_wins_from_zips(zip_paths, start_dt, end_dt, dest_dir):
   return extracted_count
 
 
+# ZIPの中のWINファイルの一覧(日時の順)。ZIPごとに覚えておき、同じZIPは読み直さない
+#   1時間ずつ変換するとき(地震の候補の検出など)、同じ日のZIP(5760個のファイル)の名前を毎回調べ直さないため
+#   ZIPが書き換えられたとき(更新日時・大きさが変わったとき)は読み直す
+#   戻り値 ... ([日時, ...], [ZIP内のパス, ...])
+ZIP_INDEX_CACHE_SIZE = 8   # 覚えておくZIPの数(古いものから忘れる)
+_zip_index_cache = {}
+_zip_index_lock = threading.Lock()
+
+def zip_index(zip_path):
+  st = zip_path.stat()
+  key = (str(zip_path), st.st_mtime_ns, st.st_size)
+  with _zip_index_lock:
+    index = _zip_index_cache.get(key)
+  if index is not None:
+    return index
+  entries = []
+  with zipfile.ZipFile(zip_path, "r") as zf:
+    for internal_path in zf.namelist():
+      if Path(internal_path).name.startswith(APPLEDOUBLE_PREFIX):
+        continue
+      f_dt = win_datetime(internal_path)
+      if f_dt is not None:
+        entries.append((f_dt, internal_path))
+  entries.sort()
+  index = ([dt for dt, _ in entries], [name for _, name in entries])
+  with _zip_index_lock:
+    for old in [k for k in _zip_index_cache if k[0] == key[0]]:
+      del _zip_index_cache[old]
+    while len(_zip_index_cache) >= ZIP_INDEX_CACHE_SIZE:
+      del _zip_index_cache[next(iter(_zip_index_cache))]
+    _zip_index_cache[key] = index
+  return index
+
+# ZIPの中の、期間内のWINファイルを拠点IDごとに集める(取り出さない)
+#   同じ名前のファイルが複数のZIPにあるときは、後のZIPのものを使う(取り出して上書きしたときと同じ)
+#   戻り値 ... {拠点ID: [(日時, ZIPのパス, ZIP内のパス), ...](名前の順 = 古い順)}
+def zip_wins(zip_paths, start_dt, end_dt):
+  by_name = {}
+  for zip_path in zip_paths:
+    try:
+      dts, names = zip_index(zip_path)
+    except Exception as e:
+      log_message(f"ZIP読み込みエラー ({zip_path.name}): {e}")
+      continue
+    for i in range(bisect_left(dts, start_dt), bisect_right(dts, end_dt)):
+      by_name[Path(names[i]).name] = (dts[i], zip_path, names[i])
+  station_items = defaultdict(list)
+  for name in sorted(by_name):
+    parts = name.split("_")
+    if len(parts) >= 2:
+      station_items[parts[0]].append(by_name[name])
+  return dict(station_items)
+
+# ZIPの中の期間内のWINファイルを、取り出さずに拠点ごとにつないで SACファイルに変換する(SACファイルは dest_dir に出力)
+#   1分ごとのWINファイルを書き出さないので速い(Mac では、書いたばかりのファイルを初めて開くのに 4〜5 ms かかり、
+#   1時間分(4拠点で約250個)を書き出してからつなぐと、それだけで1秒ほどかかるため)
+#   必要なツール・設定ファイルが無いときは PipelineError
+#   戻り値 ... 使ったWINファイルの数(0 のときは何もしない)
+def zips_to_sacs(zip_paths, start_dt, end_dt, dest_dir, tools_dir, etc_dir):
+  station_items = zip_wins(zip_paths, start_dt, end_dt)
+  count = sum(len(items) for items in station_items.values())
+  if count == 0:
+    return 0
+  dest_dir.mkdir(parents=True, exist_ok=True)
+  # ZIPは1回だけ開き、拠点ごとの処理(別スレッド)で使い回す(読むときは ZIPごとの鍵をかける)
+  zip_files, locks = {}, {}
+  try:
+    for items in station_items.values():
+      for _dt, zip_path, _name in items:
+        if zip_path not in zip_files:
+          zip_files[zip_path] = zipfile.ZipFile(zip_path, "r")
+          locks[zip_path] = threading.Lock()
+
+    def write_combined(items, combined_win):
+      with open(combined_win, "wb") as out:
+        for _dt, zip_path, internal_path in items:
+          with locks[zip_path]:
+            data = zip_files[zip_path].read(internal_path)
+          out.write(data)
+
+    convert_stations(station_items, write_combined, lambda item: item[0], dest_dir, tools_dir, etc_dir)
+  finally:
+    for zf in zip_files.values():
+      zf.close()
+  return count
+
 # 結合前のWINファイルを拠点IDごとに集める
 #   ファイル名の例: 1070432002_2608260858.win (拠点ID_年月日時分.win)
 #   戻り値 ... {拠点ID: WINファイルのリスト(古い順)}
@@ -208,6 +297,14 @@ def correct_channels(combined_win, station_id, tools_dir, etc_dir):
 #   etc_dir   ... win.prm やチャンネル定義ファイルの格納場所
 #   必要なツール・設定ファイルが無いときは PipelineError
 def convert_wins_to_sacs(dest_dir, tools_dir, etc_dir):
+  convert_stations(group_raw_wins(dest_dir), combine_wins, lambda f: win_datetime(f.name),
+                   dest_dir, tools_dir, etc_dir)
+
+# 拠点ごとに WINファイルをつないで SACファイルに変換する(拠点ごとに別スレッドで、同時に変換する)
+#   station_items  ... {拠点ID: [WINファイル(またはZIPの中のWINファイル), ...](古い順)}
+#   write_combined ... write_combined(WINファイルのリスト, 出力するファイル) で、つないだWINファイルを書く関数
+#   when           ... WINファイルの日時を返す関数(time_chunks で分けるのに使う)
+def convert_stations(station_items, write_combined, when, dest_dir, tools_dir, etc_dir):
   # win2sac_32(WINファイルをSACファイルに変換するツール)と、そのパラメータファイル
   win2sac_path = tool_path(tools_dir, "win2sac_32")
   win_prm_path = etc_dir / "win.prm"
@@ -218,23 +315,32 @@ def convert_wins_to_sacs(dest_dir, tools_dir, etc_dir):
   manten_tbl_path = etc_dir / CHANNEL_TABLE
   shutil.copy2(manten_tbl_path, dest_dir / manten_tbl_path.name)
 
-  for station_id, files in group_raw_wins(dest_dir).items():
-    chunks = time_chunks(files)
+  def convert_station(station_id, items):
+    chunks = time_chunks(items, when)
     if len(chunks) == 1:
       combined_win = dest_dir / f"{COMBINED_PREFIX}{station_id}{WIN_SUFFIX}"
-      combine_wins(files, combined_win)
+      write_combined(items, combined_win)
       target_win = correct_channels(combined_win, station_id, tools_dir, etc_dir)
       run_win2sac(win2sac_path, win_prm_path, target_win, station_id, f"{station_id}_sac", etc_dir)
     else:
       convert_in_chunks(win2sac_path, win_prm_path, chunks, station_id, dest_dir,
-                        tools_dir, etc_dir, manten_tbl_path)
+                        tools_dir, etc_dir, manten_tbl_path, write_combined)
+
+  # 外部ツールを待つ時間がほとんどなので、スレッドで拠点の数だけ同時に動かす
+  if not station_items:
+    return
+  with ThreadPoolExecutor(max_workers=len(station_items)) as pool:
+    futures = [pool.submit(convert_station, sid, items) for sid, items in station_items.items()]
+    for future in futures:
+      future.result()   # 拠点の処理で起きたエラーはここで出す
 
 # WINファイル(古い順)を、最初のファイルの時刻から CHUNK_MINUTES 分ずつの組に分ける
+#   when   ... WINファイルの日時を返す関数(省略するとファイル名から求める)
 #   戻り値 ... [[WINファイル, ...], ...](どの組も CHUNK_MINUTES 分より短い時間に収まる)
-def time_chunks(files):
+def time_chunks(files, when=lambda f: win_datetime(f.name)):
   chunks, chunk_start = [], None
   for f in files:
-    t = win_datetime(f.name)
+    t = when(f)
     if not chunks or t is None or chunk_start is None or (t - chunk_start).total_seconds() >= CHUNK_MINUTES * 60:
       chunks.append([])
       chunk_start = t
@@ -269,8 +375,10 @@ def run_win2sac(win2sac_path, win_prm_path, target_win, station_id, sac_name, et
 # 長い期間を CHUNK_MINUTES 分ずつ作業フォルダで変換し、成分ごとに1つのSACファイルにつなぐ
 #   chunks ... time_chunks で分けたWINファイルの組
 #   出力するSACファイルの名前は、分けずに変換したときと同じ(拠点名.成分.拠点ID_sac)
+#   write_combined ... つないだWINファイルを書く関数(省略するとファイルをつなぐ。convert_stations を参照)
 def convert_in_chunks(win2sac_path, win_prm_path, chunks, station_id, dest_dir,
-                      tools_dir, etc_dir, manten_tbl_path):
+                      tools_dir, etc_dir, manten_tbl_path, write_combined=None):
+  write_combined = write_combined or combine_wins
   import obspy  # 長い期間のときだけ必要なので、ここで読み込む
 
   work_dir = dest_dir / f"{CHUNK_DIR_PREFIX}{station_id}"
@@ -280,7 +388,7 @@ def convert_in_chunks(win2sac_path, win_prm_path, chunks, station_id, dest_dir,
   try:
     for i, chunk in enumerate(chunks):
       combined_win = work_dir / f"{COMBINED_PREFIX}{station_id}{WIN_SUFFIX}"
-      combine_wins(chunk, combined_win)
+      write_combined(chunk, combined_win)
       target_win = correct_channels(combined_win, station_id, tools_dir, etc_dir)
       run_win2sac(win2sac_path, win_prm_path, target_win, station_id,
                   f"{station_id}_sac{i:03d}", etc_dir)

@@ -49,13 +49,16 @@ def parse_period(line):
 def load_period(start, end):
   dest_dir = app_paths.OUTPUT_DIR / f"{start:%Y%m%d%H%M}_{end:%Y%m%d%H%M}"
   if not win_pipeline.find_sacs(dest_dir):
-    if not win_pipeline.find_raw_wins(dest_dir):
+    if win_pipeline.find_raw_wins(dest_dir):
+      win_pipeline.convert_wins_to_sacs(dest_dir, app_paths.TOOLS_DIR, app_paths.ETC_DIR)
+    else:
       zips = win_pipeline.find_zips(app_paths.ZIPS_DIR, win_pipeline.target_dates(start, end))
       if not zips:
         log_message(f"  ZIPファイルがありません: {start:%Y-%m-%d}")
         return None
-      win_pipeline.extract_wins_from_zips(zips, start, end, dest_dir)
-    win_pipeline.convert_wins_to_sacs(dest_dir, app_paths.TOOLS_DIR, app_paths.ETC_DIR)
+      # ZIPから取り出さずに変換する。途中のWINファイル(つないだもの)は消す
+      win_pipeline.zips_to_sacs(zips, start, end, dest_dir, app_paths.TOOLS_DIR, app_paths.ETC_DIR)
+      win_pipeline.remove_wins(dest_dir)
   return obspy.read(str(dest_dir / win_pipeline.SAC_PATTERN))
 
 # 確認用の画像: 4拠点の上下動(フィルター後)を、地震の中心の前後で並べる

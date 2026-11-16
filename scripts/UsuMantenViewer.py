@@ -9,6 +9,7 @@ import warnings
 import traceback
 import re
 import tempfile
+import time
 
 import app_paths                       # matplotlib より先に読み込む(ビルドしたアプリ向けの設定のため)
 import numpy as np
@@ -214,6 +215,20 @@ warnings.filterwarnings(
 #     やること: どこに時間がかかっているか(レコードの読み取り・値の復元、1 秒ごとの WIN の組み立て(encode_second)、
 #     ZIP の圧縮)を測ってから、numpy でまとめて組み立てる・圧縮を別のスレッドやプロセスに分けるなどを考える。
 #     出力は変換ツールと 1 バイトも違わないまま(--verify で確かめる)
+# 37. テンプレートマッチング(template_match.py)をアプリに組み込む
+#     いまは TODO 31 の試作のまま、コマンドで実行している(python3 template_match.py -s 開始 -e 終了 -j 並列数)。
+#     やること: メンテナンス画面のタブにし、「地震の候補の検出」と同じように期間を入れて実行・途中で中止できるようにする
+#     (並列数、確認用の画像を作るかも選ぶ)。ひな形は、決まったファイル(usu_quakes_24.csv)ではなく、今の有珠山リスト
+#     (quake_lists.json)から作り、発破などとみられる地震(EXCLUDED_TEMPLATES)は除く。日ごとの結果
+#     (output/template_match)は使い回し、ひな形が変わった日だけ計算し直す。見つかったものは一覧(CSV)にし、
+#     地震の候補の震源の画面(⌘O)で開いて確かめ、⌘U で有珠山リストに加えられるようにする。
+#     判定を書き込んだ前の期間の一覧(detections_20250708_20260826.xlsx)は上書きしない
+# [完了]38. WIN → SAC の変換を速くする(地震の候補の検出で、1日分が約38秒から約8秒に。2026/11/10 の分をアプリで測ると 7.9 秒)
+#     1時間ごとに ZIP から1分ごとの WIN ファイルを書き出してからつないでいたが、Mac では書いたばかりのファイルを
+#     初めて開くのに 4〜5 ms かかり、1日分(約6000個)で約25秒かかっていた。ZIP の中のファイルを取り出さずに
+#     拠点ごとにつなぐようにし(win_pipeline.zips_to_sacs)、4拠点の変換を同時に動かし、ZIP の中の一覧は ZIP ごとに
+#     覚えて読み直さないようにした。できる SAC ファイルは前のやり方と同じ(1〜3時間の5つの期間で全ファイル一致)
+#     あわせて、検出のログに処理時間(全体・日ごとの RMS とそれ以外・RMS を計算した日の1日あたり、日ごとの行にもその日の時間)を出すようにした
 
 # クラス定義
 class MantenUsuSeismographApp:
@@ -869,8 +884,9 @@ class MantenUsuSeismographApp:
       return True
     return self.prepare_sacs(start_dt, end_dt, dest_dir, show_dialog)
 
-  # ZIP から WINファイルを取り出して SACファイルに変換し、dest_dir(キャッシュ)に置く
-  #   取り出しと変換は、内蔵ディスクの一時フォルダ(OS の一時フォルダ)で行い、できた SACファイルだけを dest_dir に移す
+  # ZIP の中の WINファイルを拠点ごとにつないで SACファイルに変換し、dest_dir(キャッシュ)に置く
+  #   1分ごとの WINファイルは取り出さない(win_pipeline.zips_to_sacs)
+  #   変換は、内蔵ディスクの一時フォルダ(OS の一時フォルダ)で行い、できた SACファイルだけを dest_dir に移す
   #   (データフォルダが外付けドライブ(exFAT)のとき、Mac ではファイルを1つ消すのに 40 ms ほどかかる。
   #    1時間分の WINファイル(約190個)をキャッシュの中で作って消すと、それだけで8秒ほどかかるため)
   #   前の版のキャッシュで、dest_dir に結合前の WINファイルが残っていれば、それから変換する
@@ -879,11 +895,27 @@ class MantenUsuSeismographApp:
     dest_dir.mkdir(parents=True, exist_ok=True)
     if win_pipeline.find_raw_wins(dest_dir):
       return self.convert_wins_to_sacs(dest_dir, show_dialog)
+    target_zips = self.find_target_zips(start_dt, end_dt, show_dialog)
+    if not target_zips:
+      return False
     with tempfile.TemporaryDirectory(prefix="UsuMantenViewer_") as work:
       work = Path(work)
-      if self.extract_win_files(start_dt, end_dt, work, show_dialog) == 0:
+      # ZIPから取り出さずに、拠点ごとにつないで変換する(win_pipeline.zips_to_sacs)
+      try:
+        count = win_pipeline.zips_to_sacs(target_zips, start_dt, end_dt, work, self.tools_dir, self.etc_dir)
+      except win_pipeline.PipelineError as e:
+        if show_dialog:
+          messagebox.showerror("エラー", str(e))
+        else:
+          log_message(f"     [エラー] {e}")
         return False
-      if not self.convert_wins_to_sacs(work, show_dialog):
+      # 該当するWINファイルがひとつもなかったときはエラー
+      if count == 0:
+        if show_dialog:
+          messagebox.showwarning(
+            "警告",
+            "指定範囲内に該当するWINファイルが存在しませんでした（0件抽出）。",
+          )
         return False
       win_pipeline.move_results(work, dest_dir)
     return True
@@ -971,9 +1003,9 @@ class MantenUsuSeismographApp:
       return None
     return st
 
-  # 指定期間のWINファイルをZIPから抽出する(ローカルに無い日のZIPはGoogleドライブから取得)
-  #   戻り値 ... 取り出したWINファイルの数(0なら失敗)
-  def extract_win_files(self, start_dt, end_dt, dest_dir, show_dialog=True):
+  # 指定期間のZIPファイルを探す(ローカルに無い日のZIPはGoogleドライブから取得)
+  #   戻り値 ... ZIPファイルのリスト(空なら失敗)
+  def find_target_zips(self, start_dt, end_dt, show_dialog=True):
     # Zip保存ディレクトリがなければ作成
     self.zips_root.mkdir(parents=True, exist_ok=True)
 
@@ -991,7 +1023,7 @@ class MantenUsuSeismographApp:
           downloaded = self.download_zip_from_drive(zip_filename)
         except DownloadCancelled:
           # 中止されたら、残りの日のダウンロードや抽出もやめる
-          return 0
+          return []
         if downloaded:
           log_message(f"ダウンロード完了: {zip_filename}")
         else:
@@ -1004,19 +1036,8 @@ class MantenUsuSeismographApp:
         messagebox.showwarning(
           "警告", "指定された期間に一致するZIPファイルが見つかりませんでした。"
         )
-      return 0
-
-    # 該当するWINファイルがひとつもなかったときはエラー
-    extracted_count = win_pipeline.extract_wins_from_zips(target_zips, start_dt, end_dt, dest_dir)
-    if extracted_count == 0:
-      if show_dialog:
-        messagebox.showwarning(
-          "警告",
-          "指定範囲内に該当するWINファイルが存在しませんでした（0件抽出）。",
-        )
-      return 0
-
-    return extracted_count
+      return []
+    return target_zips
 
   # WINファイルの結合とSACファイルへの変換処理
   #   戻り値 ... 成功したら True(拠点ごとの変換エラーはログに出して続行する)
@@ -1391,6 +1412,7 @@ class MantenUsuSeismographApp:
   #   (保存した RMS を計算し直すときは、output/quake_rms を削除する)
   def run_quake_detection(self, start_date=None, end_date=None, add_history=False, save_images=False,
                           overwrite=False, loose=False, cancelled=lambda: False, on_progress=None):
+    started = time.monotonic()
     zip_days = jma_hypocenter.zip_days()
     try:
       start_day = datetime.strptime(start_date, "%Y%m%d") if start_date else zip_days[0]
@@ -1415,12 +1437,14 @@ class MantenUsuSeismographApp:
     names = sorted(stations)
     rms = {nm: [] for nm in names}
     local_days = set(zip_days)
+    computed_days, computed_seconds = 0, 0.0   # RMS を計算した日の数と、かかった時間(処理時間の表示用)
     for i, day in enumerate(days):
       if cancelled():
         log_message("=== 地震の候補を探す処理を中止しました ===")
         return None
       if on_progress:
         on_progress(i + 1, len(days), "日ごとの RMS を用意しています(日)")
+      day_started = time.monotonic()
       values = quake_detect.load_rms_cache(day)
       cached = values is not None
       if not cached and day not in local_days:
@@ -1433,13 +1457,17 @@ class MantenUsuSeismographApp:
         values = quake_detect.day_rms(day, quake_detect.vertical_traces(quake_detect.merge_hours(hours)))
         if values:
           quake_detect.save_rms_cache(day, values)
+        computed_days += 1
+        computed_seconds += time.monotonic() - day_started
       present = [nm for nm in names if nm in values and np.isfinite(values[nm]).any()]
       if values or cached:
         log_message(f"  {day:%Y-%m-%d}: データのある拠点 {len(present)}({' '.join(present) or 'なし'})"
-                    + ("  [保存した RMS]" if cached else ""))
+                    + ("  [保存した RMS]" if cached else
+                       f"  [{quake_detect.format_duration(time.monotonic() - day_started)}]"))
       for nm in names:
         rms[nm].append(values.get(nm, np.full(quake_detect.WINDOWS_PER_DAY, np.nan)))
     rms = {nm: np.concatenate(v) for nm, v in rms.items()}
+    rms_seconds = time.monotonic() - started
 
     # --- 2. 地震の候補 ---
     if on_progress:
@@ -1600,6 +1628,13 @@ class MantenUsuSeismographApp:
     if add_history:
       self.add_candidates_to_history(candidates)
 
+    # --- 処理時間(全体と、RMS を計算した日の1日あたり) ---
+    total = time.monotonic() - started
+    fd = quake_detect.format_duration
+    log_message(f"処理時間: 全体 {fd(total)}(日ごとの RMS {fd(rms_seconds)}、候補の照合・解析・一覧など {fd(total - rms_seconds)})")
+    if computed_days:
+      log_message(f"  RMS を計算した日: {computed_days}日、1日あたり {fd(computed_seconds / computed_days)}"
+                  f"(保存した RMS を使った日・ZIP が無い日は除く)")
     log_message("\n=== 地震の候補を探すバッチ処理が完了しました ===")
     return candidates
 
