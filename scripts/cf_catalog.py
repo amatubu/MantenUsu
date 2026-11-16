@@ -22,6 +22,7 @@ LOG_FIELDS = ["日時", "ラベル", "したこと", "内容"]
 RECORDED = "記録あり"
 BLANK = "初期化済み"
 FOREIGN = "ロガーのカードではない"
+EMPTY = "何も書かれていない"   # 先頭が全部 0xFF(設定値も無い。ロガーで使うには初期化する)
 
 WIN_OK = "daily_zips にある"
 WIN_PART = "daily_zips に一部だけ"
@@ -92,7 +93,7 @@ def set_content(row, info, name, rng, now=None, as_station=""):
   row["確かめた日時"] = (now or datetime.now()).strftime(TIME_FMT)
   row["読み替え"] = as_station or ""
   if not info.station:
-    row.update({"状態": FOREIGN, "拠点ID": "", "拠点名": "", "枚目": "", "全枚数": ""})
+    row.update({"状態": EMPTY if getattr(info, "empty", False) else FOREIGN, "拠点ID": "", "拠点名": "", "枚目": "", "全枚数": ""})
     clear_record(row)
     return row
   row.update({"拠点ID": info.station, "拠点名": name, "全枚数": str(info.cards)})
@@ -125,7 +126,8 @@ def _station_text(row):
 # 中身を一言で(ログ・確かめるダイアログに出す)
 def describe(row):
   if row.get("状態") == RECORDED:
-    return (f"{_station_text(row)}の {row['枚目']} 枚目、{row['記録の始め']} 〜 {row['記録の終わり']}"
+    return (f"{_station_text(row)}の" + (f" {row['枚目']} 枚目、" if row.get("枚目") else "、")
+            + f"{row['記録の始め']} 〜 {row['記録の終わり']}"
             + ("(いっぱい)" if row.get("いっぱい") == "はい" else "")
             + (f"、イメージ {row['イメージ']}" if row.get("イメージ") else "")
             + (f"、{row['WIN']}" if row.get("WIN") else ""))
@@ -180,7 +182,7 @@ def reusable(row):
 def list_key(row):
   if reusable(row):
     group = 0
-  elif row.get("状態") == BLANK:
+  elif row.get("状態") in (BLANK, EMPTY):
     group = 1
   elif row.get("状態") == RECORDED:
     group = 2
@@ -193,4 +195,5 @@ def summary(rows):
   rs = list(rows.values())
   rec = [r for r in rs if r["状態"] == RECORDED]
   return (f"台帳のカード {len(rs)} 枚: 記録あり {len(rec)} 枚(うち初期化してよい {sum(map(reusable, rec))} 枚)・"
-          f"初期化済み {sum(r['状態'] == BLANK for r in rs)} 枚")
+          f"初期化済み {sum(r['状態'] == BLANK for r in rs)} 枚"
+          + (f"・何も書かれていない {n} 枚" if (n := sum(r['状態'] == EMPTY for r in rs)) else ""))

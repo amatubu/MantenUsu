@@ -171,6 +171,30 @@ def save_features_cache(cache):
   tmp.write_text(json.dumps(cache, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
   tmp.replace(FEATURES_CACHE_FILE)
 
+# 期間の日のキャッシュを消す(daily_zips に書き足したあと、その日を作り直すため)
+#   消すもの: 1時間ごとの SAC(output/stack_*)・期間の SAC(output/<開始>_<終了>)・RMS(quake_rms)
+#   (repackage_to_daily_zip.stale_caches と同じ)と、候補の解析結果(quake_features)のうち期間に始まる候補の分
+#   dry_run なら消さずに数えるだけ。戻り値 ... (消すフォルダ・ファイルの一覧, 消す候補の解析結果の数)
+def clear_period_caches(start_day, end_day, dry_run=False):
+  import shutil
+  import repackage_to_daily_zip
+  n_hours = ((end_day - start_day).days + 1) * 24
+  paths = repackage_to_daily_zip.stale_caches([start_day + timedelta(hours=h) for h in range(n_hours)])
+  lo, hi = f"{start_day:%Y%m%d}", f"{end_day:%Y%m%d}"
+  feats = load_features_cache()
+  drop = [k for k in feats if lo <= k[:8] <= hi]
+  if not dry_run:
+    for p in paths:
+      if p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)
+      else:
+        p.unlink(missing_ok=True)
+    if drop:
+      for k in drop:
+        del feats[k]
+      save_features_cache(feats)
+  return paths, len(drop)
+
 # 解析結果を保存できる形にする(時刻は文字列にし、どの項目が時刻だったかを覚えておく)
 def encode_features(features, picks):
   utc = [k for k, v in (features or {}).items() if isinstance(v, obspy.UTCDateTime)]

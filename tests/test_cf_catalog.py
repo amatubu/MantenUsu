@@ -78,3 +78,13 @@ def test_as_station(tmp_path):
   # 読み替えなければ 0000000000 で探すので無い
   r2 = cc.set_content(cc.new_row("CF-8"), info(station="0000000000"), "0000000000", RANGE)
   assert r2["読み替え"] == "" and cc.win_state(r2, tmp_path) == cc.WIN_NONE
+
+
+# 先頭が全部 0xFF のカードは「何も書かれていない」(ロガーのカードではない、とは分ける)
+def test_empty_card():
+  e = SimpleNamespace(station="", index=0, cards=0, has_data=False, empty=True)
+  f = SimpleNamespace(station="", index=0, cards=0, has_data=False, empty=False)
+  assert cc.set_content(cc.new_row("A"), e, "", None)["状態"] == cc.EMPTY
+  assert cc.set_content(cc.new_row("B"), f, "", None)["状態"] == cc.FOREIGN
+  rows = {"A": cc.set_content(cc.new_row("A"), e, "", None)}
+  assert "何も書かれていない 1 枚" in cc.summary(rows)

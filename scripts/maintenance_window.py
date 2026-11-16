@@ -152,6 +152,12 @@ class MaintenanceWindow:
       chk = ttk.Checkbutton(row, text=text, variable=var)
       chk.pack(side=tk.LEFT, padx=(0, 10))
       self.busy_widgets.append(chk)
+    # daily_zips に書き足した日を作り直す(古い SAC・RMS・候補の解析結果が使われないように)
+    self.var_rebuild = tk.BooleanVar(value=False)
+    chk = ttk.Checkbutton(det, variable=self.var_rebuild,
+                          text="期間のキャッシュ(SAC・RMS・候補の解析結果)を消して作り直す(daily_zips に書き足した日など)")
+    chk.pack(anchor="w", pady=(4, 0))
+    self.busy_widgets.append(chk)
     # 外部の観測点で確かめる60分の一覧(quake_loose.py)
     self.var_vnet = tk.BooleanVar(value=False)
     chk = ttk.Checkbutton(det, variable=self.var_vnet,
@@ -166,7 +172,7 @@ class MaintenanceWindow:
                    "取得済みの候補は vnet_locate_<期間>.csv(「候補の一覧(CSV)を選んで震源を表示」で開けます)です。"
               ).pack(anchor="w", pady=(8, 0))
     if app is None:
-      for w in self.busy_widgets[-5:]:
+      for w in self.busy_widgets[-6:]:
         w.config(state=tk.DISABLED)
 
     # --- キャッシュ ---
@@ -501,6 +507,24 @@ class MaintenanceWindow:
     if not jma_hypocenter.zip_days() and not (start and end):
       messagebox.showinfo("情報", "daily_zips に ZIP が無いため、期間を指定してください", parent=self.win)
       return
+    rebuild = None
+    if self.var_rebuild.get():
+      days = jma_hypocenter.zip_days()
+      a, b = start or (days[0] if days else None), end or (days[-1] if days else None)
+      if not (a and b):
+        messagebox.showinfo("情報", "キャッシュを作り直す期間を指定してください", parent=self.win)
+        return
+      paths, n_feat = quake_detect.clear_period_caches(a, b, dry_run=True)
+      n_sac = sum(1 for p in paths if p.is_dir())
+      if not messagebox.askyesno(
+          "確認 - キャッシュを作り直す",
+          f"{a:%Y-%m-%d} 〜 {b:%Y-%m-%d} のキャッシュを消してから、地震の候補を探します。\n\n"
+          f"・SAC のフォルダ: {n_sac:,} 個\n・RMS(quake_rms): {len(paths) - n_sac:,} 日\n"
+          f"・候補の解析結果: {n_feat:,} 件\n\n"
+          "RMS は 1 日あたり数十秒〜数分かけて計算し直します。続けますか?", parent=self.win):
+        return
+      rebuild = (a, b)
+      self.var_rebuild.set(False)   # 次に探すときまで消し続けないように、1 回ごとに外す
     add_history = self.var_history.get()
     args = dict(start_date=texts[0] or None, end_date=texts[1] or None, save_images=self.var_images.get(),
                 overwrite=self.var_overwrite.get(), loose=self.var_vnet.get())
@@ -509,6 +533,9 @@ class MaintenanceWindow:
       # 別スレッドではダウンロードの画面を出せないので、手元の ZIP だけを使う
       self.app.allow_download = False
       try:
+        if rebuild:
+          paths, n_feat = quake_detect.clear_period_caches(*rebuild)
+          log(f"キャッシュを消しました: フォルダ・ファイル {len(paths):,} 個、候補の解析結果 {n_feat:,} 件")
         return self.app.run_quake_detection(cancelled=cancelled, on_progress=progress, **args)
       finally:
         self.app.allow_download = True

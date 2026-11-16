@@ -61,15 +61,34 @@ class Disk:
     return not self.internal and self.size == CARD_SIZE
 
 
-def _diskutil_plist(verb, *args, run=subprocess.run):
-  r = run(["diskutil", verb, "-plist", *args], capture_output=True)
+DISKUTIL = "/usr/sbin/diskutil"
+
+
+# 外のコマンドを fork せずに起動する(posix_spawn)
+#   画面(Tk)を使っている間に fork すると、macOS が「The process has forked and you cannot use this
+#   CoreFoundation functionality safely」と出す。subprocess は close_fds=True(既定)だと macOS では fork するので、
+#   close_fds=False にし、コマンドを絶対パスで渡す(Python が開くファイルは既定で子に引き継がれないので、これで安全)
+def spawn_run(cmd, **kw):
+  return subprocess.run(cmd, close_fds=False, **kw)
+
+
+def _diskutil_plist(verb, *args, run=spawn_run):
+  r = run([DISKUTIL, verb, "-plist", *args], capture_output=True)
   if r.returncode:
     raise CardError(f"diskutil {verb} {' '.join(args)} が失敗しました: {r.stderr.decode(errors='replace').strip()}")
   return plistlib.loads(r.stdout)
 
 
 # 外付けの物理ディスクの一覧
-def list_disks(run=subprocess.run):
+# /dev のディスクの名前(disk4 など。パーティションの disk4s1 は除く)。diskutil を呼ばずに、抜き差しを見るため
+def disk_nodes(dev_dir="/dev"):
+  try:
+    return frozenset(n for n in os.listdir(dev_dir) if re.fullmatch(r"disk\d+", n))
+  except OSError:
+    return None
+
+
+def list_disks(run=spawn_run):
   disks = []
   for ident in _diskutil_plist("list", "external", "physical", run=run).get("WholeDisks", []):
     info = _diskutil_plist("info", ident, run=run)
@@ -87,14 +106,14 @@ def list_disks(run=subprocess.run):
   return disks
 
 
-def unmount(disk, run=subprocess.run):
-  r = run(["diskutil", "unmountDisk", disk.node], capture_output=True)
+def unmount(disk, run=spawn_run):
+  r = run([DISKUTIL, "unmountDisk", disk.node], capture_output=True)
   if r.returncode:
     raise CardError(f"{disk.node} をアンマウントできません: {r.stderr.decode(errors='replace').strip()}")
 
 
-def eject(disk, run=subprocess.run):
-  r = run(["diskutil", "eject", disk.node], capture_output=True)
+def eject(disk, run=spawn_run):
+  r = run([DISKUTIL, "eject", disk.node], capture_output=True)
   if r.returncode:
     raise CardError(f"{disk.node} を取り出せません: {r.stderr.decode(errors='replace').strip()}")
 
@@ -106,7 +125,8 @@ def authopen(path, write=False):
   parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
   cmd = [AUTHOPEN, "-stdoutpipe"] + (["-o", str(os.O_RDWR)] if write else []) + [path]
   try:
-    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=child, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=child, stderr=subprocess.PIPE,
+                            close_fds=False)   # fork しない(spawn_run を参照)
     child.close()
     fds = []
     try:
@@ -180,6 +200,7 @@ class CardInfo:
   has_data: bool      # 記録がある(2 つめのレコードが 0xFF でない)
   setting: dict       # make_cf_image.describe の結果(読めないときは None)
   unset: bool = False # 設定値が書かれないまま記録した(拠点ID 0000000000 など。raw_to_win.is_unset)
+  empty: bool = False # 先頭が全部 0xFF(何も書かれていない。設定値も無い)
 
 
 def card_info(head):
@@ -195,12 +216,15 @@ def card_info(head):
                   location=head[0x18:0x38].split(b"\0")[0].decode("ascii", "replace"),
                   has_data=head[SETTING_SIZE] != FILL,
                   setting=setting,
-                  unset=station.isdigit() and raw_to_win.is_unset(raw_to_win.read_header(head[:SETTING_SIZE])))
+                  unset=station.isdigit() and raw_to_win.is_unset(raw_to_win.read_header(head[:SETTING_SIZE])),
+                  empty=set(head[:SETTING_SIZE]) == {FILL})
 
 
 # カードの中身を言葉にする
 def card_summary(info):
   if not info.station:
+    if info.empty:
+      return "何も書かれていません(先頭が全部 0xFF。ロガーで使うには初期化します)"
     return "ロガーのカードではないようです(先頭に拠点ID がありません)"
   state = "記録あり" if info.has_data else "記録なし(初期化したまま)"
   index = f"{info.index} 枚目" if info.index else "番号なし"

@@ -34,7 +34,6 @@
 #   (「初期化」は押さない)
 import queue
 import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -87,6 +86,7 @@ class CfCardWindow:
     self.cancel = False
     self.busy = False
     self.listing = False           # ディスクの一覧を別スレッドで調べているとき
+    self.seen_nodes = None         # 前に調べたときの /dev のディスクの名前(変わったときだけ diskutil で調べ直す)
     self.disks = []
     self.waiting = None            # 2 枚目を待っているとき: {"mode", "gone", ...}
     self.pending_move = None       # ラベルを付け直すとき、台帳から消す前のラベル
@@ -294,6 +294,7 @@ class CfCardWindow:
     self.btn_cancel.configure(state=tk.NORMAL if busy or self.waiting else tk.DISABLED)
     if not busy:
       self.progress = None
+      self.seen_nodes = None   # 処理の間に抜き差しがあったかもしれないので、次に一度調べ直す
 
   def request_cancel(self):
     if self.waiting:
@@ -379,22 +380,27 @@ class CfCardWindow:
   # ---------------------------------------------------------------- カードの一覧
 
   # ディスクの一覧(diskutil を何回も呼ぶので 1 秒ほどかかる)は別スレッドで調べる。画面で調べると、入力・スクロールが重くなる
+  #   ふだんは /dev のディスクの名前だけを見て(diskutil は呼ばない)、ディスクが増えた・減ったときだけ調べ直す
   def refresh_disks(self):
-    if not self.busy and not self.listing:
+    nodes = cf_card.disk_nodes()
+    if not self.busy and not self.listing and (nodes is None or nodes != self.seen_nodes):
       self.listing = True
+      self.seen_nodes = nodes
 
       def work():
         try:
           disks, error = cf_card.list_disks(), None
         except Exception as e:   # noqa: BLE001(一覧が調べられなくても、次の回にまた調べる)
           disks, error = [], e
+          self.seen_nodes = None
         self.calls.put(lambda: self.disks_listed(disks, error))
       threading.Thread(target=work, daemon=True).start()
     self.root.after(DISK_POLL_MS, self.refresh_disks)
 
   def disks_listed(self, disks, error):
     self.listing = False
-    if self.busy:       # 調べている間に読み込み・初期化などが始まった
+    if self.busy:       # 調べている間に読み込み・初期化などが始まった(終わったら調べ直す)
+      self.seen_nodes = None
       return
     self.update_disks(disks)
     if error:
@@ -980,7 +986,8 @@ class CfCardWindow:
                      "アプリを閉じて、消してください:")
             for p in stale:
               self.log(f"    {p}{'/' if p.is_dir() else ''}")
-          self.log("※ 地震の候補の検出は、書き足した日を含めて探し直してください。")
+          self.log("※ 地震の候補の検出は、書き足した日を含めて探し直してください"
+                   "(UsuMantenViewer のメンテナンス画面で「期間のキャッシュ…を消して作り直す」を選ぶと、消すのもまとめてできます)。")
         if added:
           self.log("新しくできた日・書き足した日の ZIP は、Googleドライブのフォルダに保存してください。")
       if len(jobs) > 1:
@@ -1052,7 +1059,7 @@ class CfCardWindow:
       rec = r["状態"] == cf_catalog.RECORDED
       period = f"{r['記録の始め']} 〜 {r['記録の終わり']}" + ("(いっぱい)" if r["いっぱい"] == "はい" else "") if rec else ""
       init = " ".join(x for x in (r["初期化した日"], r["初期化の拠点"]) if x)
-      tag = "reuse" if cf_catalog.reusable(r) else "blank" if r["状態"] == cf_catalog.BLANK else ""
+      tag = "reuse" if cf_catalog.reusable(r) else "blank" if r["状態"] in (cf_catalog.BLANK, cf_catalog.EMPTY) else ""
       self.tree.insert("", tk.END, iid=r["ラベル"], tags=(tag,),
                        values=(r["ラベル"], r["状態"], (r["拠点名"] or r["拠点ID"]) + ("(読み替え)" if r["読み替え"] else ""), r["枚目"], period, r["WIN"],
                                r["イメージ"], init, r["メモ"]))
@@ -1284,7 +1291,7 @@ class CfCardWindow:
 
   def open_catalog_folder(self):
     CATALOG.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["open", str(CATALOG.parent)])
+    cf_card.spawn_run(["/usr/bin/open", str(CATALOG.parent)])
 
 
 def main():

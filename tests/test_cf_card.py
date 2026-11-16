@@ -273,3 +273,11 @@ def test_nearest_station():
   s, km = cf_card.nearest_station(st, (42 + 32.6 / 60, 140 + 47.1 / 60))
   assert s.name == "Bamba" and 0.5 < km < 1.5
   assert cf_card.nearest_station(st, None) == (None, None)
+
+
+# /dev のディスクの名前(パーティションは除く)
+def test_disk_nodes(tmp_path):
+  for n in ("disk4", "disk4s1", "disk12", "rdisk4", "null"):
+    (tmp_path / n).write_bytes(b"")
+  assert cf_card.disk_nodes(tmp_path) == frozenset({"disk4", "disk12"})
+  assert cf_card.disk_nodes(tmp_path / "none") is None
