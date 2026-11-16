@@ -279,5 +279,5 @@ def test_nearest_station():
 def test_disk_nodes(tmp_path):
   for n in ("disk4", "disk4s1", "disk12", "rdisk4", "null"):
     (tmp_path / n).write_bytes(b"")
-  assert cf_card.disk_nodes(tmp_path) == frozenset({"disk4", "disk12"})
+  assert {n for n, _ in cf_card.disk_nodes(tmp_path)} == {"disk4", "disk12"}
   assert cf_card.disk_nodes(tmp_path / "none") is None

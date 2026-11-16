@@ -214,7 +214,11 @@ class CfCardWindow:
     self.tab_catalog = cl
     row = ttk.Frame(cl)
     row.pack(fill=tk.X)
-    self.btn(row, "差したカードを調べて登録", self.start_register).pack(side=tk.LEFT)
+    self.btn(row, "差したカードを調べて登録(⌘R)", self.start_register).pack(side=tk.LEFT)
+    # ⌘R: 「カード一覧」のタブを開いていて、ほかの処理をしていなければ登録する
+    #   (USB 2.0 のリーダーは抜き差しを知らせないので、自動の登録は使えない。差したらこれを押す)
+    root.bind("<Command-r>", lambda e: self.notebook.select() == str(self.tab_catalog) and not self.busy
+              and not self.waiting and self.start_register())
     self.btn(row, "WIN があるか確かめ直す", self.recheck_win).pack(side=tk.LEFT, padx=(6, 0))
     self.btn(row, "メモを書く", self.edit_memo).pack(side=tk.LEFT, padx=(6, 0))
     self.btn(row, "台帳から消す", self.delete_label).pack(side=tk.LEFT, padx=(6, 0))
@@ -456,13 +460,11 @@ class CfCardWindow:
       self.eject(d)
 
   def eject(self, disk):
-    if self.known_nodes:
-      self.known_nodes.discard(disk.node)   # 次に差したカードが同じ名前(/dev/diskN)でも、新しく入ったとみる
     try:
       cf_card.eject(disk)
-      self.log(f"{disk.node} を取り出しました。")
+      self.log(f"{disk.node} を手放しました。カードを抜いてかまいません。")
     except CardError as e:
-      self.log(f"※ {e}(カードリーダーから抜く前に、Finder などで取り出してください)")
+      self.log(f"※ {e}")
 
   # 2 枚目を待っているとき: いまのカードが抜けたあと、カードが入ったら続ける
   def check_waiting(self):

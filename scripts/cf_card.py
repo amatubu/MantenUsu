@@ -81,11 +81,21 @@ def _diskutil_plist(verb, *args, run=spawn_run):
 
 # 外付けの物理ディスクの一覧
 # /dev のディスクの名前(disk4 など。パーティションの disk4s1 は除く)。diskutil を呼ばずに、抜き差しを見るため
+#   すばやく差し替えて同じ名前になっても分かるように、名前とファイルの番号(作り直すと変わる)の組にする
+#   (時刻は入れない。アンマウントや開いただけでも変わり、差し替えたとみてしまうため)
 def disk_nodes(dev_dir="/dev"):
   try:
-    return frozenset(n for n in os.listdir(dev_dir) if re.fullmatch(r"disk\d+", n))
+    names = [n for n in os.listdir(dev_dir) if re.fullmatch(r"disk\d+", n)]
   except OSError:
     return None
+  out = set()
+  for n in names:
+    try:
+      st = os.stat(os.path.join(dev_dir, n))
+      out.add((n, st.st_ino))
+    except OSError:
+      pass
+  return frozenset(out)
 
 
 def list_disks(run=spawn_run):
@@ -112,10 +122,15 @@ def unmount(disk, run=spawn_run):
     raise CardError(f"{disk.node} をアンマウントできません: {r.stderr.decode(errors='replace').strip()}")
 
 
+# カードを手放す(抜いてよい状態にする)
+#   diskutil eject は使わない: eject はカードリーダーにメディアを止める命令を送り、USB 2.0 のリーダー
+#   (Alcor Micro 058F:6366)では、そのあと別のカードを差しても macOS がカードを見つけなくなる
+#   (リーダーの USB を抜き差しするまで。2026-11-17 に確かめた)。CF カードにはファイルシステムが無く、
+#   ツールは読み書きのあとにデバイスを閉じているので、アンマウントだけで抜いてかまわない
 def eject(disk, run=spawn_run):
-  r = run([DISKUTIL, "eject", disk.node], capture_output=True)
+  r = run([DISKUTIL, "unmountDisk", disk.node], capture_output=True)
   if r.returncode:
-    raise CardError(f"{disk.node} を取り出せません: {r.stderr.decode(errors='replace').strip()}")
+    raise CardError(f"{disk.node} を手放せません: {r.stderr.decode(errors='replace').strip()}")
 
 
 # ---------------------------------------------------------------- デバイスを開く(authopen)
