@@ -191,6 +191,48 @@ def list_key(row):
   return (group, row.get("記録の始め") or row.get("初期化した日") or "", label_key(row["ラベル"]))
 
 
+# 回収の始め(1 枚目の記録の始め)。2 枚目以降は、同じ拠点で前の番号のカードの終わりが自分の始めになるのをたどる
+#   (前のカードが台帳に無ければ、自分の始め)。同じ回収のカードを並べるため
+def collection_start(rows, row):
+  seen = 0
+  while row.get("枚目", "").isdigit() and int(row["枚目"]) > 1 and seen < 10:
+    prev = next((r for r in rows.values() if r.get("状態") == RECORDED and station_of(r) == station_of(row)
+                 and r.get("枚目") == str(int(row["枚目"]) - 1) and r.get("記録の終わり") == row.get("記録の始め")), None)
+    if prev is None:
+      break
+    row, seen = prev, seen + 1
+  return row.get("記録の始め") or ""
+
+
+# 一覧の並べ方(名前 → 並べるための関数を作る関数(rows を受け取る))
+#   拠点・期間 ... 拠点ごとに、回収の始めの順(同じ回収のカードは番号の順に続ける)。初期化済み・何も書かれていない・
+#                 ロガーのカードではない、は後ろ
+#   記録の期間 ... 回収の始めの順(同じ回収のカードは続ける)。記録の無いものは後ろ
+#   初期化してよい順 ... list_key と同じ
+#   ラベル ... ラベルの番号の順
+def _state_group(row):
+  return {RECORDED: 0, BLANK: 1, EMPTY: 2}.get(row.get("状態"), 3)
+
+
+# installed ... 設置している拠点の拠点ID(チャンネル表の拠点)。それ以外(まだ設置していない機体など)は拠点の最後にする
+def _station_key(row, installed):
+  return (installed is not None and station_of(row) not in installed, row.get("拠点名") or row.get("拠点ID", ""))
+
+
+SORTS = {
+  "拠点・期間": lambda rows, inst: lambda r: (_state_group(r), _station_key(r, inst), collection_start(rows, r),
+                                      int(r["枚目"]) if r.get("枚目", "").isdigit() else 0, label_key(r["ラベル"])),
+  "記録の期間": lambda rows, inst: lambda r: (_state_group(r), collection_start(rows, r), r.get("拠点名") or "",
+                                      int(r["枚目"]) if r.get("枚目", "").isdigit() else 0, label_key(r["ラベル"])),
+  "初期化してよい順": lambda rows, inst: list_key,
+  "ラベル": lambda rows, inst: lambda r: label_key(r["ラベル"]),
+}
+
+
+def sorted_rows(rows, how="拠点・期間", installed=None):
+  return sorted(rows.values(), key=SORTS.get(how, SORTS["拠点・期間"])(rows, installed))
+
+
 def summary(rows):
   rs = list(rows.values())
   rec = [r for r in rs if r["状態"] == RECORDED]

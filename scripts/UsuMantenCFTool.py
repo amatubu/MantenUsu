@@ -23,7 +23,8 @@
 #               (カードの固有の番号は、USB のカードリーダー越しには読めない)。差したカードを調べて登録でき、
 #               読み込み・初期化のときにもラベルを聞いて書き足す。WIN が daily_zips にある記録のカードを、
 #               初期化してよいものとして、古いものから並べる
-#               差すとラベルが見えなくなるので、差す前に「次に差すカードのラベル」に入れておける(登録すると番号を進める)。
+#               差すとラベルが見えなくなるので、差す前に「次に差すカードのラベル」に入れておける(一覧で選んだカードのラベルも入る。登録すると「満点10-」に戻す)。
+#               一覧の並べ方は、拠点・期間(既定)・記録の期間・初期化してよい順・ラベルから選べる(同じ回収のカードは続けて並べる)。
 #               「差したら自動で登録する」なら、このタブを開いている間は、カードを差すだけで調べて登録する(パスワードの画面は 1 枚ごとに出る)
 #               WIN が daily_zips に無く、イメージも無いカードは、取り出す前に、続けて読み込むか聞く
 #   設定値が書かれないまま記録したカード(拠点ID 0000000000 など)は、登録・読み込み・変換のときに、どの拠点の分か聞いて
@@ -218,6 +219,11 @@ class CfCardWindow:
     self.btn(row, "メモを書く", self.edit_memo).pack(side=tk.LEFT, padx=(6, 0))
     self.btn(row, "台帳から消す", self.delete_label).pack(side=tk.LEFT, padx=(6, 0))
     self.btn(row, "フォルダを開く", self.open_catalog_folder).pack(side=tk.LEFT, padx=(6, 0))
+    self.var_sort = tk.StringVar(value="拠点・期間")
+    cmb = ttk.Combobox(row, textvariable=self.var_sort, values=list(cf_catalog.SORTS), state="readonly", width=14)
+    cmb.pack(side=tk.RIGHT)
+    cmb.bind("<<ComboboxSelected>>", lambda e: self.refresh_catalog())
+    ttk.Label(row, text="並べ方:").pack(side=tk.RIGHT, padx=(6, 2))
     row = ttk.Frame(cl)
     row.pack(fill=tk.X, pady=(6, 0))
     ttk.Label(row, text="次に差すカードのラベル:").pack(side=tk.LEFT)
@@ -227,7 +233,8 @@ class CfCardWindow:
     ttk.Checkbutton(row, text="カードを差したら、自動で調べて登録する(このタブを開いているとき)", variable=self.var_auto_register
                     ).pack(side=tk.LEFT, padx=(12, 0))
     ttk.Label(cl, foreground="#666666",
-              text="差すとラベルが見えなくなるので、差す前にラベルを見て番号を入れてください。登録すると番号を 1 つ進めます。"
+              text="差すとラベルが見えなくなるので、差す前にラベルを見て番号を入れてください(一覧で選ぶと、そのラベルが入ります)。"
+                   "登録すると「満点10-」に戻します。"
               ).pack(anchor="w", pady=(2, 0))
     self.lbl_catalog = ttk.Label(cl, text="")
     self.lbl_catalog.pack(anchor="w", pady=(6, 0))
@@ -246,6 +253,8 @@ class CfCardWindow:
     self.tree.tag_configure("reuse", background="#dff0d8")
     self.tree.tag_configure("blank", foreground="#666666")
     self.tree.bind("<Double-1>", lambda e: self.edit_memo())
+    # 一覧で選んだカードのラベルを「次に差すカードのラベル」に入れる(登録済みのカードを差して更新するとき)
+    self.tree.bind("<<TreeviewSelect>>", lambda e: self.tree.selection() and self.var_next_label.set(self.tree.selection()[0]))
     ttk.Label(cl, foreground="#666666", justify=tk.LEFT, wraplength=900,
               text="緑の行は、初期化して使い回してよいカード(記録の最初と最後の分の WIN が daily_zips にある)。古いものから並べます。\n"
                    "続いて初期化済み、まだ WIN が無い記録、の順。読み込み・初期化のときにもラベルを聞いて、台帳に書き足します。\n"
@@ -1055,7 +1064,7 @@ class CfCardWindow:
 
   def refresh_catalog(self):
     self.tree.delete(*self.tree.get_children())
-    for r in sorted(self.catalog.values(), key=cf_catalog.list_key):
+    for r in cf_catalog.sorted_rows(self.catalog, self.var_sort.get(), {s.id for s in self.stations}):
       rec = r["状態"] == cf_catalog.RECORDED
       period = f"{r['記録の始め']} 〜 {r['記録の終わり']}" + ("(いっぱい)" if r["いっぱい"] == "はい" else "") if rec else ""
       init = " ".join(x for x in (r["初期化した日"], r["初期化の拠点"]) if x)
@@ -1240,10 +1249,11 @@ class CfCardWindow:
     label = self.var_next_label.get().strip()
     return label if label and label != LABEL_PREFIX and label[-1].isdigit() else None
 
-  # 使ったラベルが「次に差すカードのラベル」なら、番号を 1 つ進める(桁はそろえる。満点10-009 → 満点10-010)
+  # 使ったラベルが「次に差すカードのラベル」なら、決まった所(満点10-)に戻す
+  #   (番号を進めていたが、ラベルの番号の順にカードを差すことは少なく、取り違えのもとになるため)
   def advance_next_label(self, used):
     if used and used == self.next_label():
-      self.var_next_label.set(cf_catalog.next_number(used))
+      self.var_next_label.set(LABEL_PREFIX)
 
   # 台帳の記録のカードについて、WIN が daily_zips にあるかを確かめ直す
   def recheck_win(self, station=None, quiet=False):

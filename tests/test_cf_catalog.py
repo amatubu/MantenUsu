@@ -88,3 +88,32 @@ def test_empty_card():
   assert cc.set_content(cc.new_row("B"), f, "", None)["状態"] == cc.FOREIGN
   rows = {"A": cc.set_content(cc.new_row("A"), e, "", None)}
   assert "何も書かれていない 1 枚" in cc.summary(rows)
+
+
+# 並べ方: 同じ回収のカード(1 枚目の終わり = 2 枚目の始め)は続けて並べる。記録の無いものは後ろ
+def test_sorted_rows():
+  def rec(label, name, idx, a, b):
+    return cc.new_row(label) | {"状態": cc.RECORDED, "拠点ID": name, "拠点名": name, "枚目": str(idx),
+                                "記録の始め": a, "記録の終わり": b}
+  rows = {r["ラベル"]: r for r in [
+    rec("X-5", "Bamba", 2, "2026-07-15 07:37", "2026-08-24 16:06"),
+    rec("X-1", "Bamba", 1, "2026-06-04 11:11", "2026-07-15 07:37"),
+    rec("X-3", "Mimatsu", 1, "2026-06-04 10:40", "2026-07-20 00:00"),
+    rec("X-2", "Hokudai", 1, "2026-07-01 00:00", "2026-07-10 00:00"),
+    cc.new_row("X-9") | {"状態": cc.EMPTY},
+    cc.new_row("X-0") | {"状態": cc.BLANK, "拠点名": "Bamba"}]}
+  assert cc.collection_start(rows, rows["X-5"]) == "2026-06-04 11:11"
+  assert [r["ラベル"] for r in cc.sorted_rows(rows)] == ["X-1", "X-5", "X-2", "X-3", "X-0", "X-9"]
+  # 記録の期間: 回収の始めの順で、Bamba の 2 枚目は Hokudai(7/1 の回収)より前に続ける
+  assert [r["ラベル"] for r in cc.sorted_rows(rows, "記録の期間")] == ["X-3", "X-1", "X-5", "X-2", "X-0", "X-9"]
+  assert [r["ラベル"] for r in cc.sorted_rows(rows, "ラベル")] == ["X-0", "X-1", "X-2", "X-3", "X-5", "X-9"]
+
+
+# まだ設置していない機体(チャンネル表に無い拠点)は、拠点・期間の並べ方で拠点の最後
+def test_sorted_rows_uninstalled_last():
+  def rec(label, sid, name):
+    return cc.new_row(label) | {"状態": cc.RECORDED, "拠点ID": sid, "拠点名": name, "枚目": "1",
+                                "記録の始め": "2025-07-06 17:44", "記録の終わり": "2025-07-07 10:29"}
+  rows = {r["ラベル"]: r for r in [rec("A", "1472580096", "1472580096"), rec("B", "1070432002", "Nizaemn"),
+                                   rec("C", "1070432003", "Bamba")]}
+  assert [r["ラベル"] for r in cc.sorted_rows(rows, installed={"1070432002", "1070432003"})] == ["C", "B", "A"]
