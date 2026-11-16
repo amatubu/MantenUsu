@@ -41,3 +41,6 @@ tests/__pycache__/
 videos/
 # CF カードの台帳(UsuMantenCFTool のカード一覧。データフォルダがプロジェクトのとき)
 cf_cards/
+
+# 作業用のスクリプト(観測成果報告の図の作成など。リポジトリには入れない)
+work_scripts/
