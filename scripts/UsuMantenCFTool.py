@@ -232,12 +232,16 @@ class CfCardWindow:
     row.pack(fill=tk.X, pady=(6, 0))
     ttk.Label(row, text="次に差すカードのラベル:").pack(side=tk.LEFT)
     self.var_next_label = tk.StringVar(value=LABEL_PREFIX)
-    ttk.Entry(row, textvariable=self.var_next_label, width=16).pack(side=tk.LEFT, padx=(4, 0))
+    ent = ttk.Entry(row, textvariable=self.var_next_label, width=16)
+    ent.pack(side=tk.LEFT, padx=(4, 0))
+    # ラベルを入れて Enter で登録する(⌘R と同じ)
+    ent.bind("<Return>", lambda e: not self.busy and not self.waiting and self.start_register())
     self.var_auto_register = tk.BooleanVar(value=False)
     ttk.Checkbutton(row, text="カードを差したら、自動で調べて登録する(このタブを開いているとき)", variable=self.var_auto_register
                     ).pack(side=tk.LEFT, padx=(12, 0))
     ttk.Label(cl, foreground="#666666",
               text="差すとラベルが見えなくなるので、差す前にラベルを見て番号を入れてください(一覧で選ぶと、そのラベルが入ります)。"
+                   "差したら Enter か ⌘R で登録します。"
                    "登録すると「満点10-」に戻します。"
               ).pack(anchor="w", pady=(2, 0))
     self.lbl_catalog = ttk.Label(cl, text="")
