@@ -39,3 +39,5 @@ tests/__pycache__/
 
 # カメラ(ATOM Cam 2)の録画(列車の映像・音声との比較用)
 videos/
+# CF カードの台帳(UsuMantenCFTool のカード一覧。データフォルダがプロジェクトのとき)
+cf_cards/

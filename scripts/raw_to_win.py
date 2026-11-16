@@ -46,6 +46,7 @@
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import struct
 import sys
@@ -97,6 +98,18 @@ def read_header(rec0):
     "cal_offsets": offsets,
     "cal_gains": gains,
   }
+
+
+# 'G' レコードの GPS の文($GPGGA)の位置(緯度・経度の度)。無ければ None
+#   ロガーの GPS は時刻を合わせるだけで測位はしない(品質 0)ので、これは GPS の受信機が覚えている位置。
+#   ロガーの設定値の位置か、前にそのロガーで使っていた位置になる。設定値が書かれていないカードの拠点の手がかりにする
+def gga_position(rec):
+  m = re.search(rb"\$GPGGA,[^,]*,(\d+(?:\.\d+)?),([NS]),(\d+(?:\.\d+)?),([EW])", bytes(rec))
+  if not m:
+    return None
+  lat = int(float(m[1]) // 100) + float(m[1]) % 100 / 60
+  lon = int(float(m[3]) // 100) + float(m[3]) % 100 / 60
+  return (lat if m[2] == b"N" else -lat, lon if m[4] == b"E" else -lon)
 
 
 # 'G' レコードの記録の開始時刻(日本時間)
@@ -179,6 +192,14 @@ class RawFile:
           continue
       pts.append((self.frame_index(w), d))
     return pts
+
+  # GPS の文の位置(gga_position)。最初に見つかったもの
+  def gps_position(self):
+    for g in self.g_recs[:16]:
+      p = gga_position(self.mm[int(g)])
+      if p:
+        return p
+    return None
 
   def last_frame(self):
     r = self.mm[self.w_recs[-1]]
@@ -619,6 +640,30 @@ def open_groups(paths, report=print):
     out.append((fs, key[1]))
   return out
 
+# 設定値が書かれないまま記録したか(拠点ID が 0000000000 か、チャンネル番号が f000〜 のロガーの初めの値)
+#   拠点ID がチャンネル表に無いだけ(まだ設置していない機体など)なら、設定値はあるので False
+def is_unset(header):
+  return int(header["station"]) == 0 or all(c >= 0xF000 for c in header["channels"])
+
+
+# ヘッダーの拠点ID・チャンネル番号を、指定した拠点のものに読み替える(--as-station)
+#   設定値が書かれないまま(拠点ID 0000000000・チャンネル f000〜f002 など)記録したカードを、どの拠点の分か
+#   ほかの手がかり(記録の時刻・GPS の位置・揺れの大きさ)から決めて変換するときに使う
+#   チャンネル番号は、その拠点の校正値(logger_cal.txt)のチャンネルを番号の順に。校正値もその拠点のものを使う
+def as_station(files, station, cal, report=print):
+  ent = cal.get(station)
+  if ent is None:
+    raise RawError(f"拠点 {station} の校正値が {CAL_FILE.name} にありません")
+  channels = sorted({ch for ch, _ in ent["channels"]})
+  if len(channels) != 3:
+    raise RawError(f"拠点 {station} の校正値のチャンネルが 3 つではありません: {channels}")
+  h = files[0].header
+  report(f"※ 拠点ID {h['station']}・チャンネル {' '.join(f'{c:04x}' for c in h['channels'])} を、"
+         f"拠点ID {station}・チャンネル {' '.join(f'{c:04x}' for c in channels)} として変換します(--as-station)")
+  for f in files:
+    f.header = dict(f.header, station=station, channels=list(channels))
+
+
 def print_info(files, start, report=print):
   h = files[0].header
   report(f"拠点ID: {h['station']}  位置: {h['location']}  チャンネル: "
@@ -672,12 +717,17 @@ def main(argv=None):
   ap.add_argument("--fit-minutes", type=int, default=200, help="--fit で使う分の数(揺れの大きい分から。既定 200)")
   ap.add_argument("--save-cal", action="store_true", help="--fit で求めた校正値を etc/logger_cal.txt に書く")
   ap.add_argument("--cal", help="校正値のファイル(既定は etc/logger_cal.txt)")
+  ap.add_argument("--as-station", metavar="ID",
+                  help="ヘッダーの拠点ID・チャンネル番号を、この拠点のもの(校正値のファイルのチャンネル)に読み替える"
+                       "(設定値が書かれないまま記録したカード用。校正値もこの拠点のものを使う)")
   ap.add_argument("--no-gps-correction", action="store_true",
                   help="GPS による時刻の補正(サンプルを足す・減らす。変換ツールの gps3)をしない")
   args = ap.parse_args(argv)
 
   try:
     files, start = open_inputs(args.raw)
+    if args.as_station:
+      as_station(files, args.as_station, load_cal(args.cal or CAL_FILE))
     print_info(files, start)
     corrections = gps_corrections(files)
     print_corrections(corrections, start, not args.no_gps_correction)

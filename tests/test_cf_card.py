@@ -242,3 +242,34 @@ def test_record_start(tmp_path):
     with device(card) as dev:
       assert cf_card.record_start(dev) == want, name
 
+
+# 記録の範囲(二分探索で 0xFF の所を探す)
+def test_card_range(tmp_path):
+  def w(idx, n):
+    return (b"W\0\0\x44" + n.to_bytes(2, "big") + idx.to_bytes(4, "big")).ljust(1024, b"\0")
+  g = (b"G\0" + b"20060422025241").ljust(1024, b"\0")
+  start = datetime(2025, 12, 6, 11, 52, 41)
+  n_rec = SIZE // 1024
+  for name, body, want in [
+      ("card1", g + b"".join(w(i * 250, 250) for i in range(10)), (start, start.replace(second=51), False)),
+      ("card2", w(2500, 250) + g + w(2750, 250), (start.replace(second=51), start.replace(second=53), False)),
+      ("full", g + b"".join(w(i * 250, 250) for i in range(n_rec - 2)), None),
+      ("blank", b"", None)]:
+    card = tmp_path / name
+    card.write_bytes((setting() + body).ljust(SIZE, b"\xff")[:SIZE])
+    with device(card) as dev:
+      got = cf_card.card_range(dev, start if body else None)
+    if name == "full":
+      assert got[2] is True and got[0] == start
+    else:
+      assert got == want, name
+
+
+# 位置からいちばん近い拠点
+def test_nearest_station():
+  st = [cf_card.Station("1070432003", "Bamba", [], 42.53533, 140.78266),
+        cf_card.Station("0970355243", "Hokudai", [], 42.55947, 140.84252),
+        cf_card.Station("9999999999", "NoPos", [])]
+  s, km = cf_card.nearest_station(st, (42 + 32.6 / 60, 140 + 47.1 / 60))
+  assert s.name == "Bamba" and 0.5 < km < 1.5
+  assert cf_card.nearest_station(st, None) == (None, None)

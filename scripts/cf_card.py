@@ -13,6 +13,7 @@
 #     先頭 1 KB がヘッダー(0x0e カードの枚数、0x16 カードの番号。初期化したカードは 00、記録するとロガーが 01・02 と書く)
 #     その後ろに 1 KB ずつ記録('W' 波形、'G' GPS)。記録の無い所は 0xFF
 import hashlib
+import math
 import os
 import plistlib
 import re
@@ -20,7 +21,7 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import make_cf_image
@@ -178,6 +179,7 @@ class CardInfo:
   location: str
   has_data: bool      # 記録がある(2 つめのレコードが 0xFF でない)
   setting: dict       # make_cf_image.describe の結果(読めないときは None)
+  unset: bool = False # 設定値が書かれないまま記録した(拠点ID 0000000000 など。raw_to_win.is_unset)
 
 
 def card_info(head):
@@ -192,7 +194,8 @@ def card_info(head):
                   cards=head[0x0e], index=head[0x16],
                   location=head[0x18:0x38].split(b"\0")[0].decode("ascii", "replace"),
                   has_data=head[SETTING_SIZE] != FILL,
-                  setting=setting)
+                  setting=setting,
+                  unset=station.isdigit() and raw_to_win.is_unset(raw_to_win.read_header(head[:SETTING_SIZE])))
 
 
 # カードの中身を言葉にする
@@ -297,6 +300,72 @@ def record_start(dev, limit=64 << 20):
       if c == FILL:
         return None
   return None
+
+
+
+# カードの記録の範囲を、全部は読まずに調べる(台帳に書くため。数十回、1 KB ずつ読むだけ)
+#   記録は先頭から詰めて書かれ、その後ろは 0xFF なので、0xFF になる所を二分探索で探す
+#   返り値: (最初の波形の時刻, 最後の波形の終わりの時刻, カードがいっぱいか)。日本時間。記録が無ければ None
+#   時刻は記録の開始(start)と、波形のサンプルの通し番号から求める(GPS による補正は入れない。分の単位の目安)
+def card_range(dev, start):
+  nrec = dev.size // SETTING_SIZE
+
+  def rec(i):
+    return dev.pread(SETTING_SIZE, i * SETTING_SIZE)
+
+  if start is None or rec(1)[0] == FILL:
+    return None
+  lo, hi = 1, nrec          # lo は 0xFF でない、hi は 0xFF(か、カードの終わり)
+  while hi - lo > 1:
+    mid = (lo + hi) // 2
+    if rec(mid)[0] == FILL:
+      hi = mid
+    else:
+      lo = mid
+  full = hi == nrec
+  first = last = None
+  for i in range(1, min(lo + 1, 4096)):        # 最初の 'W'(2 枚目は 'G' が先に来ることがある)
+    r = rec(i)
+    if r[0] == ord("W"):
+      first = int.from_bytes(r[6:10], "big")
+      break
+  for i in range(lo, max(0, lo - 4096), -1):   # 最後の 'W'
+    r = rec(i)
+    if r[0] == ord("W"):
+      last = int.from_bytes(r[6:10], "big") + int.from_bytes(r[4:6], "big")
+      break
+  if first is None or last is None:
+    return None
+  sr = raw_to_win.SR
+  return start + timedelta(seconds=first / sr), start + timedelta(seconds=last / sr), full
+
+# GPS の文の位置(raw_to_win.gga_position)。先頭の数十レコードの 'G' から(数 KB 読むだけ)
+def gps_position(dev, n=64):
+  for i in range(1, min(n, dev.size // SETTING_SIZE)):
+    r = dev.pread(SETTING_SIZE, i * SETTING_SIZE)
+    if r[0] == FILL:
+      break
+    if r[0] == ord("G"):
+      p = raw_to_win.gga_position(r)
+      if p:
+        return p
+  return None
+
+
+# 位置からいちばん近い拠点と、その距離(km)。位置か拠点の位置が無ければ (None, None)
+def nearest_station(stations, pos):
+  if not pos:
+    return None, None
+  best = None
+  for s in stations:
+    if s.lat is None:
+      continue
+    dy = (s.lat - pos[0]) * 111.2
+    dx = (s.lon - pos[1]) * 111.2 * math.cos(math.radians(pos[0]))
+    d = math.hypot(dx, dy)
+    if best is None or d < best[1]:
+      best = (s, d)
+  return best or (None, None)
 
 
 # ---------------------------------------------------------------- 初期化する

@@ -344,3 +344,33 @@ def test_open_groups_rejects_same_card_twice(tmp_path):
   write_raw(tmp_path / "b.raw", v)
   with pytest.raises(rw.RawError, match="1 枚目が 2 つ"):
     rw.open_groups([tmp_path / "a.raw", tmp_path / "b.raw"])
+
+
+# 設定値が書かれないまま記録したカード(拠点ID 0000000000)を、ほかの拠点として変換する(--as-station)
+def test_as_station(tmp_path):
+  v = np.zeros((500, 3), np.int64)
+  write_raw(tmp_path / "a.raw", v, station="0000000000")
+  files, _ = rw.open_inputs([tmp_path / "a.raw"])
+  cal = {"1070432003": {"channels": {(ch, m): (0.0, 1.0) for ch in (0x8D12, 0x8D10, 0x8D11) for m in rw.MODES},
+                        "keys": {"x"}}}
+  rw.as_station(files, "1070432003", cal, report=lambda s: None)
+  assert files[0].header["station"] == "1070432003"
+  assert files[0].header["channels"] == [0x8D10, 0x8D11, 0x8D12]
+  with pytest.raises(rw.RawError, match="校正値"):
+    rw.as_station(files, "9999999999", cal)
+
+
+# GPS の文の位置($GPGGA。度分を度に)
+def test_gga_position():
+  rec = (b"G\0" + b"20051208060322" + b"\0" * 32
+         + b"$GPGGA,060322,4232.6000,N,14047.1000,E,0,05,00.45,000020.0,M,0033.6,M,,\r").ljust(1024, b"\0")
+  lat, lon = rw.gga_position(rec)
+  assert abs(lat - (42 + 32.6 / 60)) < 1e-9 and abs(lon - (140 + 47.1 / 60)) < 1e-9
+  assert rw.gga_position(b"G\0" + b"\0" * 1022) is None
+
+
+# 設定値が書かれないまま記録したか(拠点ID 0000000000・チャンネル f000〜)。チャンネル表に無いだけの機体は違う
+def test_is_unset():
+  assert rw.is_unset({"station": "0000000000", "channels": [0xF000, 0xF001, 0xF002]})
+  assert rw.is_unset({"station": "1234567890", "channels": [0xF000, 0xF001, 0xF002]})
+  assert not rw.is_unset({"station": "1472580096", "channels": [0x8D04, 0x8D05, 0x8D06]})

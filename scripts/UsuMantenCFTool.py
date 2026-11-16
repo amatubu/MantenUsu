@@ -19,20 +19,33 @@
 #               いくつかの拠点・回収の分をまとめて選ぶと、回収(拠点と記録の開始)ごとに順に変換する
 #   読み込み・初期化・変換のそれぞれに、かかった時間をログに出す(読み込み・初期化は、段階ごとの速さ MB/s も)
 #
+#   カード一覧 ... どのカードに何が入っているかの台帳(cf_catalog.py)。カードに貼ってあるラベルで分ける
+#               (カードの固有の番号は、USB のカードリーダー越しには読めない)。差したカードを調べて登録でき、
+#               読み込み・初期化のときにもラベルを聞いて書き足す。WIN が daily_zips にある記録のカードを、
+#               初期化してよいものとして、古いものから並べる
+#               差すとラベルが見えなくなるので、差す前に「次に差すカードのラベル」に入れておける(登録すると番号を進める)。
+#               「差したら自動で登録する」なら、このタブを開いている間は、カードを差すだけで調べて登録する(パスワードの画面は 1 枚ごとに出る)
+#               WIN が daily_zips に無く、イメージも無いカードは、取り出す前に、続けて読み込むか聞く
+#   設定値が書かれないまま記録したカード(拠点ID 0000000000 など)は、登録・読み込み・変換のときに、どの拠点の分か聞いて
+#   拠点ID・チャンネル・校正値を読み替える(raw_to_win.py --as-station と同じ)
+#
 #   カードを開くときに、macOS のパスワード(Touch ID)の画面が出る(1 枚ごとに 1 回。authopen。cf_card.py を参照)
 #   CF カードにはファイルシステムが無いので、入れると macOS が「読み取れないディスク」と言う。「無視」を押す
 #   (「初期化」は押さない)
 import queue
 import shutil
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from datetime import datetime
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cf_card                                  # noqa: E402
+import cf_catalog                               # noqa: E402
 import make_cf_image                            # noqa: E402
 import raw_to_win                               # noqa: E402
 import repackage_to_daily_zip                   # noqa: E402
@@ -43,7 +56,9 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 ETC_DIR = PROJECT_DIR / "etc"
 IMAGE_DIR = PROJECT_DIR / "raw" / "image"
 SOURCE_ZIPS_DIR = DATA_DIR / "source_zips"
-TOOL_VERSION = "1.1.0"   # このツールのバージョン(UsuMantenViewer とは別)
+CATALOG, CATALOG_LOG = cf_catalog.catalog_paths(DATA_DIR)   # カードの台帳(cf_catalog.py)
+LABEL_PREFIX = "満点10-"  # カードに貼ってあるラベルの、番号の前の決まった所(「次に差すカードのラベル」の欄の初め)
+TOOL_VERSION = "1.2.0"   # このツールのバージョン(UsuMantenViewer とは別)
 POLL_MS = 100            # 別スレッドの結果と進み具合を見る間隔
 DISK_POLL_MS = 1500      # カードの抜き差しを見る間隔
 
@@ -71,9 +86,17 @@ class CfCardWindow:
     self.progress = None           # (済んだ, 全体, 段階)
     self.cancel = False
     self.busy = False
+    self.listing = False           # ディスクの一覧を別スレッドで調べているとき
     self.disks = []
     self.waiting = None            # 2 枚目を待っているとき: {"mode", "gone", ...}
+    self.pending_move = None       # ラベルを付け直すとき、台帳から消す前のラベル
+    self.known_nodes = None        # 前に見たときのカード(差したら自動で登録するため。起動したときに入っていたカードは除く)
     self.stations = cf_card.load_stations(ETC_DIR)
+    catalog_error = None
+    try:
+      self.catalog = cf_catalog.load(CATALOG)
+    except (OSError, ValueError) as e:
+      self.catalog, catalog_error = {}, e
 
     frame = ttk.Frame(root, padding=12)
     frame.pack(fill=tk.BOTH, expand=True)
@@ -184,6 +207,51 @@ class CfCardWindow:
                    "書き足した日の ZIP は、Googleドライブのフォルダに保存し直してください。"
               ).pack(anchor="w", pady=(8, 0))
 
+    # --- カード一覧 ---
+    cl = ttk.Frame(notebook, padding=10)
+    notebook.add(cl, text="カード一覧")
+    self.tab_catalog = cl
+    row = ttk.Frame(cl)
+    row.pack(fill=tk.X)
+    self.btn(row, "差したカードを調べて登録", self.start_register).pack(side=tk.LEFT)
+    self.btn(row, "WIN があるか確かめ直す", self.recheck_win).pack(side=tk.LEFT, padx=(6, 0))
+    self.btn(row, "メモを書く", self.edit_memo).pack(side=tk.LEFT, padx=(6, 0))
+    self.btn(row, "台帳から消す", self.delete_label).pack(side=tk.LEFT, padx=(6, 0))
+    self.btn(row, "フォルダを開く", self.open_catalog_folder).pack(side=tk.LEFT, padx=(6, 0))
+    row = ttk.Frame(cl)
+    row.pack(fill=tk.X, pady=(6, 0))
+    ttk.Label(row, text="次に差すカードのラベル:").pack(side=tk.LEFT)
+    self.var_next_label = tk.StringVar(value=LABEL_PREFIX)
+    ttk.Entry(row, textvariable=self.var_next_label, width=16).pack(side=tk.LEFT, padx=(4, 0))
+    self.var_auto_register = tk.BooleanVar(value=False)
+    ttk.Checkbutton(row, text="カードを差したら、自動で調べて登録する(このタブを開いているとき)", variable=self.var_auto_register
+                    ).pack(side=tk.LEFT, padx=(12, 0))
+    ttk.Label(cl, foreground="#666666",
+              text="差すとラベルが見えなくなるので、差す前にラベルを見て番号を入れてください。登録すると番号を 1 つ進めます。"
+              ).pack(anchor="w", pady=(2, 0))
+    self.lbl_catalog = ttk.Label(cl, text="")
+    self.lbl_catalog.pack(anchor="w", pady=(6, 0))
+    row = ttk.Frame(cl)
+    row.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+    cols = [("ラベル", 120), ("状態", 80), ("拠点", 120), ("枚目", 40), ("記録の期間", 230), ("WIN", 130),
+            ("イメージ", 150), ("初期化", 130), ("メモ", 120)]
+    self.tree = ttk.Treeview(row, columns=[c for c, _ in cols], show="headings", height=9, selectmode="browse")
+    for c, w in cols:
+      self.tree.heading(c, text=c)
+      self.tree.column(c, width=w, stretch=c == "メモ")
+    sb = ttk.Scrollbar(row, orient=tk.VERTICAL, command=self.tree.yview)
+    self.tree.configure(yscrollcommand=sb.set)
+    self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sb.pack(side=tk.LEFT, fill=tk.Y)
+    self.tree.tag_configure("reuse", background="#dff0d8")
+    self.tree.tag_configure("blank", foreground="#666666")
+    self.tree.bind("<Double-1>", lambda e: self.edit_memo())
+    ttk.Label(cl, foreground="#666666", justify=tk.LEFT, wraplength=900,
+              text="緑の行は、初期化して使い回してよいカード(記録の最初と最後の分の WIN が daily_zips にある)。古いものから並べます。\n"
+                   "続いて初期化済み、まだ WIN が無い記録、の順。読み込み・初期化のときにもラベルを聞いて、台帳に書き足します。\n"
+                   f"台帳: {CATALOG}(行をダブルクリックするとメモを書けます)"
+              ).pack(anchor="w", pady=(6, 0))
+
     # --- 進み具合・ログ ---
     row = ttk.Frame(frame)
     row.pack(fill=tk.X, pady=(10, 0))
@@ -199,6 +267,9 @@ class CfCardWindow:
 
     self.log("CF カードを入れて、macOS が「読み取れないディスク」と言ったら「無視」を押してください(「初期化」は押さない)。")
     self.log("カードを開くときに、macOS のパスワードの画面が出ます(1 枚ごとに 1 回)。")
+    if catalog_error:
+      self.log(f"※ カードの台帳が読めません({catalog_error})。{CATALOG} を確かめてください。")
+    self.refresh_catalog()
     self.refresh_disks()
     self.root.after(POLL_MS, self.poll)
 
@@ -307,16 +378,40 @@ class CfCardWindow:
 
   # ---------------------------------------------------------------- カードの一覧
 
+  # ディスクの一覧(diskutil を何回も呼ぶので 1 秒ほどかかる)は別スレッドで調べる。画面で調べると、入力・スクロールが重くなる
   def refresh_disks(self):
-    if not self.busy:
-      try:
-        disks = cf_card.list_disks()
-      except CardError as e:
-        disks = []
-        self.lbl_disks.configure(text=str(e))
-      self.update_disks(disks)
-      self.check_waiting()
+    if not self.busy and not self.listing:
+      self.listing = True
+
+      def work():
+        try:
+          disks, error = cf_card.list_disks(), None
+        except Exception as e:   # noqa: BLE001(一覧が調べられなくても、次の回にまた調べる)
+          disks, error = [], e
+        self.calls.put(lambda: self.disks_listed(disks, error))
+      threading.Thread(target=work, daemon=True).start()
     self.root.after(DISK_POLL_MS, self.refresh_disks)
+
+  def disks_listed(self, disks, error):
+    self.listing = False
+    if self.busy:       # 調べている間に読み込み・初期化などが始まった
+      return
+    self.update_disks(disks)
+    if error:
+      self.lbl_disks.configure(text=str(error))
+    self.check_waiting()
+    self.check_auto_register()
+
+  # 「差したら自動で登録する」: 前に見たときに無かったカードが入ったら、登録を始める
+  #   「カード一覧」のタブを開いているときだけ(読み込みなど、ほかのタブで使うカードは登録しない)
+  def check_auto_register(self):
+    nodes = {d.node for d in self.disks}
+    new = [d for d in self.disks if self.known_nodes is not None and d.node not in self.known_nodes]
+    self.known_nodes = nodes
+    on_tab = self.notebook.select() == str(self.tab_catalog)
+    if new and on_tab and self.var_auto_register.get() and not self.waiting and not self.busy:
+      self.log(f"カードが入りました({new[0].node})。")
+      self.start_register(new[0])
 
   def update_disks(self, disks):
     cards = [d for d in disks if d.is_card]
@@ -346,6 +441,8 @@ class CfCardWindow:
       self.eject(d)
 
   def eject(self, disk):
+    if self.known_nodes:
+      self.known_nodes.discard(disk.node)   # 次に差したカードが同じ名前(/dev/diskN)でも、新しく入ったとみる
     try:
       cf_card.eject(disk)
       self.log(f"{disk.node} を取り出しました。")
@@ -382,9 +479,9 @@ class CfCardWindow:
 
   # ---------------------------------------------------------------- 読み込み
 
-  def start_read(self):
+  def start_read(self, disk=None):
     self.cancel = False
-    disk = self.selected_disk()
+    disk = disk or self.selected_disk()
     if not disk:
       messagebox.showinfo("CF カード", "CF カードが見つかりません。")
       return
@@ -410,6 +507,9 @@ class CfCardWindow:
       state["dev"] = cf_card.Device.open(disk)
       info = cf_card.card_info(state["dev"].head())
       state["started"] = cf_card.record_start(state["dev"]) if info.has_data else None
+      state["range"] = cf_card.card_range(state["dev"], state["started"]) if info.has_data else None
+      state["pos"] = (cf_card.gps_position(state["dev"])
+                      if info.has_data and info.unset else None)
       return info
 
     def opened(info):
@@ -438,9 +538,26 @@ class CfCardWindow:
       session["card"] = index
       session["cards"] = info.cards
       session["station"] = session["station"] or info.station
-      name = self.station_name(info.station)
+      content = cf_catalog.set_content(cf_catalog.new_row(""), info, self.station_name(info.station), state["range"])
+      # 設定値が書かれないまま記録したカードは、どの拠点の分か聞いて、イメージの名前もその拠点にする
+      as_id = session.get("as_station")
+      if not as_id and info.unset:
+        as_id = self.ask_station("読み込むカードの拠点", info.station, self.station_hint(content, pos=state["pos"]))
+        if not as_id:
+          dev.close()
+          self.log("読み込みをやめました。")
+          return
+        session["as_station"] = as_id
+      name = self.station_name(as_id or info.station)
       session["name"] = name
       session["started"] = session.get("started") or started
+      if as_id:
+        content = cf_catalog.set_content(cf_catalog.new_row(""), info, name, state["range"], as_station=as_id)
+      label = self.ask_label("読み込むカード", content, allow_skip=True)
+      if label is None:
+        dev.close()
+        self.log("読み込みをやめました。")
+        return
       out = folder / cf_card.image_name(name, index, session["started"])
       if out.exists() and not messagebox.askyesno("CF カード", f"{out.name} はもうあります。上書きしますか?",
                                                    default=messagebox.NO):
@@ -462,6 +579,10 @@ class CfCardWindow:
         self.log(f"読み込みました: {out.name}  SHA-256 {digest}" + ("(2 回読んで同じでした)" if verify else "")
                  + f"。かかった時間 {duration_text(time.monotonic() - t0)}")
         self.log(f"  速さ: {speed_text(disk.size, stats)}")
+        if label:
+          content.update({"イメージ": out.name, "SHA-256": digest})
+          content["WIN"] = cf_catalog.win_state(content, ZIPS_DIR)
+          self.store_card(label, content, "読み込み")
         session["images"].append(out)
         if index < info.cards:
           self.wait_next(disk, session)
@@ -495,6 +616,58 @@ class CfCardWindow:
   def station_name(self, station_id):
     s = next((s for s in self.stations if s.id == station_id), None)
     return s.name if s else station_id
+
+  # 設定値が書かれないまま記録したカード(拠点ID 0000000000 など。cf_card.CardInfo.unset)の、拠点の候補と理由
+  #   台帳の同じ中身の行の読み替え > イメージの名前の拠点 > GPS の文の位置にいちばん近い拠点
+  def station_hint(self, content=None, image=None, pos=None):
+    if content:
+      guess = cf_catalog.guess_label(self.catalog, content)
+      if guess and self.catalog[guess].get("読み替え"):
+        return self.catalog[guess]["読み替え"], f"台帳の {guess}(同じ中身のカード)で読み替えた拠点"
+    if image:
+      head = Path(image).name.split("_", 1)[0].lower()
+      s = next((s for s in self.stations if s.name.lower() == head), None)
+      if s:
+        return s.id, f"イメージの名前({Path(image).name})の拠点"
+    s, km = cf_card.nearest_station(self.stations, pos)
+    if s:
+      return s.id, (f"GPS の文の位置(北緯 {pos[0]:.4f}°・東経 {pos[1]:.4f}°)にいちばん近い拠点(約 {km:.1f} km)。"
+                    "ロガーの GPS は測位しないので、GPS の受信機が覚えていた位置です")
+    return None, "手がかりがありません"
+
+  # 設定値が書かれないまま記録したカードを、どの拠点の分とみるか聞く。返り値: 拠点ID。やめたら None
+  def ask_station(self, title, card_id, hint):
+    default, why = hint
+    top = tk.Toplevel(self.root)
+    top.title(title)
+    top.transient(self.root)
+    frm = ttk.Frame(top, padding=12)
+    frm.pack(fill=tk.BOTH, expand=True)
+    ttk.Label(frm, justify=tk.LEFT, wraplength=560,
+              text=f"このカードは設定値が書かれないまま記録したようです(拠点ID {card_id}・チャンネル f000〜)。\n"
+                   "どの拠点の記録とみるか選んでください。拠点ID・チャンネル・校正値をその拠点のものに読み替えます。\n\n"
+                   f"候補: {self.station_name(default) if default else 'なし'}({why})").pack(anchor="w")
+    names = [f"{s.name}({s.id})" for s in self.stations]
+    var = tk.StringVar(value=next((n for n, s in zip(names, self.stations) if s.id == default), ""))
+    cmb = ttk.Combobox(frm, textvariable=var, values=names, state="readonly", width=30)
+    cmb.pack(anchor="w", pady=(8, 0))
+    result = {"v": None}
+
+    def ok():
+      if cmb.current() < 0:
+        top.bell()
+        return
+      result["v"] = self.stations[cmb.current()].id
+      top.destroy()
+    row = ttk.Frame(frm)
+    row.pack(anchor="e", pady=(12, 0))
+    ttk.Button(row, text="OK", command=ok).pack(side=tk.LEFT)
+    ttk.Button(row, text="やめる", command=top.destroy).pack(side=tk.LEFT, padx=(6, 0))
+    top.grab_set()
+    self.root.wait_window(top)
+    if result["v"]:
+      self.log(f"拠点ID {card_id} のカードを、{self.station_name(result['v'])}({result['v']})として扱います。")
+    return result["v"]
 
   # 読み込んだイメージの記録の期間など(raw_to_win.py --info と同じ)
   def show_info(self, session):
@@ -624,7 +797,10 @@ class CfCardWindow:
     def open_card():
       state["dev"] = cf_card.Device.open(disk, write=True)
       head = state["dev"].head()
-      return cf_card.card_info(head), cf_card.find_image(head, self.var_folder.get()), head
+      info = cf_card.card_info(head)
+      started = cf_card.record_start(state["dev"]) if info.has_data else None
+      state["range"] = cf_card.card_range(state["dev"], started) if info.has_data else None
+      return info, cf_card.find_image(head, self.var_folder.get()), head
 
     def state_head_is(setting, result):
       return result[2][:cf_card.SETTING_SIZE] == setting
@@ -641,6 +817,16 @@ class CfCardWindow:
         saved = "記録はありません(いま書こうとしている設定値と同じ中身です。初期化したカードをもう一度入れた?)。"
       else:
         saved = "記録はありません。"
+      before = cf_catalog.set_content(cf_catalog.new_row(""), info, self.station_name(info.station), state["range"])
+      if info.has_data and info.unset:
+        as_id, why = self.station_hint(before)   # 台帳で読み替えてあれば、その拠点で WIN を探す
+        if as_id and why.startswith("台帳"):
+          before = cf_catalog.set_content(cf_catalog.new_row(""), info, self.station_name(as_id), state["range"],
+                                          as_station=as_id)
+      if info.has_data and state["range"]:
+        before["WIN"] = cf_catalog.win_state(before, ZIPS_DIR)
+        if before["WIN"] != cf_catalog.WIN_OK:
+          saved += f"\n※ この記録({before['記録の始め']} 〜 {before['記録の終わり']})の WIN は、{before['WIN']}。"
       self.log(saved)
       if self.cancel:
         dev.close()
@@ -656,6 +842,9 @@ class CfCardWindow:
       if ok and warn:
         ok = messagebox.askyesno("CF カードの初期化", "読み込んでいない記録が消えます。本当に初期化しますか?",
                                  icon=messagebox.WARNING, default=messagebox.NO)
+      if ok:
+        label = self.ask_label("初期化するカード", before, allow_skip=True)
+        ok = label is not None
       if not ok:
         dev.close()
         self.log("初期化をやめました。")
@@ -674,6 +863,8 @@ class CfCardWindow:
         self.log(f"{session['card']} 枚目を初期化しました" + ("(読み直して確かめました)" if verify else "")
                  + f"。かかった時間 {duration_text(time.monotonic() - t0)}")
         self.log(f"  速さ: {speed_text(disk.size, stats)}")
+        if label:
+          self.store_initialized(label, desc, before)
         if session["card"] < desc["カードの枚数"]:
           self.wait_next(disk, session)
         else:
@@ -701,21 +892,32 @@ class CfCardWindow:
     self.clear_progress("変換の準備(記録の範囲を調べています)")
     lines = []
 
+    cal = {}
+
+    # 回収 1 つ分の準備(校正値・GPS による補正・書き出し先)
+    def setup(files, start, out):
+      header = files[0].header
+      name = self.station_name(header["station"])
+      out.append(f"{name}({header['station']}): {', '.join(f.path.name for f in files)}")
+      offsets, gains = raw_to_win.calibration_for(header, cal, out.append)
+      corrections = raw_to_win.gps_corrections(files)
+      raw_to_win.print_corrections(corrections, start, True, out.append)
+      a, b = raw_to_win.record_range(files, start)
+      return dict(files=files, start=start, header=header, offsets=offsets, gains=gains,
+                  corrections=corrections, name=name, period=f"{a:%Y-%m-%d %H:%M} 〜 {b:%Y-%m-%d %H:%M}",
+                  target=ZIPS_DIR if daily else
+                  SOURCE_ZIPS_DIR / raw_to_win.source_zip_name(header["station"], name, files, start))
+
     def prepare():
       jobs = []
-      cal = raw_to_win.load_cal()
+      cal.update(raw_to_win.load_cal())
       for files, start in raw_to_win.open_groups(images, lines.append):
-        header = files[0].header
-        name = self.station_name(header["station"])
-        lines.append(f"{name}({header['station']}): {', '.join(f.path.name for f in files)}")
-        offsets, gains = raw_to_win.calibration_for(header, cal, lines.append)
-        corrections = raw_to_win.gps_corrections(files)
-        raw_to_win.print_corrections(corrections, start, True, lines.append)
-        a, b = raw_to_win.record_range(files, start)
-        jobs.append(dict(files=files, start=start, header=header, offsets=offsets, gains=gains,
-                         corrections=corrections, name=name, period=f"{a:%Y-%m-%d %H:%M} 〜 {b:%Y-%m-%d %H:%M}",
-                         target=ZIPS_DIR if daily else
-                         SOURCE_ZIPS_DIR / raw_to_win.source_zip_name(header["station"], name, files, start)))
+        sid = files[0].header["station"]
+        if raw_to_win.is_unset(files[0].header):
+          # 設定値が書かれないまま記録したカード: 拠点を聞いてから準備する(画面のほうで)
+          jobs.append(dict(unset=True, files=files, start=start, pos=files[0].gps_position()))
+        else:
+          jobs.append(setup(files, start, lines))
       return jobs
 
     def stop(text="変換をやめました。"):
@@ -727,6 +929,24 @@ class CfCardWindow:
         self.log(line)
       if self.cancel:
         return stop("中止しました。")
+      for i, j in enumerate(jobs):
+        if j.get("unset"):
+          files = j["files"]
+          sid = files[0].header["station"]
+          as_id = self.ask_station("変換するイメージの拠点", sid, self.station_hint(image=files[0].path, pos=j["pos"]))
+          if not as_id:
+            return stop()
+          out = []
+          try:
+            raw_to_win.as_station(files, as_id, cal, out.append)
+            jobs[i] = setup(files, j["start"], out)
+          except raw_to_win.RawError as e:
+            out.append(f"エラー: {e}")
+            jobs[i] = None
+          for line in out:
+            self.log(line)
+          if jobs[i] is None:
+            return stop()
       plan = "\n".join(f"  {j['name']}({j['header']['station']}): {j['period']}" for j in jobs)
       if daily:
         ok = messagebox.askyesno("CF カード", f"次の WIN を、\n{ZIPS_DIR} の日ごとの ZIP に書き足します。\n\n{plan}\n\n"
@@ -808,6 +1028,7 @@ class CfCardWindow:
           new_days.update(d for d in w.added if d not in w.appended)
           raw_to_win.print_daily_result(w, self.log)
           appended.update(*w.appended.values())
+          self.recheck_win(station=j["header"]["station"], quiet=True)
           added = added or bool(w.added)
         start(i + 1)
 
@@ -822,6 +1043,248 @@ class CfCardWindow:
           self.log(f"※ 残りの {', '.join(rest)} は変換していません。")
       self.run(work, done, failed)
     start(0)
+
+  # ---------------------------------------------------------------- カードの台帳
+
+  def refresh_catalog(self):
+    self.tree.delete(*self.tree.get_children())
+    for r in sorted(self.catalog.values(), key=cf_catalog.list_key):
+      rec = r["状態"] == cf_catalog.RECORDED
+      period = f"{r['記録の始め']} 〜 {r['記録の終わり']}" + ("(いっぱい)" if r["いっぱい"] == "はい" else "") if rec else ""
+      init = " ".join(x for x in (r["初期化した日"], r["初期化の拠点"]) if x)
+      tag = "reuse" if cf_catalog.reusable(r) else "blank" if r["状態"] == cf_catalog.BLANK else ""
+      self.tree.insert("", tk.END, iid=r["ラベル"], tags=(tag,),
+                       values=(r["ラベル"], r["状態"], (r["拠点名"] or r["拠点ID"]) + ("(読み替え)" if r["読み替え"] else ""), r["枚目"], period, r["WIN"],
+                               r["イメージ"], init, r["メモ"]))
+    self.lbl_catalog.configure(text=cf_catalog.summary(self.catalog))
+
+  def save_catalog(self, label, action, detail):
+    try:
+      cf_catalog.save(CATALOG, self.catalog)
+      cf_catalog.append_log(CATALOG_LOG, label, action, detail)
+    except OSError as e:
+      self.log(f"※ カードの台帳に書けません: {e}")
+    self.refresh_catalog()
+
+  # カードのラベルを聞く。content ... いま入っているカードの中身(cf_catalog の行の形)
+  #   返り値: ラベル。allow_skip なら「ラベルなしで続ける」で ""(台帳には書かない)。やめたら None
+  def ask_label(self, title, content, allow_skip=False):
+    guess = cf_catalog.guess_label(self.catalog, content)
+    nxt = self.next_label()
+    top = tk.Toplevel(self.root)
+    top.title(title)
+    top.transient(self.root)
+    frm = ttk.Frame(top, padding=12)
+    frm.pack(fill=tk.BOTH, expand=True)
+    text = f"このカードの中身: {cf_catalog.describe(content)}\n\nカードに貼ってあるラベルを入れてください。"
+    if guess:
+      text += f"\n(台帳では、同じ中身のカードは {guess} です)"
+    ttk.Label(frm, text=text, justify=tk.LEFT, wraplength=560).pack(anchor="w")
+    var = tk.StringVar(value=guess or nxt or LABEL_PREFIX)
+    cmb = ttk.Combobox(frm, textvariable=var, width=24, values=sorted(self.catalog, key=cf_catalog.label_key))
+    cmb.pack(anchor="w", pady=(8, 0))
+    result = {"v": None}
+
+    def ok():
+      label = var.get().strip()
+      if not label:
+        top.bell()
+        return
+      if not self.label_ok(label, content, guess):
+        return
+      result["v"] = label
+      self.advance_next_label(label)
+      top.destroy()
+
+    def skip():
+      result["v"] = ""
+      top.destroy()
+    row = ttk.Frame(frm)
+    row.pack(anchor="e", pady=(12, 0))
+    ttk.Button(row, text="OK", command=ok).pack(side=tk.LEFT)
+    if allow_skip:
+      ttk.Button(row, text="ラベルなしで続ける", command=skip).pack(side=tk.LEFT, padx=(6, 0))
+    ttk.Button(row, text="やめる", command=top.destroy).pack(side=tk.LEFT, padx=(6, 0))
+    cmb.bind("<Return>", lambda e: ok())
+    cmb.focus_set()
+    cmb.icursor(tk.END)
+    top.grab_set()
+    self.root.wait_window(top)
+    return result["v"]
+
+  # 入れたラベルでよいか(台帳の中身と違う・同じ中身がほかのラベルにあるときは確かめる)
+  #   quiet ... 確かめる必要があるときは、聞かずに False を返す(ラベルを聞くダイアログを出す)
+  def label_ok(self, label, content, guess, quiet=False):
+    old = self.catalog.get(label)
+    if quiet:
+      self.pending_move = None
+      return not (guess and guess != label) and not (old and old["状態"] == cf_catalog.RECORDED and guess != label)
+    if guess and guess != label:
+      if not messagebox.askyesno("カードのラベル", f"同じ中身のカードは、台帳では {guess} です。\n\n"
+                                 f"{label} にしますか?({guess} の行は台帳から消します)", default=messagebox.NO):
+        return False
+      self.pending_move = guess
+    else:
+      self.pending_move = None
+    if old and old["状態"] == cf_catalog.RECORDED and guess != label:
+      return messagebox.askyesno("カードのラベル", f"台帳の {label} は、次の中身です:\n{cf_catalog.describe(old)}\n\n"
+                                 f"いま入っているカードの中身:\n{cf_catalog.describe(content)}\n\n"
+                                 "ラベルは合っていますか?(違うカードを入れていないか、確かめてください)",
+                                 icon=messagebox.WARNING, default=messagebox.NO)
+    return True
+
+  # 調べた中身を台帳に書く(メモ・初期化した日などは残す。同じ記録なら、イメージも残す)
+  def store_card(self, label, content, action):
+    moved = getattr(self, "pending_move", None)
+    self.pending_move = None
+    old = self.catalog.pop(moved, None) if moved and moved != label else None
+    if old:
+      cf_catalog.append_log(CATALOG_LOG, moved, "ラベルを付け直す", f"{label} に移しました")
+    old = self.catalog.get(label) or old or cf_catalog.new_row(label)
+    row = dict(old)
+    same = all(old.get(k) == content.get(k) for k in ("状態", "拠点ID", "枚目", "記録の始め"))
+    for k in ("状態", "拠点ID", "読み替え", "拠点名", "枚目", "全枚数", "記録の始め", "記録の終わり", "いっぱい", "WIN", "確かめた日時"):
+      row[k] = content.get(k, "")
+    for k in ("イメージ", "SHA-256"):
+      row[k] = content.get(k) or (old.get(k, "") if same else "")
+    if content["状態"] == cf_catalog.BLANK and not (same and old.get("初期化の拠点")):
+      row["初期化の拠点"] = content["拠点名"] or content["拠点ID"]
+      if not same:
+        row["初期化した日"] = ""
+    row["ラベル"] = label
+    self.catalog[label] = row
+    self.save_catalog(label, action, cf_catalog.describe(row))
+    self.log(f"台帳: {label} = {cf_catalog.describe(row)}")
+
+  def store_initialized(self, label, desc, before):
+    self.pending_move = None
+    row = dict(self.catalog.get(label) or cf_catalog.new_row(label))
+    name = self.station_name(desc["ID"])
+    row.update({"状態": cf_catalog.BLANK, "拠点ID": desc["ID"], "拠点名": name, "枚目": "",
+                "全枚数": str(desc["カードの枚数"]), "初期化した日": datetime.now().strftime("%Y-%m-%d"),
+                "初期化の拠点": name, "確かめた日時": datetime.now().strftime(cf_catalog.TIME_FMT)})
+    cf_catalog.clear_record(row)
+    self.catalog[label] = row
+    self.save_catalog(label, "初期化", f"{cf_catalog.describe(row)}。前の中身: {cf_catalog.describe(before)}")
+    self.log(f"台帳: {label} = {cf_catalog.describe(row)}")
+
+  # 差したカードの先頭と記録の範囲だけを読んで(数秒)、台帳に書く
+  def start_register(self, disk=None):
+    self.cancel = False
+    disk = disk or self.selected_disk()
+    if not disk:
+      messagebox.showinfo("CF カード", "CF カードが見つかりません。")
+      return
+    self.log(f"--- カードを調べます({disk.node})。パスワードの画面が出たら入力してください。")
+    self.clear_progress("カードを開いています")
+
+    def look():
+      with cf_card.Device.open(disk) as dev:
+        head = dev.head()
+        info = cf_card.card_info(head)
+        started = cf_card.record_start(dev) if info.has_data else None
+        rng = cf_card.card_range(dev, started) if info.has_data else None
+        pos = cf_card.gps_position(dev) if info.has_data and info.unset else None
+        return info, rng, cf_card.find_image(head, self.var_folder.get()), pos
+
+    def looked(res):
+      info, rng, images, pos = res
+      self.lbl_progress.configure(text="")
+      self.log(f"中身: {cf_card.card_summary(info)}")
+      content = cf_catalog.set_content(cf_catalog.new_row(""), info, self.station_name(info.station), rng)
+      if info.has_data and info.unset:
+        as_id = self.ask_station("カードの拠点", info.station,
+                                 self.station_hint(content, images[0] if images else None, pos))
+        if not as_id:
+          self.log("登録をやめました。")
+          return
+        content = cf_catalog.set_content(cf_catalog.new_row(""), info, self.station_name(as_id), rng, as_station=as_id)
+      if images and content["状態"] == cf_catalog.RECORDED:
+        content["イメージ"] = images[0]
+        sha = Path(self.var_folder.get()) / (images[0] + ".sha256")
+        try:
+          content["SHA-256"] = sha.read_text().split()[0]
+        except (OSError, IndexError):
+          pass
+      content["WIN"] = cf_catalog.win_state(content, ZIPS_DIR)
+      # 次に差すカードのラベルが入っていて、台帳と食い違わなければ、聞かずにそれで登録する
+      label = self.next_label()
+      if not (label and self.label_ok(label, content, cf_catalog.guess_label(self.catalog, content), quiet=True)):
+        label = self.ask_label("カードの登録", content)
+      if not label:
+        self.log("登録をやめました。")
+        return
+      self.store_card(label, content, "登録")
+      self.advance_next_label(label)
+      # まだ WIN が無く、イメージも無いカードは、取り出す前に、続けて読み込むか聞く
+      if (content["状態"] == cf_catalog.RECORDED and content["WIN"] != cf_catalog.WIN_OK
+          and not content["イメージ"] and not self.busy):
+        if messagebox.askyesno("カードの登録", f"{label} の記録({content['記録の始め']} 〜 {content['記録の終わり']})の WIN は、"
+                               f"{content['WIN']}。イメージもありません。\n\n"
+                               "このまま読み込みますか?(「読み込み」のタブで読み込みます。パスワードの画面がもう一度出ます)"):
+          self.notebook.select(0)
+          self.start_read(disk)
+          return
+      self.eject(disk)
+    self.run(look, looked)
+
+  # 「次に差すカードのラベル」(番号まで入っていれば。決まった所だけなら None)
+  def next_label(self):
+    label = self.var_next_label.get().strip()
+    return label if label and label != LABEL_PREFIX and label[-1].isdigit() else None
+
+  # 使ったラベルが「次に差すカードのラベル」なら、番号を 1 つ進める(桁はそろえる。満点10-009 → 満点10-010)
+  def advance_next_label(self, used):
+    if used and used == self.next_label():
+      self.var_next_label.set(cf_catalog.next_number(used))
+
+  # 台帳の記録のカードについて、WIN が daily_zips にあるかを確かめ直す
+  def recheck_win(self, station=None, quiet=False):
+    changed = []
+    for label, r in self.catalog.items():
+      if r["状態"] == cf_catalog.RECORDED and (station is None or r["拠点ID"] == station):
+        w = cf_catalog.win_state(r, ZIPS_DIR)
+        if w != r["WIN"]:
+          changed.append(f"{label}: {r['WIN'] or '(なし)'} → {w}")
+          r["WIN"] = w
+    if changed:
+      self.save_catalog("", "WIN を確かめ直す", "; ".join(changed))
+      for c in changed:
+        self.log(f"台帳: {c}")
+    elif not quiet:
+      self.log("台帳: WIN の有無に変わりはありません。")
+    self.refresh_catalog()
+
+  def selected_label(self):
+    sel = self.tree.selection()
+    if not sel:
+      messagebox.showinfo("カード一覧", "一覧でカードを選んでください。")
+      return None
+    return sel[0]
+
+  def edit_memo(self):
+    label = self.selected_label()
+    if not label:
+      return
+    r = self.catalog[label]
+    memo = simpledialog.askstring("メモ", f"{label} のメモ:", initialvalue=r["メモ"], parent=self.root)
+    if memo is not None and memo != r["メモ"]:
+      r["メモ"] = memo.strip()
+      self.save_catalog(label, "メモ", r["メモ"])
+
+  def delete_label(self):
+    label = self.selected_label()
+    if not label:
+      return
+    r = self.catalog[label]
+    if messagebox.askyesno("カード一覧", f"{label}({cf_catalog.describe(r)})を台帳から消しますか?\n"
+                           "(カードの中身は変わりません。消したことは記録に残ります)", default=messagebox.NO):
+      del self.catalog[label]
+      self.save_catalog(label, "台帳から消す", cf_catalog.describe(r))
+
+  def open_catalog_folder(self):
+    CATALOG.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["open", str(CATALOG.parent)])
 
 
 def main():
