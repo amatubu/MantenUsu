@@ -217,8 +217,9 @@ class CfCardWindow:
     self.btn(row, "差したカードを調べて登録(⌘R)", self.start_register).pack(side=tk.LEFT)
     # ⌘R: 「カード一覧」のタブを開いていて、ほかの処理をしていなければ登録する
     #   (USB 2.0 のリーダーは抜き差しを知らせないので、自動の登録は使えない。差したらこれを押す)
-    root.bind("<Command-r>", lambda e: self.notebook.select() == str(self.tab_catalog) and not self.busy
-              and not self.waiting and self.start_register())
+    #   次のカードを待っているときは「カードを入れました」と同じ(どのタブでも)
+    root.bind("<Command-r>", lambda e: self.continue_waiting() if self.waiting else
+              (self.notebook.select() == str(self.tab_catalog) and not self.busy and self.start_register()))
     self.btn(row, "WIN があるか確かめ直す", self.recheck_win).pack(side=tk.LEFT, padx=(6, 0))
     self.btn(row, "メモを書く", self.edit_memo).pack(side=tk.LEFT, padx=(6, 0))
     self.btn(row, "台帳から消す", self.delete_label).pack(side=tk.LEFT, padx=(6, 0))
@@ -278,6 +279,9 @@ class CfCardWindow:
     self.lbl_progress.pack(side=tk.LEFT, padx=(8, 0))
     self.btn_cancel = ttk.Button(row, text="中止", command=self.request_cancel, state=tk.DISABLED)
     self.btn_cancel.pack(side=tk.RIGHT)
+    # 次のカードを待っている間だけ押せる。抜き差しを知らせない USB 2.0 のリーダーで、差したことを手で伝える
+    self.btn_continue = ttk.Button(row, text="カードを入れました(⌘R)", command=self.continue_waiting, state=tk.DISABLED)
+    self.btn_continue.pack(side=tk.RIGHT, padx=(0, 6))
     self.txt = tk.Text(frame, height=16, width=100, wrap="word")
     self.txt.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
     self.txt.configure(state=tk.DISABLED)
@@ -319,6 +323,7 @@ class CfCardWindow:
       self.waiting = None
       self.lbl_progress.configure(text="")
       self.btn_cancel.configure(state=tk.DISABLED)
+      self.btn_continue.configure(state=tk.DISABLED)
     else:
       self.cancel = True
 
@@ -479,14 +484,43 @@ class CfCardWindow:
       w["gone"] = True
       return
     if w["gone"]:
-      self.waiting = None
-      self.btn_cancel.configure(state=tk.DISABLED)
       disk = self.disks[0]
       self.log(f"{w['card']} 枚目のカードが入りました({disk.node})。")
-      if w["mode"] == "read":
-        self.read_card(disk, w)
-      else:
-        self.write_card(disk, w)
+      self.resume_session(disk, w)
+
+  # 待っていたカードで続ける(自動で見つけたとき・「カードを入れました」を押したとき)
+  def resume_session(self, disk, w, manual=False):
+    self.waiting = None
+    self.btn_cancel.configure(state=tk.DISABLED)
+    self.btn_continue.configure(state=tk.DISABLED)
+    w["manual"] = manual
+    if w["mode"] == "read":
+      self.read_card(disk, w)
+    else:
+      self.write_card(disk, w)
+
+  # 「カードを入れました」: USB 2.0 のリーダーは抜き差しを知らせないので、見えているカードでそのまま続ける
+  #   入れ替え忘れ(前のカードのまま)は、読み込み・初期化のほうで確かめて、待ちに戻す(back_to_waiting)
+  def continue_waiting(self):
+    w = self.waiting
+    if not w or self.busy:
+      return
+    disk = self.selected_disk() or next((d for d in self.disks if d.is_card), None)
+    if not disk:
+      messagebox.showinfo("CF カード", "CF カードが見つかりません。カードリーダーをつなぎ直してみてください。")
+      return
+    self.log(f"{w['card']} 枚目のカードを入れたとして続けます({disk.node})。")
+    self.resume_session(disk, w, manual=True)
+
+  # 手で続けたが、入れ替えていなかったときなどに、また次のカードを待つ
+  def back_to_waiting(self, session, why):
+    self.log(f"※ {why}")
+    session["gone"] = False
+    self.waiting = session
+    self.btn_cancel.configure(state=tk.NORMAL)
+    self.btn_continue.configure(state=tk.NORMAL)
+    self.lbl_progress.configure(text=f"{session['card']} 枚目のカードを待っています")
+    self.log(f"{session['card']} 枚目のカードを入れて「カードを入れました」を押してください(やめるときは「中止」)。")
 
   def wait_next(self, disk, session):
     self.eject(disk)
@@ -494,9 +528,10 @@ class CfCardWindow:
     session["gone"] = False
     self.waiting = session
     self.btn_cancel.configure(state=tk.NORMAL)
+    self.btn_continue.configure(state=tk.NORMAL)
     self.lbl_progress.configure(text=f"{session['card']} 枚目のカードを待っています")
-    self.log(f"{session['card'] - 1} 枚目のカードを抜いて、{session['card']} 枚目を入れてください"
-             "(やめるときは「中止」)。")
+    self.log(f"{session['card'] - 1} 枚目のカードを抜いて、{session['card']} 枚目を入れてください。"
+             "自動で始まらなければ「カードを入れました」(⌘R)を押します(やめるときは「中止」)。")
 
   # ---------------------------------------------------------------- 読み込み
 
@@ -541,6 +576,8 @@ class CfCardWindow:
       problem = self.read_problem(info, session, started)
       if problem:
         dev.close()
+        if session.get("manual") and session["images"]:
+          return self.back_to_waiting(session, problem)
         self.log(f"エラー: {problem}")
         return
       if self.cancel:
@@ -612,7 +649,9 @@ class CfCardWindow:
           self.show_info(session)
       self.run(read, done)
 
-    self.run(open_card, opened)
+    # 手で続けたときにカードを開けなければ(パスワードの画面をやめた・カードが無いなど)、また待つ
+    self.run(open_card, opened,
+             lambda: session.get("manual") and self.back_to_waiting(session, "カードを開けませんでした"))
 
   # 読み込もうとしたカードがおかしいとき、その理由
   def read_problem(self, info, session, started=None):
@@ -831,6 +870,11 @@ class CfCardWindow:
       dev = state["dev"]
       now = cf_card.card_summary(info)
       self.log(f"いまの中身: {now}")
+      # 手で続けたのに、いま初期化したカード(同じ設定値で記録なし)のままなら、書かずに待ちに戻る
+      if session.get("manual") and not info.has_data and info.setting and state_head_is(setting, result):
+        dev.close()
+        return self.back_to_waiting(session, "いま書こうとしている設定値と同じ中身です(前のカードのまま?)。"
+                                    "別のカードを入れてください(同じ設定値で初期化済みのカードなら、初期化は要りません)")
       if info.has_data:
         saved = (f"このカードを読み込んだイメージ: {', '.join(images)}" if images
                  else "※ このカードを読み込んだイメージが保存先にありません。記録は消えます。")
@@ -893,7 +937,9 @@ class CfCardWindow:
           self.lbl_progress.configure(text="初期化が終わりました")
       self.run(write, done)
 
-    self.run(open_card, opened)
+    # 手で続けたときにカードを開けなければ(パスワードの画面をやめた・カードが無いなど)、また待つ
+    self.run(open_card, opened,
+             lambda: session.get("manual") and self.back_to_waiting(session, "カードを開けませんでした"))
 
 
   # ---------------------------------------------------------------- 変換
