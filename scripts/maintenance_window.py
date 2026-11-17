@@ -37,7 +37,7 @@ GC_EVERY = 10
 # フォルダやファイルを OS の標準のアプリで開く
 def open_path(path):
   if sys.platform == "darwin":
-    subprocess.run(["open", str(path)])
+    subprocess.run(["/usr/bin/open", str(path)], close_fds=False)   # fork しない(win_pipeline.spawn_run を参照)
   elif sys.platform == "win32":
     os.startfile(str(path))
   else:

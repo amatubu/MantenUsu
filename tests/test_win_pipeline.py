@@ -193,3 +193,33 @@ def test_zips_to_sacs_raises_station_errors(tmp_path, monkeypatch):
   z = make_zip(tmp_path / "260826.zip", {"1070432002/260826/1070432002_2608260858.win": b"a"})
   with pytest.raises(RuntimeError):
     win_pipeline.zips_to_sacs([z], datetime(2026, 8, 26, 8), datetime(2026, 8, 26, 9), tmp_path / "out", tools, etc)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows では前のとおりフォルダを移って動かす")
+def test_run_win2sac_tool_does_not_fork(tmp_path, monkeypatch):
+  # 画面を使う間に fork しないよう、cwd を使わず close_fds=False で動かし、チャンネル表を絶対パスにした prm を渡す
+  work = tmp_path / "work"; work.mkdir()
+  prm = tmp_path / "win.prm"; prm.write_text(".\nmanten_ch.tbl\n.\n.\n")
+  seen = {}
+  def fake_run(cmd, **kw):
+    seen["cmd"], seen["kw"] = cmd, kw
+    seen["prm"] = Path(cmd[-1][2:]).read_text()
+    return "result"
+  monkeypatch.setattr(win_pipeline.subprocess, "run", fake_run)
+  res = win_pipeline.run_win2sac_tool(tmp_path / "win2sac_32", work / "combined_1.win", tmp_path / "1.ch", "1_sac", prm)
+  assert res == "result"
+  assert seen["kw"]["close_fds"] is False and "cwd" not in seen["kw"]
+  assert all(Path(a).is_absolute() for a in (seen["cmd"][0], seen["cmd"][1], seen["cmd"][2], seen["cmd"][4]))
+  assert seen["prm"].split("\n")[1] == str((work / "manten_ch.tbl").resolve())
+  assert not list(work.glob("*.prm"))   # 一時的な prm は消す
+
+
+def test_run_win2sac_tool_keeps_cwd_for_paths_with_spaces(tmp_path, monkeypatch):
+  # チャンネル表のパスに空白があると prm の中で区切られてしまうので、前のとおりフォルダを移って動かす
+  work = tmp_path / "my work"; work.mkdir()
+  prm = tmp_path / "win.prm"; prm.write_text(".\nmanten_ch.tbl\n.\n.\n")
+  seen = {}
+  monkeypatch.setattr(win_pipeline.subprocess, "run", lambda cmd, **kw: seen.update(cmd=cmd, kw=kw))
+  win_pipeline.run_win2sac_tool(tmp_path / "win2sac_32", work / "combined_1.win", tmp_path / "1.ch", "1_sac", prm)
+  assert seen["kw"]["cwd"] == work.resolve()
+  assert seen["cmd"][1] == "combined_1.win" and seen["cmd"][4] == "."

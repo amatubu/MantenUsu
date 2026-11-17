@@ -236,6 +236,8 @@ warnings.filterwarnings(
 #     拠点ごとにつなぐようにし(win_pipeline.zips_to_sacs)、4拠点の変換を同時に動かし、ZIP の中の一覧は ZIP ごとに
 #     覚えて読み直さないようにした。できる SAC ファイルは前のやり方と同じ(1〜3時間の5つの期間で全ファイル一致)
 #     あわせて、検出のログに処理時間(全体・日ごとの RMS とそれ以外・RMS を計算した日の1日あたり、日ごとの行にもその日の時間)を出すようにした
+#     また、win2sac_32・wchch_32 を fork せずに動かすようにした(検出中に「The process has forked …」の警告が出ていた。
+#     win.prm のチャンネル表を絶対パスにした prm を一時的に作り、cwd を使わない。win_pipeline.run_win2sac_tool。外部の観測点の変換も同じ)
 
 # クラス定義
 class MantenUsuSeismographApp:

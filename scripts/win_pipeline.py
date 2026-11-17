@@ -282,7 +282,7 @@ def correct_channels(combined_win, station_id, tools_dir, etc_dir):
   corrected_win = combined_win.parent / f"{CORRECTED_PREFIX}{station_id}{WIN_SUFFIX}"
   # wchch_32 [ch conv table] < [in_file] > [out_file]
   with open(combined_win, "rb") as fin, open(corrected_win, "wb") as fout:
-    res = subprocess.run(
+    res = spawn_run(
       [str(wchch_path.resolve()), str(conv_tbl_path.resolve())],
       stdin=fin, stdout=fout, stderr=subprocess.PIPE)
   if res.returncode != 0:
@@ -347,6 +347,44 @@ def time_chunks(files, when=lambda f: win_datetime(f.name)):
     chunks[-1].append(f)
   return chunks
 
+# 外部ツールを fork せずに起動する(posix_spawn)
+#   画面(Tk)を使っている間に fork すると、macOS が「The process has forked and you cannot use this
+#   CoreFoundation functionality safely」と出す。subprocess は close_fds=True(既定)や cwd を渡したときは
+#   macOS では fork するので、close_fds=False にし、コマンドは絶対パスで渡し、cwd は使わない
+#   (Python が開くファイルは既定で子に引き継がれないので、close_fds=False でも安全。cf_card.spawn_run と同じ)
+def spawn_run(cmd, **kw):
+  return subprocess.run(cmd, close_fds=False, **kw)
+
+# win2sac_32 を動かす(SACファイルは WINファイルと同じフォルダに出力)
+#   win.prm の2行目のチャンネル表は、win2sac_32 を動かすフォルダからの相対パス(manten_ch.tbl)なので、
+#   その行を絶対パスにした prm を一時的に作り、フォルダを移らずに(fork せずに)動かす
+#   チャンネル表のパスに空白があるとき(prm の中で区切られてしまう)と Windows では、前のとおりフォルダを移って動かす
+#   win_file ... 変換する WINファイル、ch_file ... チャンネルIDファイル、sac_name ... 出力するSACファイル名の末尾
+#   戻り値 ... subprocess.CompletedProcess(stdout・stderr はバイト列)
+# usage: win2sac_32 winfile ch_no sacfile [outdir] [-p(prmfile)]
+#          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
+def run_win2sac_tool(win2sac_path, win_file, ch_file, sac_name, prm_path):
+  work = win_file.parent.resolve()
+  lines = prm_path.read_text().split("\n")
+  tbl = (work / lines[1].strip()) if len(lines) > 1 and lines[1].strip() else None
+  if sys.platform == "win32" or tbl is None or any(c.isspace() for c in str(tbl)):
+    return subprocess.run([str(win2sac_path.resolve()), win_file.name, str(ch_file.resolve()), sac_name, ".",
+                           f"-p{prm_path.resolve()}"],
+                          cwd=work, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  lines[1] = str(tbl)
+  tmp_prm = work / f"{sac_name}.prm"   # 拠点ごと・区切りごとに別の名前(同時に動かすため)
+  tmp_prm.write_text("\n".join(lines))
+  try:
+    return spawn_run([str(win2sac_path.resolve()),   # win2sac_32 のフルパス
+                      str(win_file.resolve()),       # 結合された(読み替え後の)WINファイル
+                      str(ch_file.resolve()),        # チャンネル定義ファイルのフルパス
+                      sac_name,                      # 出力するSACファイル
+                      str(work),                     # 出力先フォルダ
+                      f"-p{tmp_prm}"],               # prmファイル(チャンネル表を絶対パスにしたもの)
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  finally:
+    tmp_prm.unlink(missing_ok=True)
+
 # win2sac_32 で1つのWINファイルを変換する(SACファイルはWINファイルと同じフォルダに出力)
 #   sac_name ... 出力するSACファイル名の末尾(拠点名.成分.<sac_name> になる)
 def run_win2sac(win2sac_path, win_prm_path, target_win, station_id, sac_name, etc_dir):
@@ -355,18 +393,7 @@ def run_win2sac(win2sac_path, win_prm_path, target_win, station_id, sac_name, et
   if not station_ch_path.exists():
     station_ch_path = etc_dir / "manten.ch"
 
-  # usage: win2sac_32 winfile ch_no sacfile [outdir] [-p(prmfile)]
-  #          [-Y] [-e] [-b[BIN]] [-a[ASC]] [-r(RATIO)] [-m(PMAX)]
-  cmd = [
-    str(win2sac_path.resolve()),     # win2sac_32 のフルパス
-    target_win.name,                 # 結合された(読み替え後の)WINファイル
-    str(station_ch_path.resolve()),  # チャンネル定義ファイルのフルパス
-    sac_name,                        # 出力するSACファイル
-    ".",                             # 出力先フォルダ(カレントディレクトリ)
-    f"-p{win_prm_path.resolve()}",   # prmファイルのフルパス
-  ]
-  result = subprocess.run(cmd, cwd=target_win.parent,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  result = run_win2sac_tool(win2sac_path, target_win, station_ch_path, sac_name, win_prm_path)
   # 点の数が上限を超えたときなどは、終了コード 0 のまま ERROR を出して何も出力しない
   if result.returncode != 0 or b"ERROR" in result.stderr:
     log_message(f"変換エラー (Station: {station_id}): "

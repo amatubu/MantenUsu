@@ -9,7 +9,6 @@
 #   防災科研・気象庁のデータなので、v-net フォルダは Git の管理外にしている
 import re
 import shutil
-import subprocess
 import zipfile
 from datetime import datetime, timedelta
 
@@ -17,6 +16,7 @@ import obspy
 
 import app_paths
 import cache_manager
+import win_pipeline
 from win_pipeline import tool_path
 from log_common import log_message
 
@@ -146,8 +146,8 @@ def _convert(zip_path, stations, log=log_message):
       if not chans:
         continue   # 別の網の ZIP など
       (work / f"{name}.ch").write_text(",".join(chans[c] for c in COMPONENTS if c in chans))
-      res = subprocess.run([str(win2sac.resolve()), "all.cnt", f"{name}.ch", "out", ".", "-pwin.prm"],
-                           cwd=work, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      # fork しないで動かす(win_pipeline.run_win2sac_tool)
+      res = win_pipeline.run_win2sac_tool(win2sac, work / "all.cnt", work / f"{name}.ch", "out", work / "win.prm")
       for c in chans:
         src = work / f"{st['code']}.{c}.out"
         if src.exists():
