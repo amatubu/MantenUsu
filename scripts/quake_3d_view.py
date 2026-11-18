@@ -54,7 +54,7 @@ VP_COLORS = "YlGnBu"
 P_RAY_COLOR = "#1f6fb2"
 P_WAVE_COLOR = "#1565c0"   # 波の動きの P波の点
 S_WAVE_COLOR = "#e65100"   # 波の動きの S波の点
-WAVE_SLOWDOWNS = (5, 10, 20)   # 波の動きを実際の何倍遅くするかの選択肢
+WAVE_SLOWDOWNS = (1, 5, 10, 20)   # 波の動きを実際の何倍遅くするかの選択肢(1 は実際の速さ)
 VIDEO_FPS = 30             # 保存する動画のコマ数 [コマ/秒]
 VIDEO_MAX_WIDTH = 1920     # 保存する動画の幅の上限 [画素](図がこれより大きいときは縮める)
 VIDEO_BITRATE = 12_000_000 # 保存する動画のビットレート [bit/秒]
@@ -650,7 +650,8 @@ surfacesNoPick();
 // --- 波の動き: 選んだ地震の震源から、P波(青の点)・S波(橙の点)が各拠点へ通り道に沿って進む ---
 //   時刻は深さで変わる速さから求めたもの(拠点に着く時刻は計算の値で、読み取った到着時刻とは少し違う)
 //   図全体の描き直しは遅い(1コマ 150 ms ほど)ので、再生中は波の点と視点だけを直接更新する
-meta.slowdowns.forEach((v) => $("slow").add(new Option("実際の " + v + " 倍遅く", v)));
+const speedName = (v) => parseFloat(v) === 1 ? "実際の速さ" : "実際の " + v + " 倍遅く";
+meta.slowdowns.forEach((v) => $("slow").add(new Option(speedName(v), v)));
 $("slow").value = "10";
 $("infop").style.color = meta.p_color;
 $("infos").style.color = meta.s_color;
@@ -681,7 +682,7 @@ function frameData(q, t) {{
   return {{x: [P[0], S[0]], y: [P[1], S[1]], z: [P[2], S[2]]}};
 }}
 const waveEnd = (q) => Math.max(0, ...q.waves.P.concat(q.waves.S).map((p) => p[p.length - 1][3])) + 0.3;
-const infoTitle = (q) => q.label + "(実際の " + $("slow").value + " 倍遅く)";
+const infoTitle = (q) => q.label + "(" + speedName($("slow").value) + ")";
 const infoTime = (t) => "発生から " + (Math.floor(t * 10 + 1e-6) / 10).toFixed(1) + " 秒";
 // 1コマ分を描く(波の点、上の文字、「回しながら」の視点)。orbitSec は回し始めからの秒数
 function drawWaves(run, t, orbitSec) {{

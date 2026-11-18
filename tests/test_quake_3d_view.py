@@ -91,7 +91,7 @@ def test_write_3d_view(tmp_path, monkeypatch):
     assert ts[0] == 0 and all(a <= b for a, b in zip(ts, ts[1:])) and 0.2 < ts[-1] < 1.5
     assert path[0][2] == -0.8   # 震源の深さから出る
   assert len(meta["waves"]) == 2 and all(fig["data"][i]["visible"] is False for i in meta["waves"])
-  assert meta["slowdowns"] == [5, 10, 20]
+  assert meta["slowdowns"] == [1, 5, 10, 20]
   # P波・S波の印は同じ形(記号は端末の文字で描かれ、◆ は端末によって大きさが変わるため)
   marks = [fig["data"][i]["marker"] for i in meta["waves"]]
   assert marks[0].get("symbol") == marks[1].get("symbol") and marks[0]["size"] == marks[1]["size"]
