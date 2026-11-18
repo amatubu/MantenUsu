@@ -7,9 +7,12 @@
 #   3. 平均した相関係数が、その日の中央値から MAD(中央値からの差の中央値)の THRESHOLD_MAD 倍を超えたところを検出とする
 #   波形は帯域通過フィルター(BAND)のあと、SAMPLING_RATE に間引いて使う
 #   使い方: python3 template_match.py -s 20251210 -e 20251217 [-j 3]
+#   --set 名前 で、今の有珠山リスト(地震リストの usu)からひな形を作り、ひな形と日ごとの結果を別の名前で保存する
+#   (例: --set v2_25。決まったファイル usu_quakes_24.csv から作った v1 のひな形と結果は、そのまま残る)
 import argparse
 import csv
 import json
+import os
 import sys
 import tempfile
 import warnings
@@ -52,9 +55,20 @@ QUAKES_DIR = app_paths.BATCH_PLOTS_DIR / "quakes"
 USU_CSV = QUAKES_DIR / "usu_quakes_24.csv"
 ALL_CSV = QUAKES_DIR / "quake_candidates_20250708_20260826.csv"
 WORK_DIR = app_paths.OUTPUT_DIR / "template_match"
-TEMPLATES_FILE = WORK_DIR / "templates_v1.npz"
-DAYS_DIR = WORK_DIR / "days_v1"
 OUT_DIR = QUAKES_DIR / "template_match"
+# ひな形の組の名前(--set)。並列で動かす子のプロセスにも同じ組を使わせるため、環境変数で渡す
+SET_ENV = "USU_TEMPLATE_SET"
+DEFAULT_SET = "v1"
+
+# ひな形の組ごとのファイル: v1 は決まったファイル(USU_CSV)から、それ以外は今の有珠山リストから作る
+def configure(name):
+  global TEMPLATE_SET, TEMPLATES_FILE, DAYS_DIR, TEMPLATE_SOURCE_CSV
+  TEMPLATE_SET = name
+  TEMPLATES_FILE = WORK_DIR / f"templates_{name}.npz"
+  DAYS_DIR = WORK_DIR / f"days_{name}"
+  TEMPLATE_SOURCE_CSV = USU_CSV if name == DEFAULT_SET else WORK_DIR / f"usu_list_{name}.csv"
+
+configure(os.environ.get(SET_ENV, DEFAULT_SET))
 
 
 # --- 波形の読み込み ---
@@ -99,7 +113,11 @@ def build_templates():
   from hypocenter import LocalProjection, load_stations
   stations = load_stations(app_paths.ETC_DIR)
   proj = LocalProjection(list(stations.values()))
-  cands = quake_locate.read_candidates(USU_CSV)
+  if TEMPLATE_SET != DEFAULT_SET:
+    import quake_list
+    n_usu = quake_list.write_usu_candidates(TEMPLATE_SOURCE_CSV)
+    print(f"  今の有珠山リスト {n_usu} 件からひな形を作ります: {TEMPLATE_SOURCE_CSV}")
+  cands = quake_locate.read_candidates(TEMPLATE_SOURCE_CSV)
 
   def load_hour(hour):
     from obspy import Stream, read
@@ -264,7 +282,10 @@ def scan_day(day):
 def known_intervals():
   import quake_locate
   out = []
-  for path, label in ((ALL_CSV, "地震の候補"), (USU_CSV, "有珠山リスト")):
+  # 地震の候補は、全期間の一覧と、その後に検出した期間の一覧(quake_candidates_*.csv)のすべて
+  sources = [(ALL_CSV, "地震の候補")] + [(p, "地震の候補") for p in sorted(QUAKES_DIR.glob("quake_candidates_*.csv"))
+                                          if p != ALL_CSV]
+  for path, label in sources + [(TEMPLATE_SOURCE_CSV, "有珠山リスト")]:
     if path.exists():
       for c in quake_locate.read_candidates(path):
         out.append((c["start"] - timedelta(seconds=KNOWN_MARGIN), c["end"] + timedelta(seconds=KNOWN_MARGIN), label,
@@ -333,7 +354,12 @@ def main():
   ap.add_argument("-j", "--jobs", type=int, default=3)
   ap.add_argument("--rebuild-templates", action="store_true")
   ap.add_argument("--images", action="store_true", help="新しく見つかったものの画像を作る(images フォルダ)")
+  ap.add_argument("--set", default=DEFAULT_SET,
+                  help="ひな形の組の名前(v1 以外は今の有珠山リストから作り、別のファイルに保存する)")
   args = ap.parse_args()
+  os.environ[SET_ENV] = args.set   # 並列で動かす子のプロセスも同じ組を使う
+  configure(args.set)
+  print(f"ひな形の組: {TEMPLATE_SET}({TEMPLATES_FILE.name}、日ごとの結果 {DAYS_DIR.name})")
   import matplotlib
   matplotlib.use("Agg")
   import plot_common
@@ -363,13 +389,14 @@ def main():
   if excluded:
     print(f"除くひな形に似ているので除いた検出: {len(excluded)} 件")
   OUT_DIR.mkdir(parents=True, exist_ok=True)
-  out = OUT_DIR / f"detections_{args.start}_{args.end}.csv"
+  suffix = "" if TEMPLATE_SET == DEFAULT_SET else f"_{TEMPLATE_SET}"
+  out = OUT_DIR / f"detections_{args.start}_{args.end}{suffix}.csv"
   write_csv(out, rows, tinfo)
   new = [d for d in rows if not d["known"]]
   print(f"検出 {len(rows)} 件(有珠山リスト {sum(d['known'] == '有珠山リスト' for d in rows)}・"
         f"地震の候補 {sum(d['known'] == '地震の候補' for d in rows)}・新しい {len(new)}): {out}")
   if args.images:
-    img_dir = OUT_DIR / "images"
+    img_dir = OUT_DIR / f"images{suffix}"
     img_dir.mkdir(exist_ok=True)
     # 名前は相関係数(3桁)と時刻。名前順が、一覧を相関係数・時刻で並べた順と同じになる
     for d in new:
