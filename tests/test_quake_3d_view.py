@@ -1,6 +1,7 @@
 # 3Dの図(quake_3d_view.py)と、その部品(標高タイルの読み方・波の通り道)のテスト。インターネットには接続しない
 from datetime import datetime
 import json
+import re
 
 import numpy as np
 
@@ -91,4 +92,17 @@ def test_write_3d_view(tmp_path, monkeypatch):
     assert path[0][2] == -0.8   # 震源の深さから出る
   assert len(meta["waves"]) == 2 and all(fig["data"][i]["visible"] is False for i in meta["waves"])
   assert meta["slowdowns"] == [5, 10, 20]
+  # P波・S波の印は同じ形(記号は端末の文字で描かれ、◆ は端末によって大きさが変わるため)
+  marks = [fig["data"][i]["marker"] for i in meta["waves"]]
+  assert marks[0].get("symbol") == marks[1].get("symbol") and marks[0]["size"] == marks[1]["size"]
   assert meta["quakes"][0]["image"] == "images/w.png"
+
+
+def test_html_file_name_is_ascii():
+  name = quake_3d_view.html_file_name
+  assert name("有珠山付近の地震") == "usu_quakes_3d.html"
+  assert name("地震リスト_有珠山付近の地震") == "usu_quakes_3d.html"
+  assert name("usu_candidates_17") == "usu_candidates_17_3d.html"
+  # 日本語などを含む題名は英数字だけにし、題名が違えば別の名前になる
+  a, b = name("S波の読み直し候補"), name("S波の見直し候補")
+  assert a != b and re.fullmatch(r"[A-Za-z0-9_-]+\.html", a) and re.fullmatch(r"[A-Za-z0-9_-]+\.html", name("発破"))

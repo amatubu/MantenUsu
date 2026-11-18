@@ -14,6 +14,8 @@ import argparse
 import html
 import json
 import os
+import re
+import zlib
 from datetime import timedelta
 from pathlib import Path
 
@@ -27,6 +29,8 @@ from quake_features import USU_SUMMIT
 from quake_locate import GOOD_RMS
 from quake_web_map import depth_color
 
+USU_LIST_TITLE = "有珠山付近の地震"   # 有珠山付近の地震の一覧の題名(ファイル名を決まった名前にする)
+USU_LIST_FILE = "usu_quakes"
 PLOTLY_VERSION = "2.35.2"
 PLOTLY_URL = f"https://cdn.jsdelivr.net/npm/plotly.js-dist-min@{PLOTLY_VERSION}/plotly.min.js"
 MP4_MUXER_VERSION = "5.1.3"   # 動画(MP4)の書き出しに使う
@@ -402,7 +406,7 @@ def figure(items, stations, title, model=None, html_dir=None):
               "marker": {"size": 6, "color": P_WAVE_COLOR, "line": {"color": "white", "width": 1}}},
              {"type": "scatter3d", "mode": "markers", "name": "S波(動き)", "showlegend": False, "visible": False,
               "x": [], "y": [], "z": [], "hoverinfo": "skip",
-              "marker": {"size": 6, "color": S_WAVE_COLOR, "symbol": "diamond", "line": {"color": "white", "width": 1}}}]
+              "marker": {"size": 6, "color": S_WAVE_COLOR, "line": {"color": "white", "width": 1}}}]
 
   span = max(box[1] - box[0], box[3] - box[2])
   aspect = {"x": (box[1] - box[0]) / span, "y": (box[3] - box[2]) / span, "z": (float(np.max(h)) + bottom) / span}
@@ -428,9 +432,20 @@ def figure(items, stations, title, model=None, html_dir=None):
           "rays": list(range(ray_start, label_start)), "labels": list(range(label_start, len(traces))),
           "quakes": [{"short": q["short"], "image": q["image"], "lines": q["lines"], "waves": q["waves"],
                       "label": q["short"]} for q, _rays in quakes],
-          "waves": wave_index, "p_color": P_WAVE_COLOR, "s_color": S_WAVE_COLOR,
+          "waves": wave_index, "attribution": gsi_tiles.DEM_ATTRIBUTION, "p_color": P_WAVE_COLOR, "s_color": S_WAVE_COLOR,
           "video": {"fps": VIDEO_FPS, "max_width": VIDEO_MAX_WIDTH, "bitrate": VIDEO_BITRATE}}
   return {"data": traces, "layout": layout}, meta, len(quakes)
+
+# 3Dの図の HTML のファイル名(サーバーに置けるよう、英数字と _ - だけにする)
+#   有珠山付近の地震の一覧は usu_quakes_3d.html。日本語などを含む題名は、使える文字に、題名から作った番号を足す(別の一覧と重ならないように)
+def html_file_name(title):
+  if USU_LIST_TITLE in title:
+    return f"{USU_LIST_FILE}_3d.html"
+  slug = re.sub(r"[^A-Za-z0-9_-]+", "_", title).strip("_-")
+  if slug == title:
+    return f"{slug}_3d.html"
+  code = f"{zlib.crc32(title.encode('utf-8')):08x}"
+  return f"quakes_{slug}_{code}_3d.html" if slug else f"quakes_{code}_3d.html"
 
 # HTML を書き出す
 #   戻り値 ... 描いた震源の数
@@ -460,14 +475,15 @@ body {{ display: flex; flex-direction: column; }}
 #bar {{ display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 6px 10px;
         border-bottom: 1px solid #ddd; background: #fafafa; }}
 #bar label {{ white-space: nowrap; }}
-#bar .group {{ display: inline-flex; gap: 6px; align-items: center; padding-left: 10px; border-left: 1px solid #ddd; }}
-#bar button {{ font-size: 13px; }}
-#view {{ flex: 1; min-height: 0; position: relative; }}
+#bar .group {{ display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; padding-left: 10px;
+              border-left: 1px solid #ddd; }}
+#bar button {{ font-size: 13px; white-space: nowrap; }}
+#view {{ flex: 1; min-height: 0; position: relative; touch-action: none; }}
 /* 波形の枠: はじめは小さく(右下)、画像を押すと大きく(もう一度押すと小さく)。枠は図の高さを超えないようにし、
    見出し(閉じるボタン)は枠の上に固定して、波形が長くても見切れないようにする */
 #wave {{ position: absolute; right: 8px; bottom: 28px; width: 28%; min-width: 220px; max-height: calc(100% - 40px);
          background: white; border: 1px solid #bbb; box-shadow: 0 2px 8px rgba(0,0,0,0.2); display: none;
-         overflow: auto; z-index: 10; }}
+         overflow: auto; z-index: 10; touch-action: pan-y; }}
 #wave.large {{ width: 70%; max-width: 1100px; }}
 #wave header {{ position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center;
                 padding: 3px 6px; background: #f0f0f0; font-size: 12px; z-index: 1; }}
@@ -491,6 +507,7 @@ body {{ display: flex; flex-direction: column; }}
     <option value="hide">隠す</option></select></label>
   <label>縦の倍率 <select id="exag"></select></label>
   <label><input type="checkbox" id="numbers" checked> 番号</label>
+  <label><input type="checkbox" id="legend"> 凡例</label>
   <label>地震(通り道) <select id="quake"><option value="none">表示しない</option>
     <option value="all">すべての地震</option></select></label>
   <button id="wavebtn">波形を表示</button>
@@ -501,14 +518,25 @@ body {{ display: flex; flex-direction: column; }}
   <span style="color:#777">(震源を押しても選べます)</span>
 </div>
 <div id="view"><div id="waveinfo"><div class="s" id="infotitle"></div><div class="t" id="infotime"></div>
-  <div class="s"><span id="infop">●</span> P波 <span id="infos">◆</span> S波</div></div><div id="wave"><header><span id="wavetitle"></span><button id="waveclose" title="閉じる">×</button></header>
+  <div class="s"><span id="infop">●</span> P波 <span id="infos">●</span> S波</div></div><div id="wave"><header><span id="wavetitle"></span><button id="waveclose" title="閉じる">×</button></header>
   <div id="wavebody"></div></div></div>
 <script>
 const fig = {fig};
 const meta = {meta};
 const gd = document.getElementById("view");
+const NARROW_WIDTH = 700;
+// 幅の狭い画面(スマートフォン)では、はじめは凡例と速度の色の帯を隠して、図を広く使う(上の「凡例」で出せる)
+const showLegendAtStart = window.innerWidth >= NARROW_WIDTH;
+fig.layout.showlegend = showLegendAtStart;
+fig.data[meta.sides[0]].showscale = showLegendAtStart;
+if (!showLegendAtStart) fig.layout.annotations[0].text = meta.attribution;   // 長い説明は入らないので、出典だけにする
 Plotly.newPlot(gd, fig.data, fig.layout, {{responsive: true, displaylogo: false}});
 const $ = (id) => document.getElementById(id);
+$("legend").checked = showLegendAtStart;
+$("legend").onchange = (e) => {{
+  Plotly.update(gd, {{showscale: e.target.checked}}, {{showlegend: e.target.checked, "scene.camera": currentCamera()}},
+                [meta.sides[0]]);
+}};
 meta.exaggerations.forEach((e, i) => $("exag").add(new Option(e.label, i)));
 meta.quakes.forEach((q, i) => $("quake").add(new Option(q.short, i)));
 $("surface").onchange = (e) => {{
@@ -619,7 +647,7 @@ function surfacesNoPick() {{
 gd.on("plotly_afterplot", surfacesNoPick);
 surfacesNoPick();
 
-// --- 波の動き: 選んだ地震の震源から、P波(青の点)・S波(橙の菱形)が各拠点へ通り道に沿って進む ---
+// --- 波の動き: 選んだ地震の震源から、P波(青の点)・S波(橙の点)が各拠点へ通り道に沿って進む ---
 //   時刻は深さで変わる速さから求めたもの(拠点に着く時刻は計算の値で、読み取った到着時刻とは少し違う)
 //   図全体の描き直しは遅い(1コマ 150 ms ほど)ので、再生中は波の点と視点だけを直接更新する
 meta.slowdowns.forEach((v) => $("slow").add(new Option("実際の " + v + " 倍遅く", v)));
@@ -724,6 +752,61 @@ $("quake").addEventListener("change", () => {{
   Plotly.restyle(gd, {{visible: false}}, meta.waves);
 }});
 
+// --- スマートフォンの操作: 2本指で拡大・縮小(ピンチ)と移動。1本指の回転は plotly のまま ---
+//   plotly の3Dの図は最初の指しか見ないので、2本目の指が触れたら指の動きを plotly に渡さず、ここで視点を動かす
+//   指を離したら視点を図の設定に保存する(plotly はタッチでは保存せず、上のボタンを押すと最初の視点に戻っていたため)
+const MIN_DISTANCE = 0.15, MAX_DISTANCE = 8;
+const vec = {{
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  add: (a, b, k) => [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  len: (a) => Math.hypot(a[0], a[1], a[2]),
+  unit: (a) => {{ const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / n, a[1] / n, a[2] / n]; }},
+}};
+const xyz = (p) => [p.x, p.y, p.z];
+const fingers = (e) => {{
+  const a = e.touches[0], b = e.touches[1];
+  return {{dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+          x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2}};
+}};
+let pinch = null, pinched = false;
+gd.addEventListener("touchstart", (e) => {{
+  if (e.target.tagName !== "CANVAS" || e.touches.length < 2) return;
+  e.stopPropagation();
+  e.preventDefault();
+  const c = currentCamera();
+  pinch = {{f: fingers(e), eye: xyz(c.eye), center: xyz(c.center), up: xyz(c.up)}};
+  pinched = true;
+}}, {{capture: true, passive: false}});
+gd.addEventListener("touchmove", (e) => {{
+  if (!pinched) return;     // 1本指の回転は plotly に任せる
+  e.stopPropagation();      // 2本指のあとは、指がすべて離れるまで回転させない(視点が飛ばないように)
+  e.preventDefault();
+  if (!pinch || e.touches.length < 2) return;
+  const f = fingers(e), sc = glScene(), rel = vec.sub(pinch.eye, pinch.center), d0 = vec.len(rel);
+  const d = Math.min(MAX_DISTANCE, Math.max(MIN_DISTANCE, d0 * pinch.f.dist / Math.max(f.dist, 1)));
+  // 2本指の移動ぶん、見ている場所をずらす(画面上で指についてくる量)
+  const forward = vec.unit(vec.sub(pinch.center, pinch.eye)), right = vec.unit(vec.cross(forward, pinch.up));
+  const up = vec.cross(right, forward);
+  const perPixel = (2 * d * Math.tan((sc.glplot.fovy || Math.PI / 4) / 2)) / gd.clientHeight;
+  let center = vec.add(pinch.center, right, -(f.x - pinch.f.x) * perPixel);
+  center = vec.add(center, up, (f.y - pinch.f.y) * perPixel);
+  sc.glplot.camera.lookAt(vec.add(center, rel, d / d0), center, pinch.up);
+  sc.glplot.redraw();
+}}, {{capture: true, passive: false}});
+gd.addEventListener("touchend", (e) => {{
+  if (e.touches.length >= 2 && pinched) {{   // 3本から2本になったときなどは、今の位置から続ける
+    const c = currentCamera();
+    pinch = {{f: fingers(e), eye: xyz(c.eye), center: xyz(c.center), up: xyz(c.up)}};
+    return;
+  }}
+  pinch = null;
+  if (e.touches.length) {{ if (pinched) e.stopPropagation(); return; }}
+  pinched = false;          // 全部の指が離れた(plotly にも伝えて、回転を終わらせる)
+  if (e.target.tagName === "CANVAS") Plotly.relayout(gd, {{"scene.camera": currentCamera()}});
+}}, {{capture: true}});
+gd.addEventListener("gesturestart", (e) => e.preventDefault());   // iPhone の画面全体の拡大を止める
+
 // --- 動画に保存 ---
 //   1コマずつ描いて、コマの番号どおりの時刻で動画に書き込む(処理が間に合わなくてもコマは落ちない。実時間より遅くなるだけ)
 //   図の絵に、経過時間などの文字を重ねた絵を動画にする。録画中は、カーソルに付く線や枠を出さない
@@ -759,7 +842,7 @@ function drawOverlay(g, w, h, run, t) {{
   const y = top + f1 + f2 + f3 + 16 * u;
   g.fillStyle = meta.p_color; g.fillText("●", cx - 62 * u, y);
   g.fillStyle = "#444"; g.fillText("P波", cx - 26 * u, y);
-  g.fillStyle = meta.s_color; g.fillText("◆", cx + 22 * u, y);
+  g.fillStyle = meta.s_color; g.fillText("●", cx + 22 * u, y);
   g.fillStyle = "#444"; g.fillText("S波", cx + 58 * u, y);
 }}
 // MP4 に書き込む入れ物(WebCodecs)。使えないブラウザでは MediaRecorder を使う
@@ -866,6 +949,8 @@ $("record").onclick = async () => {{
   a.download = blob.fileName;
   a.click();
 }};
+// 上の欄に選択肢を入れると欄の高さが変わるので、図の大きさを合わせ直す(図の下の端が画面の外に出ないように)
+Plotly.Plots.resize(gd);
 </script>
 </body>
 </html>
@@ -897,7 +982,7 @@ def main():
   import quake_locate
   from hypocenter import load_stations
   parser = argparse.ArgumentParser(description="有珠山付近の地震の震源を、ブラウザで見る3Dの図に書き出す")
-  parser.add_argument("-o", "--output", help="出力する HTML(省略すると batch_plots/quakes/locate/有珠山付近の地震_3d.html)")
+  parser.add_argument("-o", "--output", help="出力する HTML(省略すると batch_plots/quakes/locate/usu_quakes_3d.html)")
   parser.add_argument("--no-images", action="store_true",
                       help="満点の拠点だけの波形の画像を作り直さない(前に作ったものがあればそれを使う)")
   args = parser.parse_args()
@@ -919,8 +1004,8 @@ def main():
     setup_japanese_font()
     n_img = save_manten_images(items, stations, load_hour_from_zips, log=lambda m: None)
     print(f"満点の拠点だけの波形の画像: {n_img}件({manten_image_dir()})")
-  out = Path(args.output) if args.output else quake_locate.OUTPUT_DIR / "有珠山付近の地震_3d.html"
-  n = write_3d_view(out, items, stations, "有珠山付近の地震")
+  out = Path(args.output) if args.output else quake_locate.OUTPUT_DIR / html_file_name(USU_LIST_TITLE)
+  n = write_3d_view(out, items, stations, USU_LIST_TITLE)
   print(f"3Dの図を書き出しました(震源 {n}件): {out}")
 
 if __name__ == "__main__":

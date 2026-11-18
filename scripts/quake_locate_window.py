@@ -105,10 +105,10 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   ttk.Button(map_bar, text="ブラウザで地図を開く", command=open_web_map).pack(side=tk.RIGHT, padx=(0, 6))
 
   # 震源・山体・拠点・地下構造・波の通り道をブラウザの3Dの図で開く(quake_3d_view.py)。
-  # HTML は batch_plots/quakes/locate/<題名>_3d.html に書き出す(初めての範囲は標高タイルを取得するので少し待つ)
+  # HTML は batch_plots/quakes/locate/ に、英数字だけの名前で書き出す(quake_3d_view.html_file_name。初めての範囲は標高タイルを取得するので少し待つ)
   def open_3d_view():
     import quake_3d_view
-    path = quake_locate.OUTPUT_DIR / f"{title}_3d.html"
+    path = quake_locate.OUTPUT_DIR / quake_3d_view.html_file_name(title)
     try:
       n = quake_3d_view.write_3d_view(path, items, stations, title)
     except OSError as e:
