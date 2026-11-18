@@ -222,3 +222,51 @@ def test_update_usu_locations_keeps_memo(user_files):
   assert e["fields"]["発生時刻(推定)"].startswith("2026-03-04 22:58:38.3")
   assert e["fields"]["メモ"] == "KBBY で大きい" and e["fields"]["らしさ"] == "高"
   assert e["end"] == "2026-03-04 22:59:00"
+
+
+# --- 種別(地震・発破・未確定) ---
+
+def test_entry_type_defaults_to_quake():
+  assert quake_list.entry_type(entry("2026-06-23 12:58:47")) == quake_list.TYPE_QUAKE
+  assert quake_list.entry_type(entry("2026-06-23 12:58:47", 種別="知らない値")) == quake_list.TYPE_QUAKE
+
+
+def test_set_type_is_saved_and_rejects_unknown(user_files):
+  lists = empty_lists()
+  e = entry("2026-06-23 12:58:47")
+  lists[USU] = [e]
+  quake_list.set_type(e, quake_list.TYPE_BLAST)
+  quake_list.save(lists)
+  assert quake_list.usu_types() == {"2026-06-23 12:58:47": quake_list.TYPE_BLAST}
+  with pytest.raises(ValueError):
+    quake_list.set_type(e, "列車")
+
+
+def test_type_survives_location_update_and_reimport(user_files):
+  lists = empty_lists()
+  old = entry("2026-06-23 12:58:47", 種別=quake_list.TYPE_BLAST, メモ="採石場")
+  lists[USU] = [old]
+  # 種別の無い行で置き換えても、種別は残る
+  quake_list.merge(lists, {KNOWN: [], USU: [entry("2026-06-23 12:58:47", メモ="")]})
+  assert quake_list.entry_type(lists[USU][0]) == quake_list.TYPE_BLAST
+
+
+def test_read_candidates_prefers_list_type(user_files, tmp_path):
+  import quake_locate
+  lists = empty_lists()
+  lists[USU] = [entry("2026-06-23 12:58:47", "2026-06-23 12:59:37", 種別=quake_list.TYPE_BLAST)]
+  quake_list.save(lists)
+  path = write_csv(tmp_path / "c.csv", ["開始", "終了", "種別"], [
+    {"開始": "2026-06-23 12:58:47", "終了": "12:59:37", "種別": "地震"},      # 一覧の種別を優先
+    {"開始": "2026-07-01 00:00:00", "終了": "00:00:30", "種別": "未確定"},    # 一覧に無ければ CSV の列
+    {"開始": "2026-07-02 00:00:00", "終了": "00:00:30"}])
+  cands = quake_locate.read_candidates(path)
+  assert [quake_locate.event_type(c) for c in cands] == ["発破", "未確定", "地震"]
+  assert quake_locate.type_summary([(c, {}) for c in cands]) == "種別: 地震 1件、発破 1件、未確定 1件"
+  # 地震リストで変えたら、開いている候補にも反映できる
+  lists[USU][0]["fields"]["種別"] = quake_list.TYPE_UNCERTAIN
+  quake_list.save(lists)
+  items = [(c, {}) for c in cands]
+  assert quake_locate.refresh_types(items) is True
+  assert quake_locate.event_type(cands[0]) == "未確定"
+  assert quake_locate.refresh_types(items) is False

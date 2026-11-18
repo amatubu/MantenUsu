@@ -13,6 +13,8 @@ from maintenance_window import open_path
 
 # 「地図にプロット」で書き出す CSV の名前(地震の候補の震源の画面の題名と、保存する一覧の名前にもなる)
 USU_MAP_CSV = "地震リスト_有珠山付近の地震.csv"
+# 種別の絞り込みで、すべてを表示する項目
+ALL_TYPES = "すべて"
 
 
 class QuakeListWindow:
@@ -25,7 +27,7 @@ class QuakeListWindow:
     win = tk.Toplevel(parent)
     self.win = win
     win.title("地震リスト")
-    win.geometry("1000x560")
+    win.geometry("1180x560")
     win.protocol("WM_DELETE_WINDOW", self.close)
 
     frame = ttk.Frame(win, padding=10)
@@ -70,14 +72,24 @@ class QuakeListWindow:
     self.map_button = ttk.Button(bottom, text=shortcuts.with_label("地図にプロット", "p"), command=self.show_on_map)
     # メモの編集も、メモの列がある有珠山付近の地震のタブだけに出す
     self.memo_button = ttk.Button(bottom, text=shortcuts.with_label("メモを編集", "e"), command=self.edit_memo)
+    # 種別の変更と絞り込みも、有珠山付近の地震のタブだけに出す
+    self.type_button = ttk.Button(bottom, text=shortcuts.with_label("種別を変更", "t"), command=self.change_type)
+    self.type_filter = tk.StringVar(value=ALL_TYPES)
+    self.filter_frame = ttk.Frame(bottom)
+    ttk.Label(self.filter_frame, text="表示:").pack(side=tk.LEFT)
+    filter_box = ttk.Combobox(self.filter_frame, textvariable=self.type_filter, state="readonly", width=7,
+                              values=(ALL_TYPES, *quake_list.EVENT_TYPES))
+    filter_box.pack(side=tk.LEFT, padx=(3, 0))
+    filter_box.bind("<<ComboboxSelected>>", lambda _e: (self.refresh(), self.focus_tree()))
     ttk.Label(frame, text=f"↑↓ 選ぶ　Enter・ダブルクリック 波形を表示　{shortcuts.label('i')} 画像　"
-                          f"{shortcuts.label('e')} メモ・{shortcuts.label('p')} 地図にプロット(有珠山付近の地震)　"
+                          f"{shortcuts.label('e')} メモ・{shortcuts.label('t')} 種別・{shortcuts.label('p')} 地図にプロット(有珠山付近の地震)　"
                           f"{shortcuts.label('Left')}{shortcuts.label('Right')} タブの切り替え　{shortcuts.label('w')} 閉じる",
               foreground="#666666").pack(anchor="w", pady=(6, 0))
 
     shortcuts.bind(win, "i", self.open_image)
     shortcuts.bind(win, "p", lambda: self.show_on_map() if self.current_kind() == quake_list.USU else None)
     shortcuts.bind(win, "e", lambda: self.edit_memo() if self.current_kind() == quake_list.USU else None)
+    shortcuts.bind(win, "t", lambda: self.change_type() if self.current_kind() == quake_list.USU else None)
     shortcuts.bind(win, "w", self.close)
     shortcuts.bind(win, "Left", lambda: self.switch_tab(-1))
     shortcuts.bind(win, "Right", lambda: self.switch_tab(+1))
@@ -122,9 +134,13 @@ class QuakeListWindow:
     if self.current_kind() == quake_list.USU:
       self.map_button.pack(side=tk.RIGHT, padx=(0, 6), before=self.import_button)
       self.memo_button.pack(side=tk.LEFT, padx=(6, 0), after=self.image_button)
+      self.type_button.pack(side=tk.LEFT, padx=(6, 0), after=self.memo_button)
+      self.filter_frame.pack(side=tk.LEFT, padx=(10, 0), after=self.type_button)
     else:
       self.map_button.pack_forget()
       self.memo_button.pack_forget()
+      self.type_button.pack_forget()
+      self.filter_frame.pack_forget()
     self.focus_tree()
 
   # 有珠山付近の地震を、地震の候補の震源の画面(地図と断面図)で開く
@@ -161,22 +177,30 @@ class QuakeListWindow:
         f = dict(e["fields"])
         if kind == quake_list.KNOWN:
           f["有珠山付近"] = "○" if e["start"] in usu_starts else ""
+        else:
+          f[quake_list.TYPE_FIELD] = quake_list.entry_type(e)
         tree.insert("", tk.END, iid=str(idx), values=[f.get(c[0], "") for c in quake_list.COLUMNS[kind]])
       if selected and tree.exists(selected[0]):
         tree.selection_set(selected[0])
         tree.focus(selected[0])
         tree.see(selected[0])
-      self.notebook.tab(i, text=f"{quake_list.LIST_TITLES[kind]} ({len(entries)})")
+      total = len(self.lists[kind])
+      count = str(total) if len(entries) == total else f"{len(entries)}/{total}"
+      self.notebook.tab(i, text=f"{quake_list.LIST_TITLES[kind]} ({count})")
 
   # 表示の順(列の見出しを押すと、その列で並べ替える。もう一度押すと逆順)
+  #   有珠山付近の地震は、「表示」で選んだ種別だけにする
   #   戻り値 ... [(一覧の中の番号, 地震)]
   def ordered(self, kind):
     items = list(enumerate(self.lists[kind]))
+    shown_type = self.type_filter.get()
+    if kind == quake_list.USU and shown_type != ALL_TYPES:
+      items = [item for item in items if quake_list.entry_type(item[1]) == shown_type]
     key = self.sort_keys.get(kind)
     if key:
       name, reverse = key
       def value(item):
-        text = item[1]["fields"].get(name, "")
+        text = quake_list.entry_type(item[1]) if name == quake_list.TYPE_FIELD else item[1]["fields"].get(name, "")
         try:
           return (0, float(text), "")
         except ValueError:
@@ -281,6 +305,30 @@ class QuakeListWindow:
     field.focus_set()
     field.icursor(tk.END)
     dlg.grab_set()
+
+  # 選んだ地震の種別を、ボタンの下に出すメニューから選んで変える
+  def change_type(self):
+    self.reload_if_changed()
+    kind, entry = self.selected()
+    if entry is None or kind != quake_list.USU:
+      return
+    now = quake_list.entry_type(entry)
+    menu = tk.Menu(self.win, tearoff=0)
+    for event_type in quake_list.EVENT_TYPES:
+      menu.add_command(label=("✓ " if event_type == now else "    ") + event_type,
+                       command=lambda t=event_type: self.apply_type(entry, t))
+    button = self.type_button
+    try:
+      menu.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+    finally:
+      menu.grab_release()
+
+  def apply_type(self, entry, event_type):
+    quake_list.set_type(entry, event_type)
+    quake_list.save(self.lists)
+    self.loaded_mtime = self.file_mtime()
+    self.refresh()
+    self.focus_tree()
 
   def remove_selected(self):
     self.reload_if_changed()

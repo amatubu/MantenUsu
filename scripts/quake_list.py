@@ -10,6 +10,7 @@
 #                    データフォルダを変えたり別のマシンに移したりしても開けるようにする)
 #   removed は「一覧から外す」で外した地震の開始({一覧: [開始, ...]})。地震の候補を探したときに自動で加える処理は、これを飛ばす
 #     fields     ... 一覧の列に出す値({列の名前: 文字列})
+#                    有珠山付近の地震の「種別」(地震・発破・未確定)もここに持つ。無ければ「地震」として扱う
 import csv
 import json
 from datetime import datetime, timedelta
@@ -19,11 +20,15 @@ import app_paths
 
 KNOWN, USU = "known", "usu"
 LIST_TITLES = {KNOWN: "既知の地震", USU: "有珠山付近の地震"}
+# 有珠山付近の地震の種別(図では印を変えて重ねて描く)
+TYPE_FIELD = "種別"
+TYPE_QUAKE, TYPE_BLAST, TYPE_UNCERTAIN = "地震", "発破", "未確定"
+EVENT_TYPES = (TYPE_QUAKE, TYPE_BLAST, TYPE_UNCERTAIN)
 # 一覧の列(名前, 幅, 右寄せか)
 COLUMNS = {
   KNOWN: [("発震時刻", 165, False), ("震央地名", 130, False), ("M", 45, True), ("深さ[km]", 60, True),
           ("震央距離[km]", 80, True), ("満点の倍率", 75, True), ("対応", 135, False), ("有珠山付近", 70, False)],
-  USU: [("発生時刻(推定)", 165, False), ("深さ[km]", 60, True), ("山頂から", 120, False), ("残差[秒]", 60, True),
+  USU: [("発生時刻(推定)", 165, False), (TYPE_FIELD, 60, False), ("深さ[km]", 60, True), ("山頂から", 120, False), ("残差[秒]", 60, True),
         ("らしさ", 110, False), ("気象庁の M", 70, True), ("メモ", 185, False)],
 }
 # 波形を表示する範囲: 揺れの開始のこの秒数前から、終了のこの秒数後まで(分にそろえる。履歴への追加と同じ)
@@ -91,6 +96,21 @@ def remove(lists, kind, entry):
 def set_memo(entry, memo):
   entry.setdefault("fields", {})["メモ"] = memo.strip()
 
+# 有珠山付近の地震の種別(書いていなければ、または知らない値なら「地震」)
+def entry_type(entry):
+  value = entry.get("fields", {}).get(TYPE_FIELD, "")
+  return value if value in EVENT_TYPES else TYPE_QUAKE
+
+# 種別を書き換える(地震リストの画面の「種別を変更」)
+def set_type(entry, event_type):
+  if event_type not in EVENT_TYPES:
+    raise ValueError(f"知らない種別です: {event_type}")
+  entry.setdefault("fields", {})[TYPE_FIELD] = event_type
+
+# 有珠山付近の地震の種別 {開始: 種別}
+def usu_types(lists=None):
+  return {e["start"]: entry_type(e) for e in (lists or load())[USU]}
+
 # 波形を表示する範囲(メイン画面の日時の欄の形式 YYYYMMDDHHmm。終了の分も含む)
 def display_range(entry):
   start = datetime.strptime(entry["start"], TIME_FORMAT)
@@ -104,7 +124,9 @@ def title_of(kind, entry):
   f = entry["fields"]
   if kind == KNOWN:
     return f"{entry['time'][:19]} {f.get('震央地名', '')} M{f.get('M', '')}(既知の地震)"
-  return f"{entry['time'][:19]} 有珠山付近 深さ{f.get('深さ[km]', '')}km(有珠山付近の地震)"
+  event_type = entry_type(entry)
+  note = "" if event_type == TYPE_QUAKE else f"・{event_type}"
+  return f"{entry['time'][:19]} 有珠山付近 深さ{f.get('深さ[km]', '')}km(有珠山付近の地震{note})"
 
 
 # --- CSV からの取り込み ---
@@ -168,6 +190,9 @@ def _usu_entry(row, base):
     "山頂から": f"{row.get('山頂からの距離[km]', '')} km {row.get('山頂からの方位') or _direction(row)}".strip(),
     "残差[秒]": row.get("残差[秒]", ""), "らしさ": row.get("有珠山の地震らしさ", ""),
     "気象庁の M": row.get("M", ""), "メモ": row.get("メモ", "")})
+  event_type = (row.get(TYPE_FIELD) or "").strip()
+  if event_type in EVENT_TYPES:
+    e["fields"][TYPE_FIELD] = event_type
   if not row.get("終了"):
     e["end"] = (datetime.strptime(e["start"], TIME_FORMAT) + timedelta(seconds=DEFAULT_LENGTH)).strftime(TIME_FORMAT)
   if not e["image"] and image_col == "画像" and row.get("画像"):
@@ -269,15 +294,17 @@ def usu_entry_from_location(cand, r):
   elif (quake_detect.OUTPUT_DIR / f"{cand['start']:%Y%m%d_%H%M%S}.png").exists():
     image = _relative_image(quake_detect.OUTPUT_DIR / f"{cand['start']:%Y%m%d_%H%M%S}.png")
   row = cand.get("row", {})
+  fields = {"発生時刻(推定)": time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-5],
+            "深さ[km]": quake_locate.depth_short(loc) if local else "",
+            "山頂から": f"{dist_km:.1f} km {direction}",
+            "残差[秒]": f"{loc['rms']:.3f}" if loc else "",
+            "らしさ": row.get("有珠山の地震らしさ", ""),
+            "気象庁の M": f"{q['M']:g}" if q and q.get("M") is not None else "",
+            "メモ": row.get("メモ", "")}
+  if cand.get("type") in (TYPE_BLAST, TYPE_UNCERTAIN):
+    fields[TYPE_FIELD] = cand["type"]
   return {"start": cand["start"].strftime(TIME_FORMAT), "end": end.strftime(TIME_FORMAT),
-          "time": time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-4], "image": image,
-          "fields": {"発生時刻(推定)": time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-5],
-                     "深さ[km]": quake_locate.depth_short(loc) if local else "",
-                     "山頂から": f"{dist_km:.1f} km {direction}",
-                     "残差[秒]": f"{loc['rms']:.3f}" if loc else "",
-                     "らしさ": row.get("有珠山の地震らしさ", ""),
-                     "気象庁の M": f"{q['M']:g}" if q and q.get("M") is not None else "",
-                     "メモ": row.get("メモ", "")}}
+          "time": time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-4], "image": image, "fields": fields}
 
 # 気象庁の震源リストの地震として作る(有珠山付近の地震に加えるとき、震源リストと対応していれば既知の地震にも入れる)
 def known_entry_from_location(cand, usu):
@@ -341,7 +368,7 @@ def update_usu_locations(pairs, lists=None):
 #   気象庁の震源は、既知の地震の一覧に同じ開始の地震があれば、その発震時刻で取得済みの震源リストから引く
 #   (震源リストが無い日や見つからないときは、気象庁の列を空にする)
 #   戻り値 ... 書き出した件数
-USU_CANDIDATES_FIELDS = ["開始", "終了", "メモ", "有珠山の地震らしさ",
+USU_CANDIDATES_FIELDS = ["開始", "終了", "メモ", "有珠山の地震らしさ", TYPE_FIELD,
                          "気象庁: 発震時刻", "緯度", "経度", "深さ[km]", "M", "震央地名"]
 
 def _jma_quake(time_text):
@@ -368,7 +395,7 @@ def write_usu_candidates(path, lists=None):
     for e in sorted(lists[USU], key=lambda e: e["start"]):
       fields = e.get("fields", {})
       row = {"開始": e["start"], "終了": e["end"][11:19], "メモ": fields.get("メモ", ""),
-             "有珠山の地震らしさ": fields.get("らしさ", "")}
+             "有珠山の地震らしさ": fields.get("らしさ", ""), TYPE_FIELD: entry_type(e)}
       k = known.get(e["start"])
       q = _jma_quake(k.get("time") or k["fields"].get("発震時刻", "")) if k else None
       if q:

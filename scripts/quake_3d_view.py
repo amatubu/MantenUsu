@@ -26,7 +26,8 @@ import station_names
 import velocity_model
 from hypocenter import LOCAL_KINDS, KIND_LOCAL, LocalProjection, depth_for_plot, depth_text
 from quake_features import USU_SUMMIT
-from quake_locate import GOOD_RMS
+from quake_list import TYPE_BLAST, TYPE_QUAKE, TYPE_UNCERTAIN
+from quake_locate import GOOD_RMS, EVENT_STYLES, event_type
 from quake_web_map import depth_color
 
 USU_LIST_TITLE = "有珠山付近の地震"   # 有珠山付近の地震の一覧の題名(ファイル名を決まった名前にする)
@@ -180,12 +181,16 @@ def summit_trace(proj):
           "textposition": "top center", "marker": {"symbol": "x", "size": 4, "color": "black"},
           "hovertemplate": "有珠山の山頂<extra></extra>"}
 
-# 震源。色は深さ(ブラウザの地図と同じ赤の濃淡)、縦の線は深さの範囲。残差が大きいものは白抜き
+# 種別ごとの印(plotly の3Dの図には星が無いので、発破はひし形にする)
+EVENT_SYMBOLS = {TYPE_QUAKE: "circle", TYPE_BLAST: "diamond", TYPE_UNCERTAIN: "square"}
+
+# 震源。色は深さ(ブラウザの地図と同じ赤の濃淡。地震以外は種別の色)、縦の線は深さの範囲。残差が大きいものは白抜き
 def quake_trace(quakes):
   return {"type": "scatter3d", "mode": "markers", "name": "震源",
           "x": [q["x"] for q in quakes], "y": [q["y"] for q in quakes], "z": [-q["depth"] for q in quakes],
           "marker": {"size": 5, "color": [q["color"] if q["good"] else "white" for q in quakes],
-                     "line": {"color": [q["color"] for q in quakes], "width": 2}, "symbol": "circle"},
+                     "line": {"color": [q["color"] for q in quakes], "width": 2},
+                     "symbol": [EVENT_SYMBOLS[q["type"]] for q in quakes]},
           "error_z": {"type": "data", "symmetric": False, "color": "rgba(180,40,40,0.5)", "thickness": 1.5,
                       "width": 0,
                       "array": [q["err_up"] for q in quakes], "arrayminus": [q["err_down"] for q in quakes]},
@@ -328,9 +333,12 @@ def quake_items(items, stations, proj, model, html_dir=None):
     lo, hi = loc.get("depth_min"), loc.get("depth_max")
     origin = r["ref"] + timedelta(seconds=loc["origin"]) if r.get("ref") is not None else cand["start"]
     good = r["kind"] == KIND_LOCAL and loc["rms"] < GOOD_RMS
-    label = (f"No.{i} {origin:%Y-%m-%d %H:%M:%S}<br>深さ {depth_text(loc)}<br>残差 {loc['rms']:.3f} 秒"
+    etype = event_type(cand)
+    label = (f"No.{i} {origin:%Y-%m-%d %H:%M:%S}" + ("" if etype == TYPE_QUAKE else f"({etype})")
+             + f"<br>深さ {depth_text(loc)}<br>残差 {loc['rms']:.3f} 秒"
              + (f"<br>気象庁 M{q['M']:g}" if q and q.get("M") is not None else ""))
-    info = {"no": i, "x": round(x, 3), "y": round(y, 3), "depth": round(depth, 3), "color": depth_color(depth),
+    color = depth_color(depth) if etype == TYPE_QUAKE else EVENT_STYLES[etype]["color"]
+    info = {"no": i, "x": round(x, 3), "y": round(y, 3), "depth": round(depth, 3), "color": color, "type": etype,
             "good": good, "label": label, "short": f"No.{i} {origin:%Y-%m-%d %H:%M}",
             "err_up": round(max(0.0, depth - lo), 3) if lo is not None else 0,
             "err_down": round(max(0.0, hi - depth), 3) if hi is not None else 0}

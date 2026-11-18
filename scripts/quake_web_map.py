@@ -14,7 +14,7 @@ from matplotlib.colors import to_hex
 from hypocenter import LOCAL_KINDS, KIND_LOCAL, depth_for_plot, depth_short, depth_text
 from quake_features import USU_SUMMIT
 import station_names
-from quake_locate import GOOD_RMS   # 残差がこれ未満なら塗りつぶし、以上(と要確認の判定)なら白抜き(画面の地図と同じ)
+from quake_locate import GOOD_RMS, EVENT_STYLES, event_type   # GOOD_RMS: 残差がこれ未満なら塗りつぶし、以上(と要確認の判定)なら白抜き(画面の地図と同じ)
 
 LEAFLET_VERSION = "1.9.4"
 # 震源の色: 深さで濃くする(赤の1色の濃淡)。この深さ [km] より深いものは一番濃い色
@@ -45,6 +45,7 @@ def map_data(items, stations):
       "depth": depth_short(loc), "depth_text": depth_text(loc), "color": depth_color(depth),
       "rms": f"{loc['rms']:.3f}", "kind": r["kind"], "good": good, "manual": bool(r.get("manual")),
       "memo": (cand.get("row") or {}).get("メモ", ""),
+      "type": event_type(cand), "type_color": EVENT_STYLES[event_type(cand)]["color"],
       "jma": {"lat": q["緯度"], "lon": q["経度"], "depth": f"{q['深さ[km]']:g}",
               "M": f"{q['M']:g}" if q.get("M") is not None else "", "name": q.get("震央地名", ""),
               "time": f"{q['日時']:%Y-%m-%d %H:%M:%S.%f}"[:-5]} if q else None})
@@ -96,6 +97,7 @@ TEMPLATE = """<!doctype html>
   .mark-station { color: #000; font-size: 16px; line-height: 16px; text-align: center; text-shadow: 0 0 2px #fff, 0 0 2px #fff; }
   .mark-summit { color: #8b4513; font-size: 18px; line-height: 18px; text-align: center; font-weight: bold;
                  text-shadow: 0 0 2px #fff, 0 0 2px #fff; }
+  .mark-type { font-size: 13px; line-height: 14px; text-align: center; text-shadow: 0 0 2px #fff, 0 0 2px #fff; }
   .mark-jma { color: #008080; font-size: 18px; line-height: 18px; text-align: center; font-weight: bold;
               text-shadow: 0 0 2px #fff, 0 0 2px #fff; }
   .station-label { background: none; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
@@ -119,7 +121,7 @@ const bases = {
   "写真": tile("seamlessphoto", "jpg", 18),
 };
 const map = L.map("map", { layers: [bases["淡色地図"]] });
-L.control.layers(bases, null, { position: "topright" }).addTo(map);
+const layers = L.control.layers(bases, null, { position: "topright" }).addTo(map);
 L.control.scale({ imperial: false }).addTo(map);
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -141,23 +143,31 @@ L.marker([DATA.summit.lat, DATA.summit.lon], { icon: icon("mark-summit", "✚", 
 const rows = (pairs) => `<table class="popup">${pairs.filter(p => p[1] !== "" && p[1] != null)
   .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>`;
 const quakes = [...DATA.quakes].sort((a, b) => parseFloat(b.depth.replace("<", "")) - parseFloat(a.depth.replace("<", "")));
+// 種別ごとのグループ(2種類以上あれば、右上の切り替えで表示を選べる)
+const TYPE_MARKS = { "発破": "★", "未確定": "◆" };
+const typeNames = [...new Set(DATA.quakes.map(q => q.type))];
+const groups = Object.fromEntries(typeNames.map(t => [t, L.layerGroup().addTo(map)]));
+if (typeNames.length > 1) typeNames.forEach(t => layers.addOverlay(groups[t], t));
 for (const q of quakes) {
-  const marker = L.circleMarker([q.lat, q.lon], {
-    radius: 7, color: q.good ? "#ffffff" : q.color, weight: q.good ? 1.5 : 2.5,
-    fillColor: q.color, fillOpacity: q.good ? 0.95 : 0.0,
-  }).addTo(map);
-  const pairs = [["番号", q.no], ["発生時刻", q.time], ["深さ", q.depth_text], ["残差", q.rms + " 秒"],
+  const group = groups[q.type];
+  const marker = (q.type in TYPE_MARKS
+    ? L.marker([q.lat, q.lon], { icon: icon("mark-type", `<span style="color:${q.type_color}">${TYPE_MARKS[q.type]}</span>`, 14) })
+    : L.circleMarker([q.lat, q.lon], {
+        radius: 7, color: q.good ? "#ffffff" : q.color, weight: q.good ? 1.5 : 2.5,
+        fillColor: q.color, fillOpacity: q.good ? 0.95 : 0.0,
+      })).addTo(group);
+  const pairs = [["番号", q.no], ["種別", q.type], ["発生時刻", q.time], ["深さ", q.depth_text], ["残差", q.rms + " 秒"],
                  ["判定", q.kind + (q.manual ? "(手直し)" : "")], ["緯度・経度", `${q.lat}, ${q.lon}`], ["メモ", q.memo]];
   if (q.jma) pairs.push(["気象庁", `${q.jma.time} ${q.jma.name} M${q.jma.M} 深さ ${q.jma.depth} km`]);
   marker.bindPopup(`<b>${esc(q.no)}. ${esc(q.time)}</b>` + rows(pairs));
   marker.bindTooltip(`${q.no}. ${q.time.slice(0, 16)}  深さ ${q.depth} km`);
   bounds.push([q.lat, q.lon]);
   if (q.jma) {
-    L.polyline([[q.lat, q.lon], [q.jma.lat, q.jma.lon]], { color: "#008080", weight: 1, dashArray: "3 4" }).addTo(map);
+    L.polyline([[q.lat, q.lon], [q.jma.lat, q.jma.lon]], { color: "#008080", weight: 1, dashArray: "3 4" }).addTo(group);
     L.marker([q.jma.lat, q.jma.lon], { icon: icon("mark-jma", "×", 18), keyboard: false })
       .bindPopup(`<b>気象庁の震央(${esc(q.no)} の地震)</b>` +
                  rows([["発震時刻", q.jma.time], ["震央地名", q.jma.name], ["M", q.jma.M], ["深さ", q.jma.depth + " km"]]))
-      .addTo(map);
+      .addTo(group);
   }
 }
 map.fitBounds(L.latLngBounds(bounds).pad(0.15));
@@ -181,6 +191,8 @@ legend.onAdd = () => {
     + `<div class="legend-row"><span class="swatch" style="border:2.5px solid ${DATA.legend[2].color}"></span>推定した震源(残差が大きい・要確認)</div>`
     + `<div class="legend-row" style="margin-top:2px">深さ [km](濃いほど深い)</div>`
     + `<div class="ramp">${DATA.legend.map(l => `<span><i style="background:${l.color}"></i>${l.depth}${l === DATA.legend[DATA.legend.length - 1] ? "+" : ""}</span>`).join("")}</div>`
+    + DATA.quakes.filter((q, i, all) => q.type in TYPE_MARKS && all.findIndex(o => o.type === q.type) === i)
+        .map(q => `<div class="legend-row"><span class="sym" style="color:${q.type_color}">${TYPE_MARKS[q.type]}</span>${esc(q.type)}</div>`).join("")
     + `<div class="legend-row" style="margin-top:4px"><span class="sym" style="color:#008080">×</span>気象庁の震央(点線で結ぶ)</div>`
     + `<div class="legend-row"><span class="sym">▲</span>拠点</div>`
     + `<div class="legend-row"><span class="sym" style="color:#8b4513">✚</span>有珠山 山頂(大有珠)</div>`;

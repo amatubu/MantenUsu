@@ -29,6 +29,7 @@ import quake_detect
 from quake_features import USU_SUMMIT
 import pick_store
 import external_stations
+import quake_list
 import velocity_model
 # 判定(KIND_*)は震源推定の画面と共通(hypocenter.py)
 from hypocenter import (LocalProjection, pick_filtered, refine_p, pick_s, locate_event,
@@ -57,6 +58,11 @@ CHECK_BAND = (2.0, 30.0)
 
 # 出力先
 OUTPUT_DIR = app_paths.BATCH_PLOTS_DIR / "quakes" / "locate"
+# 地図・断面図の種別ごとの印(残差が小さいものは塗りつぶし、大きいものは白抜きなのは、どの種別も同じ)
+#   地震が主役なので、発破と未確定は淡い色・小さめの印にして、地震より下に描く
+EVENT_STYLES = {quake_list.TYPE_QUAKE: {"marker": "o", "color": "red", "ms": 6, "label_color": "darkred", "zorder": 6},
+                quake_list.TYPE_BLAST: {"marker": "*", "color": "#9f8fc7", "ms": 8, "label_color": "#7f70a8", "zorder": 5.8},
+                quake_list.TYPE_UNCERTAIN: {"marker": "D", "color": "#8c8c8c", "ms": 4.5, "label_color": "#666666", "zorder": 5.8}}
 
 
 # 日時の文字列を読む(この処理の一覧の形式と、Excel で保存し直した形式のどちらでも読めるようにする)
@@ -80,8 +86,10 @@ def parse_float(text):
 # 地震の候補の一覧(quake_detect.write_candidates_csv の形式)を読む
 #   「候補」の列があれば、その列に何か書いてある行だけを使う(Excel で候補に印を付けて CSV に保存したもの)
 #   UTF-8(BOM つき)とふつうの CSV(Shift_JIS)のどちらでも読める
-#   戻り値 ... [{"start", "end", "jma"(震源リストの地震 または None), "row"(元の行)}, ...]
+#   種別は、有珠山付近の地震の一覧にあればその種別、無ければ CSV の「種別」の列(どちらも無ければ地震)
+#   戻り値 ... [{"start", "end", "jma"(震源リストの地震 または None), "row"(元の行), "type"(種別)}, ...]
 def read_candidates(path):
+  list_types = quake_list.usu_types()
   try:
     with open(path, encoding="utf-8-sig") as f:
       rows = list(csv.DictReader(f))
@@ -110,8 +118,34 @@ def read_candidates(path):
     if origin and None not in (lat, lon, depth):
       jma = {"日時": origin, "緯度": lat, "経度": lon, "深さ[km]": depth, "M": parse_float(r.get("M")),
              "震央地名": r.get("震央地名", "")}
-    candidates.append({"start": start, "end": end, "jma": jma, "row": r})
+    row_type = (r.get(quake_list.TYPE_FIELD) or "").strip()
+    event_type = list_types.get(f"{start:%Y-%m-%d %H:%M:%S}") or (
+      row_type if row_type in quake_list.EVENT_TYPES else quake_list.TYPE_QUAKE)
+    candidates.append({"start": start, "end": end, "jma": jma, "row": r, "type": event_type})
   return candidates
+
+# 候補の種別(地震・発破・未確定)
+def event_type(cand):
+  return cand.get("type") or quake_list.TYPE_QUAKE
+
+# 候補の種別を、有珠山付近の地震の一覧に合わせ直す(地震リストの画面で変えたとき)
+#   戻り値 ... 変わった候補があれば True
+def refresh_types(items):
+  list_types = quake_list.usu_types()
+  changed = False
+  for cand, _r in items:
+    new = list_types.get(f"{cand['start']:%Y-%m-%d %H:%M:%S}")
+    if new and new != event_type(cand):
+      cand["type"] = new
+      changed = True
+  return changed
+
+# 種別ごとの件数の説明(地震以外があるときだけ)。例: 種別: 地震 24件、発破 2件
+def type_summary(items):
+  counts = {t: sum(1 for c, _r in items if event_type(c) == t) for t in quake_list.EVENT_TYPES}
+  if counts[quake_list.TYPE_QUAKE] == len(items):
+    return ""
+  return "種別: " + "、".join(f"{t} {n}件" for t, n in counts.items() if n)
 
 # 震源リストの地震に、拠点の中心までの距離と、P波・S波の到達見込みを加える
 def add_arrivals(q, center):
@@ -339,7 +373,8 @@ def write_csv(path, items, names):
                     + ["P波の数", "S波の数", "緯度", "経度", "深さ[km](海面下)", "深さの範囲[km]", "残差[秒]", "発生時刻",
                        "到来方向[度]", "見かけの速度[km/s]", "遠い地震の距離[km]", "S-P時間の平均[秒]",
                        "気象庁: 発震時刻", "震央地名", "M", "気象庁: 緯度", "気象庁: 経度", "気象庁: 深さ[km]",
-                       "気象庁: 震央距離[km]", "気象庁の震央との距離[km]", "山頂からの距離[km]", "画像"])
+                       "気象庁: 震央距離[km]", "気象庁の震央との距離[km]", "山頂からの距離[km]", "画像",
+                       quake_list.TYPE_FIELD])
     for cand, r in items:
       picks, s_picks = r["picks"], r["s_picks"]
       used = [t for nm, t in picks.items() if nm not in r.get("excluded", [])]
@@ -365,7 +400,10 @@ def write_csv(path, items, names):
                 fmt(epicenter_distance(r["lat"], r["lon"], q["緯度"], q["経度"]), ".1f")]
       else:
         row += [""] * 8
-      row += [fmt(epicenter_distance(r["lat"], r["lon"], *USU_SUMMIT[:2]), ".1f"), r.get("image", "")]
+      # 種別は地震以外だけ書く(古い一覧を取り込み直しても、地震リストの種別を「地震」に戻さないため)
+      etype = event_type(cand)
+      row += [fmt(epicenter_distance(r["lat"], r["lon"], *USU_SUMMIT[:2]), ".1f"), r.get("image", ""),
+              "" if etype == quake_list.TYPE_QUAKE else etype]
       writer.writerow(row)
 
 # 確認用の画像: 拠点ごとに上下動と水平動を並べ、P波・S波の位置と震源リストの到達見込みを示す
@@ -531,9 +569,12 @@ def align_sections(axm, axe, axn, ew_space):
 # 震央の地図と断面図を fig に描く(画像の保存と、アプリの画面で共通)
 #   listing ... 右下に番号の一覧を書く(画面では一覧の表があるので書かない)
 #   戻り値 ... dict(axes=(地図, 東西断面, 南北断面), local=[(候補, 結果), ...], points=[(東, 北, 深さ), ...])
-#     local・points は地図に描いた近い地震の順(地図の番号の順)
-def draw_location_map(fig, items, stations, proj, title, listing=True):
+#     local・points は近い地震の順(地図の番号の順)。隠した種別も含むので、種別を切り替えても番号は変わらない
+#   types ... 描く種別(None ならすべて)。範囲は隠したものも含めて決める(切り替えても図の範囲が動かないように)
+def draw_location_map(fig, items, stations, proj, title, listing=True, types=None):
   local = [(cand, r) for cand, r in items if r["kind"] in LOCAL_KINDS]
+  def is_shown(cand):
+    return types is None or event_type(cand) in types
   points = [(*proj.to_xy(r["lat"], r["lon"]), depth_for_plot(r["loc"])) for _cand, r in local]
   half_x = max([MAP_HALF[0]] + [abs(p[0]) + 1 for p in points])
   half_y = max([MAP_HALF[1]] + [abs(p[1]) + 1 for p in points])
@@ -592,17 +633,22 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
     z = -0.733   # 大有珠の標高 733 m
     ax.plot(fx(x, y, z), fy(x, y, z), "P", color="saddlebrown", ms=10, markeredgecolor="white", zorder=5)
     for (cand, r), (x, y, z) in zip(local, points):
+      if not is_shown(cand):
+        continue
       good = r["kind"] == KIND_LOCAL and r["loc"]["rms"] < GOOD_RMS
-      ax.plot(fx(x, y, z), fy(x, y, z), "o", color="red" if good else "none", markeredgecolor="red", ms=6, zorder=6)
+      style = EVENT_STYLES[event_type(cand)]
+      color = style["color"]
+      ax.plot(fx(x, y, z), fy(x, y, z), style["marker"], color=color if good else "none", markeredgecolor=color,
+              ms=style["ms"], zorder=style["zorder"])
       lo, hi = r["loc"].get("depth_min"), r["loc"].get("depth_max")
       if depth_axis and hi is not None:
         shallow = is_shallow(r["loc"])
         z0 = -1.0 if shallow else lo
         cap = "_" if depth_axis == "y" else "|"
         line_x, line_y = [fx(x, y, z0), fx(x, y, hi)], [fy(x, y, z0), fy(x, y, hi)]
-        ax.plot(line_x, line_y, color="red", lw=1.0, alpha=0.6 if good else 0.4, zorder=5.5, solid_capstyle="butt")
+        ax.plot(line_x, line_y, color=color, lw=1.0, alpha=0.6 if good else 0.4, zorder=5.5, solid_capstyle="butt")
         ends = [1] if shallow else [0, 1]
-        ax.plot([line_x[i] for i in ends], [line_y[i] for i in ends], cap, color="red", ms=7, mew=1.0,
+        ax.plot([line_x[i] for i in ends], [line_y[i] for i in ends], cap, color=color, ms=7, mew=1.0,
                 alpha=0.6 if good else 0.4, ls="", zorder=5.5)
       q = cand["jma"]
       if q:
@@ -613,9 +659,10 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   plot_all(axm, lambda x, y, z: x, lambda x, y, z: y)
   plot_all(axe, lambda x, y, z: x, lambda x, y, z: z, label_external=False, depth_axis="y")
   plot_all(axn, lambda x, y, z: z, lambda x, y, z: y, depth_axis="x")
-  for i, (x, y, _z) in enumerate(points, 1):
-    axm.annotate(str(i), (x, y), textcoords="offset points", xytext=(4, 3), fontsize=7.5, color="darkred",
-                 weight="bold", zorder=7)
+  for i, ((cand, _r), (x, y, _z)) in enumerate(zip(local, points), 1):
+    if is_shown(cand):
+      axm.annotate(str(i), (x, y), textcoords="offset points", xytext=(4, 3), fontsize=7.5,
+                   color=EVENT_STYLES[event_type(cand)]["label_color"], weight="bold", zorder=7)
   axm.set_xlim(-half_x, half_x)
   axm.set_ylim(-half_y, half_y)
   axm.set_aspect("equal")
@@ -636,9 +683,18 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
     ax.yaxis.set_major_locator(MultipleLocator(TICK_KM))
   axe.external_label_args = (external, proj, half_x)
 
+  # 地震以外の種別は、この図にあるものだけ凡例に出す(件数は近い地震として震源が決まったもの)
+  type_handles = []
+  for t in (quake_list.TYPE_BLAST, quake_list.TYPE_UNCERTAIN):
+    n = sum(1 for cand, _r in local if event_type(cand) == t)
+    if n:
+      style = EVENT_STYLES[t]
+      type_handles.append(Line2D([], [], marker=style["marker"], color=style["color"], ms=style["ms"], ls="",
+                                 label=f"{t} {n}件"))
   handles = [Line2D([], [], marker="o", color="red", ls="", label=f"推定した震源(残差 {GOOD_RMS:g}秒未満)"),
              Line2D([], [], marker="o", color="none", markeredgecolor="red", ls="",
                     label=f"推定した震源(残差 {GOOD_RMS:g}秒以上・要確認)"),
+             *type_handles,
              Line2D([], [], marker="|", color="red", alpha=0.6, ms=10, mew=1.5, ls="", label="深さの範囲(断面図。上が開いた線は「より浅い」)"),
              Line2D([], [], marker="x", color="teal", mew=2, ls="", label="気象庁の震源"),
              Line2D([], [], marker="^", color="black", ls="", label="拠点"),
@@ -650,13 +706,18 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
   # 番号の一覧(多いときは途中まで)
   lines = [f"{i:2d}. {cand['start']:%y/%m/%d %H:%M}  深さ"
              + depth_short(r["loc"]) + f"km  残差{r['loc']['rms']:.2f}秒"
-             + (" ×" if cand["jma"] else "") for i, (cand, r) in enumerate(local, 1)]
-  #   凡例の下から、下の注意書きの上までに入る行数(LISTING_MAX)まで
-  if len(lines) > LISTING_MAX:
-    lines = lines[:LISTING_MAX - 1] + [f"  ほか {len(lines) - LISTING_MAX + 1}件(一覧の CSV を参照)"]
+             + (" ×" if cand["jma"] else "")
+             + ("" if event_type(cand) == quake_list.TYPE_QUAKE else f" {event_type(cand)}")
+           for i, (cand, r) in enumerate(local, 1) if is_shown(cand)]
+  #   凡例の下から、下の注意書きの上までに入る行数まで(凡例の種別の行の分だけ、下げて減らす)
+  max_lines = LISTING_MAX - 2 * len(type_handles)
+  if len(lines) > max_lines:
+    lines = lines[:max_lines - 1] + [f"  ほか {len(lines) - max_lines + 1}件(一覧の CSV を参照)"]
   if listing:
-    fig.text(0.07 + width + 0.03, 0.195, "\n".join(lines), fontsize=7, va="top", linespacing=1.15)
+    fig.text(0.07 + width + 0.03, 0.195 - 0.016 * len(type_handles), "\n".join(lines), fontsize=7, va="top", linespacing=1.15)
   others = len(items) - len(local)
+  n_shown = sum(1 for cand, _r in local if is_shown(cand))
+  shown_text = f"{len(local)}件のうち {n_shown}件" if n_shown != len(local) else f"{len(local)}件"
   #   3行に分け、断面図の深さの縮尺の比は align_sections で短い2行目の後ろに入れる({scale})
   n_uniform = sum(1 for _c, r in items if not r.get("layered", True))
   if items and n_uniform == len(items):
@@ -669,7 +730,7 @@ def draw_location_map(fig, items, stations, proj, title, listing=True):
               + f"深さは海面からの深さ(拠点の高度を考慮)。白抜きは残差 {GOOD_RMS:g}秒以上か、要確認の判定(残差大・到着時刻少)。"
               + "{scale}\n"
               + (f"番号は右下の一覧(× は気象庁の震源リストにあるもの)。" if listing else "番号は一覧の「番号」。")
-              + f"近い地震として震源が決まった {len(local)}件を表示"
+              + f"近い地震として震源が決まった {shown_text}を表示"
               + (f"。遠い地震・決まらないもの {others}件は一覧の CSV を参照" if others else ""))
   note = fig.text(0.07, 0.005, "", fontsize=8, va="bottom")
   axe.section_note = (note, template)

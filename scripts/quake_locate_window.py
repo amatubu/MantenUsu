@@ -18,9 +18,9 @@ from log_common import log_message
 from quake_features import USU_SUMMIT
 
 # 表の列: (見出し, 幅 [px], 揃え)
-COLUMNS = [("番号", 44, "e"), ("開始", 140, "w"), ("判定", 120, "w"), ("手直し", 52, "center"),
+COLUMNS = [("番号", 44, "e"), ("開始", 140, "w"), ("種別", 56, "center"), ("判定", 120, "w"), ("手直し", 52, "center"),
            ("深さ[km]", 70, "e"), ("残差[秒]", 70, "e"), ("山頂から[km]", 90, "e"), ("有珠山リスト", 80, "center"),
-           ("気象庁の震源リスト", 200, "w")]
+           ("気象庁の震源リスト", 144, "w")]
 
 # 選んだ震源の印の色
 SELECT_COLOR = "#1f77b4"
@@ -118,6 +118,17 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     webbrowser.open(path.resolve().as_uri())
   ttk.Button(map_bar, text="ブラウザで3D", command=open_3d_view).pack(side=tk.RIGHT, padx=(0, 6))
 
+  # 図に描く種別を選ぶ(隠しても、番号と図の範囲は変えない)
+  type_vars = {t: tk.BooleanVar(value=True) for t in quake_list.EVENT_TYPES}
+  def shown_types():
+    return {t for t, var in type_vars.items() if var.get()}
+  def on_types_changed():
+    draw_figure()
+    on_select()
+  ttk.Label(map_bar, text="図に描く種別:").pack(side=tk.LEFT)
+  for t, var in type_vars.items():
+    ttk.Checkbutton(map_bar, text=t, variable=var, command=on_types_changed).pack(side=tk.LEFT, padx=(6, 0))
+
   fig = Figure(figsize=(9.6, 7.8))
   canvas = FigureCanvasTkAgg(fig, master=right)
   toolbar = NavigationToolbar2Tk(canvas, right)
@@ -132,10 +143,12 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
   # 地図と断面図を描く(地図の番号は近い地震だけ。結果ごとに、地図での位置も覚えておく)
   def draw_figure():
     fig.clear()
+    shown = shown_types()
     drawn = quake_locate.draw_location_map(fig, items, stations, proj, quake_locate.map_title(title, items),
-                                           listing=False)
+                                           listing=False, types=shown)
     view["number"] = {id(r): i for i, (_cand, r) in enumerate(drawn["local"], 1)}
-    view["position"] = {id(r): p for (_cand, r), p in zip(drawn["local"], drawn["points"])}
+    view["position"] = {id(r): p for (cand, r), p in zip(drawn["local"], drawn["points"])
+                        if quake_locate.event_type(cand) in shown}   # 隠した種別には、選んだ印も付けない
     view["marks"] = [ax.plot([], [], "o", ms=16, mfc="none", mec=SELECT_COLOR, mew=2.5, zorder=8)[0]
                      for ax in drawn["axes"]]
     view["axes"] = drawn["axes"]
@@ -157,7 +170,7 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     summit = quake_locate.epicenter_distance(r["lat"], r["lon"], *USU_SUMMIT[:2])
     jma = f"{q['震央地名']} M{fmt(q['M'], 'g')}" if q else ""
     start = f"{cand['start']:%Y-%m-%d %H:%M:%S}"
-    return [view["number"].get(id(r), ""), start, r["kind"],
+    return [view["number"].get(id(r), ""), start, quake_locate.event_type(cand), r["kind"],
             "○" if r.get("manual") else "", depth, fmt(loc["rms"], ".3f") if loc else "", fmt(summit, ".1f"),
             "✓" if start in usu["starts"] else "", jma]
 
@@ -168,8 +181,10 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     for k, (cand, r) in enumerate(items):
       iid = tree.insert("", tk.END, values=row_values(cand, r))
       view["rows"][iid] = k
+    types_text = quake_locate.type_summary(items)
     summary.config(text=f"{len(items)}件: {quake_locate.count_summary(items)}"
-                        f"({quake_locate.manual_note(items)})" + ("  ※保存していない手直しがあります" if state["unsaved"] else ""))
+                        f"({quake_locate.manual_note(items)})" + (f"  {types_text}" if types_text else "")
+                        + ("  ※保存していない手直しがあります" if state["unsaved"] else ""))
     if select_index is not None:
       iid = tree.get_children()[select_index]
       tree.selection_set(iid)
@@ -277,13 +292,19 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     log_message(f"地震リストの有珠山付近の地震の震源を更新しました: {n}件")
     messagebox.showinfo("有珠山リスト", f"{n}件の震源を更新しました。", parent=win)
 
-  # この画面が前に出たら、有珠山リストの印を読み直す(地震リストの画面で外したときなど)
+  # この画面が前に出たら、有珠山リストの印と種別を読み直す(地震リストの画面で外したとき、種別を変えたときなど)
   def on_focus(event):
     if event.widget is win:
+      k = selected_index()
       starts = quake_list.usu_starts()
-      if starts != usu["starts"]:
-        usu["starts"] = starts
-        fill_table(selected_index())
+      starts_changed = starts != usu["starts"]
+      usu["starts"] = starts
+      types_changed = quake_locate.refresh_types(items)
+      if types_changed:
+        draw_figure()
+      if starts_changed or types_changed:
+        fill_table(k)
+        on_select()
   win.bind("<FocusIn>", on_focus)
 
   # すべての候補の震源を計算し直す(保存した到着時刻はそのまま使う)
