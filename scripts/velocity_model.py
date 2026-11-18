@@ -106,6 +106,37 @@ def table(model, phase, elevation_km):
   return _tables[key]
 
 
+# --- 波の通り道(3D表示で描くため) ---
+#   走時表と同じ格子・同じ最短経路法で、拠点から格子の各点への最短経路の「1つ前の点」を覚えておき、
+#   震源の点からたどって拠点までの通り道にする(1次元の構造なので、上から見ると拠点と震央を結ぶ直線の上)
+_predecessors = {}
+
+def ray_path(model, phase, elevation_km, r_src, z_src):
+  """震源(拠点からの水平距離 r_src [km]、海面からの深さ z_src [km])から拠点までの通り道
+  戻り値 ... [(水平距離 r, 深さ z), ...](震源が最初、拠点が最後。格子の刻み TABLE_STEP の折れ線)"""
+  key = (model.key, phase, round(float(elevation_km), 3))
+  if key not in _predecessors:
+    velocity = model.vp if phase == "P" else model.vs
+    r = np.arange(0, TABLE_R_MAX + TABLE_STEP / 2, TABLE_STEP)
+    z = np.arange(TABLE_Z_TOP, TABLE_Z_BOTTOM + TABLE_STEP / 2, TABLE_STEP)
+    nr, nz = len(r), len(z)
+    slowness = np.repeat((1.0 / velocity(z))[:, None], nr, axis=1)
+    k = min(max(int(round((-float(elevation_km) - TABLE_Z_TOP) / TABLE_STEP)), 0), nz - 1)
+    _dist, pred = dijkstra(_graph(slowness, nr, nz), indices=k * nr, return_predecessors=True)
+    _predecessors[key] = (pred, nr, nz)
+  pred, nr, nz = _predecessors[key]
+  i = min(max(int(round((z_src - TABLE_Z_TOP) / TABLE_STEP)), 0), nz - 1)
+  j = min(max(int(round(r_src / TABLE_STEP)), 0), nr - 1)
+  node, path = i * nr + j, []
+  while node >= 0:
+    path.append((node % nr * TABLE_STEP, TABLE_Z_TOP + node // nr * TABLE_STEP))
+    node = pred[node]
+  # 格子の点にのせたずれをなくすため、両端は震源・拠点の位置そのものにする
+  path[0] = (float(r_src), float(z_src))
+  path[-1] = (0.0, -float(elevation_km))
+  return path
+
+
 # 震源の候補の点ごとの走時を返す関数を作る(hypocenter.locate_grid_ps の travel に渡す)
 #   pos ... 観測した拠点の座標 [km] の配列 (n, 3)。3列目は高さ(海面からの高度。上が正)
 #   phases ... 観測ごとの "P"・"S"

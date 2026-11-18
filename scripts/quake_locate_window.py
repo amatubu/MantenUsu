@@ -104,6 +104,20 @@ def open_locate_window(parent, items, stations, proj, title, on_open_event, on_s
     webbrowser.open(path.resolve().as_uri())
   ttk.Button(map_bar, text="ブラウザで地図を開く", command=open_web_map).pack(side=tk.RIGHT, padx=(0, 6))
 
+  # 震源・山体・拠点・地下構造・波の通り道をブラウザの3Dの図で開く(quake_3d_view.py)。
+  # HTML は batch_plots/quakes/locate/<題名>_3d.html に書き出す(初めての範囲は標高タイルを取得するので少し待つ)
+  def open_3d_view():
+    import quake_3d_view
+    path = quake_locate.OUTPUT_DIR / f"{title}_3d.html"
+    try:
+      n = quake_3d_view.write_3d_view(path, items, stations, title)
+    except OSError as e:
+      messagebox.showerror("エラー", f"3Dの図を書き出せませんでした。\n{e}", parent=win)
+      return
+    log_message(f"ブラウザの3Dの図を書き出しました(震源 {n}件): {path}")
+    webbrowser.open(path.resolve().as_uri())
+  ttk.Button(map_bar, text="ブラウザで3D", command=open_3d_view).pack(side=tk.RIGHT, padx=(0, 6))
+
   fig = Figure(figsize=(9.6, 7.8))
   canvas = FigureCanvasTkAgg(fig, master=right)
   toolbar = NavigationToolbar2Tk(canvas, right)
