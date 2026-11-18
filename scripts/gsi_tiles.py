@@ -152,3 +152,29 @@ def elevations(lats, lons, z=DEM_ZOOM):
     sel = (ix == x) & (iy == y)
     out[sel] = get_dem_tile(z, x, y)[py[sel], px[sel]]
   return out
+
+
+# --- 河川中心線(3Dプリントの模型に川を描くのに使う) ---
+#   地理院の「河川中心線」のベクトルタイル(GeoJSON、ズーム16のみ)。https://maps.gsi.go.jp/development/ichiran.html
+#   川の名前は入っていないので、使う側で始まり・終わりの点からたどる(print_model.river_path)
+RIVER_LAYER = "experimental_rvrcl"
+RIVER_URL = "https://cyberjapandata.gsi.go.jp/xyz/experimental_rvrcl/{z}/{x}/{y}.geojson"
+RIVER_ZOOM = 16
+RIVER_TYPES = ("河川中心線",)   # 細河川・人工水路は使わない
+
+def river_lines(lat_min, lat_max, lon_min, lon_max):
+  """範囲の河川中心線 [[(経度, 緯度), ...], ...](種類が RIVER_TYPES で始まるもの)"""
+  import json
+  x0, y0 = lonlat_to_tile(lon_min, lat_max, RIVER_ZOOM)
+  x1, y1 = lonlat_to_tile(lon_max, lat_min, RIVER_ZOOM)
+  lines = []
+  for x in range(int(x0), int(x1) + 1):
+    for y in range(int(y0), int(y1) + 1):
+      data = _tile_bytes(RIVER_LAYER, RIVER_URL, RIVER_ZOOM, x, y, ext="geojson")
+      if not data:
+        continue
+      for f in json.loads(data).get("features", []):
+        g = f.get("geometry") or {}
+        if g.get("type") == "LineString" and f.get("properties", {}).get("type", "").startswith(RIVER_TYPES):
+          lines.append([tuple(c[:2]) for c in g["coordinates"]])
+  return lines

@@ -15,3 +15,5 @@ google-auth>=2.0                # 2.62.0  Googleドライブの認証(サービ�
 
 # 開発用スクリプト scripts/show_statistics.py を使う場合のみ:
 #   python3 -m pip install pandas openpyxl
+# 3Dプリントの模型を3つに切る形(scripts/print_model.py の --layout cake)を作る場合のみ:
+#   python3 -m pip install manifold3d   # 3.5.5  形の足し引き(切り口をきれいな平面にする)
