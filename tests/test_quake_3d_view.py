@@ -96,6 +96,21 @@ def test_write_3d_view(tmp_path, monkeypatch):
   marks = [fig["data"][i]["marker"] for i in meta["waves"]]
   assert marks[0].get("symbol") == marks[1].get("symbol") and marks[0]["size"] == marks[1]["size"]
   assert meta["quakes"][0]["image"] == "images/w.png"
+  assert meta["quakes"][0]["key"] == "20250903_232300" and meta["wave_page"] == ""   # 有珠山の一覧でないので波形のページは無い
+
+
+def test_wave_page_link_only_when_page_exists(tmp_path, monkeypatch):
+  monkeypatch.setattr(gsi_tiles, "elevations", lambda lats, lons, z=None: np.full(np.shape(lats), 100.0))
+  monkeypatch.setattr(quake_3d_view, "waveform_image", lambda cand, r, usu=None: None)
+  monkeypatch.setattr(quake_3d_view, "usu_list_images", lambda: {})
+  stations = {"Mimatsu": (42.54075, 140.85705, 189.8), "Bamba": (42.53533, 140.78266, 17.1)}
+  path = tmp_path / "usu_quakes_3d.html"
+  def wave_page():
+    quake_3d_view.write_3d_view(path, fake_items(), stations, quake_3d_view.USU_LIST_TITLE)
+    return json.loads(path.read_text(encoding="utf-8").split("const meta = ", 1)[1].split(";\nconst gd", 1)[0])["wave_page"]
+  assert wave_page() == ""
+  (tmp_path / quake_3d_view.WAVE_PAGE_FILE).write_text("", encoding="utf-8")
+  assert wave_page() == "usu_quakes_waves.html"
 
 
 def test_html_file_name_is_ascii():

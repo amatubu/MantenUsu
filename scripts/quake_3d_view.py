@@ -32,6 +32,8 @@ from quake_web_map import depth_color
 
 USU_LIST_TITLE = "有珠山付近の地震"   # 有珠山付近の地震の一覧の題名(ファイル名を決まった名前にする)
 USU_LIST_FILE = "usu_quakes"
+WAVE_PAGE_FILE = f"{USU_LIST_FILE}_waves.html"   # 拡大できる波形のページ(quake_wave_view.py。有珠山付近の地震の一覧だけ)
+WAVE_PAGE_WINDOW = "usu_waves"   # 波形のページを開くタブの名前(同じタブを使い回し、2回目からは読み直さずに地震だけ変える)
 PLOTLY_VERSION = "2.35.2"
 PLOTLY_URL = f"https://cdn.jsdelivr.net/npm/plotly.js-dist-min@{PLOTLY_VERSION}/plotly.min.js"
 MP4_MUXER_VERSION = "5.1.3"   # 動画(MP4)の書き出しに使う
@@ -318,6 +320,10 @@ def timed_path(path, velocity, sx, sy, ux, uy):
   return [[round(sx + ux * p[k, 0], 3), round(sy + uy * p[k, 0], 3), round(-p[k, 1], 3), round(float(t[k]), 4)]
           for k in keep]
 
+# 地震を見分ける文字列(地震リストの開始の時刻)。拡大できる波形のページを、この地震の所で開くのに使う
+def event_key(cand):
+  return f"{cand['start']:%Y%m%d_%H%M%S}"
+
 # 描く震源: [(表示用の辞書, 通り道のリスト), ...]
 #   items ... [(候補, 結果), ...](quake_locate.locate_all_cached の結果)
 #   stations ... 満点の拠点 {名前: (緯度, 経度, 高度[m])}
@@ -338,7 +344,7 @@ def quake_items(items, stations, proj, model, html_dir=None):
              + f"<br>深さ {depth_text(loc)}<br>残差 {loc['rms']:.3f} 秒"
              + (f"<br>気象庁 M{q['M']:g}" if q and q.get("M") is not None else ""))
     color = depth_color(depth) if etype == TYPE_QUAKE else EVENT_STYLES[etype]["color"]
-    info = {"no": i, "x": round(x, 3), "y": round(y, 3), "depth": round(depth, 3), "color": color, "type": etype,
+    info = {"no": i, "key": event_key(cand), "x": round(x, 3), "y": round(y, 3), "depth": round(depth, 3), "color": color, "type": etype,
             "good": good, "label": label, "short": f"No.{i} {origin:%Y-%m-%d %H:%M}",
             "err_up": round(max(0.0, depth - lo), 3) if lo is not None else 0,
             "err_down": round(max(0.0, hi - depth), 3) if hi is not None else 0}
@@ -438,7 +444,7 @@ def figure(items, stations, title, model=None, html_dir=None):
                            + [{"label": f"海面より上だけ {a:g} 倍", "ex": 1, "above": a} for a in ABOVE_EXAGGERATIONS],
           "quake_trace": quake_index, "number_trace": number_index, "others_opacity": OTHERS_OPACITY,
           "rays": list(range(ray_start, label_start)), "labels": list(range(label_start, len(traces))),
-          "quakes": [{"short": q["short"], "image": q["image"], "lines": q["lines"], "waves": q["waves"],
+          "quakes": [{"short": q["short"], "key": q["key"], "image": q["image"], "lines": q["lines"], "waves": q["waves"],
                       "label": q["short"]} for q, _rays in quakes],
           "waves": wave_index, "attribution": gsi_tiles.DEM_ATTRIBUTION, "p_color": P_WAVE_COLOR, "s_color": S_WAVE_COLOR,
           "video": {"fps": VIDEO_FPS, "max_width": VIDEO_MAX_WIDTH, "bitrate": VIDEO_BITRATE}}
@@ -456,10 +462,13 @@ def html_file_name(title):
   return f"quakes_{slug}_{code}_3d.html" if slug else f"quakes_{code}_3d.html"
 
 # HTML を書き出す
+#   有珠山付近の地震の一覧で、同じフォルダに拡大できる波形のページ(WAVE_PAGE_FILE)があれば、そこへのリンクを出す
 #   戻り値 ... 描いた震源の数
 def write_3d_view(path, items, stations, title, model=None):
   path = Path(path)
   fig, meta, count = figure(items, stations, title, model, html_dir=path.parent.resolve())
+  has_page = USU_LIST_TITLE in title and (path.parent / WAVE_PAGE_FILE).exists()
+  meta.update(wave_page=WAVE_PAGE_FILE if has_page else "", wave_window=WAVE_PAGE_WINDOW)
   path.parent.mkdir(parents=True, exist_ok=True)
   page = PAGE.format(title=html.escape(title), plotly_url=PLOTLY_URL, muxer_url=MP4_MUXER_URL,
                      fig=json.dumps(fig, ensure_ascii=False, separators=(",", ":")),
@@ -503,6 +512,7 @@ body {{ display: flex; flex-direction: column; }}
              background: rgba(255,255,255,0.85); border-radius: 6px; }}
 #waveinfo .t {{ font-size: 22px; font-weight: 600; }}
 #waveinfo .s {{ font-size: 12px; color: #444; }}
+#wave header a {{ margin-left: auto; margin-right: 8px; color: #1565c0; white-space: nowrap; }}
 #wave .none {{ padding: 10px; color: #666; }}
 #wave .times {{ padding: 4px 8px; font-size: 12px; line-height: 1.5; border-top: 1px solid #eee; }}
 </style>
@@ -518,6 +528,8 @@ body {{ display: flex; flex-direction: column; }}
   <label><input type="checkbox" id="legend"> 凡例</label>
   <label>地震(通り道) <select id="quake"><option value="none">表示しない</option>
     <option value="all">すべての地震</option></select></label>
+  <label id="wavekindbox" style="display:none">波形 <select id="wavekind"><option value="image">画像</option>
+    <option value="page">拡大できる波形(別のタブ)</option></select></label>
   <button id="wavebtn">波形を表示</button>
   <span class="group"><button id="play">▶ 波を動かす</button>
     <label><select id="slow"></select></label>
@@ -526,7 +538,7 @@ body {{ display: flex; flex-direction: column; }}
   <span style="color:#777">(震源を押しても選べます)</span>
 </div>
 <div id="view"><div id="waveinfo"><div class="s" id="infotitle"></div><div class="t" id="infotime"></div>
-  <div class="s"><span id="infop">●</span> P波 <span id="infos">●</span> S波</div></div><div id="wave"><header><span id="wavetitle"></span><button id="waveclose" title="閉じる">×</button></header>
+  <div class="s"><span id="infop">●</span> P波 <span id="infos">●</span> S波</div></div><div id="wave"><header><span id="wavetitle"></span><a id="wavelink" style="display:none">拡大できる波形 ↗</a><button id="waveclose" title="閉じる">×</button></header>
   <div id="wavebody"></div></div></div>
 <script>
 const fig = {fig};
@@ -600,11 +612,19 @@ gd.on("plotly_click", (ev) => {{
 }});
 // 波形の枠を開いているか(「波形を表示」で開き、× で閉じる。開いている間は、選んだ地震に合わせて中身を変える)
 let waveOpen = false;
+// 拡大できる波形のページ(あるときだけ「波形」で選べる。いつも同じタブで開く)
+const wavePageUrl = (i) => meta.wave_page + "#" + meta.quakes[i].key;
+if (meta.wave_page) {{
+  $("wavekindbox").style.display = "";
+  $("wavelink").style.display = "";
+  $("wavelink").target = meta.wave_window;
+}}
 function showWave(i) {{
   const box = $("wave");
   if (i === null || !waveOpen) {{ box.style.display = "none"; return; }}
   const q = meta.quakes[i];
   $("wavetitle").textContent = q.short + " の波形(満点の拠点)と時刻";
+  if (meta.wave_page) $("wavelink").href = wavePageUrl(i);
   $("wavebody").innerHTML = "";
   if (q.image) {{
     const img = new Image();
@@ -637,6 +657,7 @@ $("wavebtn").onclick = () => {{
   const v = $("quake").value;
   const i = v !== "none" && v !== "all" ? parseInt(v) : null;
   if (i === null) {{ alert("「地震(通り道)」で地震を1つ選んでください(震源を押しても選べます)"); return; }}
+  if (meta.wave_page && $("wavekind").value === "page") {{ window.open(wavePageUrl(i), meta.wave_window); return; }}
   waveOpen = !waveOpen;
   showWave(i);
   $("wavebtn").textContent = waveOpen ? "波形を隠す" : "波形を表示";
