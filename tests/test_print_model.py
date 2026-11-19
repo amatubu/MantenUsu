@@ -1,4 +1,5 @@
 # 3Dプリントの模型(print_model.py)の、柱の積み重ねと閉じた形の作り方のテスト
+import math
 from collections import Counter
 
 import numpy as np
@@ -135,3 +136,78 @@ def test_split_runs_stops_below_ceiling():
   pts = [(0, 0, 1.0), (1, 0, 2.0), (2, 0, 4.0), (3, 0, 5.0)]
   runs = print_model.split_runs(pts, 0.5, lambda p: 3.0)
   assert len(runs) == 1 and runs[0][-1][2] == pytest.approx(3.0) and runs[0][-1][0] == pytest.approx(1.5)
+
+
+def magnet_test_cake():
+  # 箱を ケーキの形(東西の面 y = 60 と、p0 から南西への面)で3つに切る。下 0〜15 mm と上 15〜30 mm で色を分け、
+  # 東西の面の上の高さ 8 mm に通り道(白の管)を置く
+  manifold3d = pytest.importorskip("manifold3d")
+  M = manifold3d.Manifold
+  p0, d = np.array([50.0, 60.0]), np.array([-0.8, -0.6])
+  normal = np.array([-d[1], d[0]])
+  ray = print_model.tube([(-5, 60, 8), (105, 60, 8)], 0.45)
+  solids = {"layer3": M.cube((100, 100, 15)) - ray, "layer2": M.cube((100, 100, 15)).translate((0, 0, 15)),
+            "marker": ray ^ M.cube((100, 100, 30))}
+  off = float(normal @ p0)
+  pieces = {"north": {}, "southwest": {}, "southeast": {}}
+  for mat, sol in solids.items():
+    pieces["north"][mat] = sol.trim_by_plane((0, 1, 0), 60)
+    s_ = sol.trim_by_plane((0, -1, 0), -60)
+    pieces["southeast"][mat] = s_.trim_by_plane((float(normal[0]), float(normal[1]), 0), off)
+    pieces["southwest"][mat] = s_.trim_by_plane((-float(normal[0]), -float(normal[1]), 0), -off)
+  cut = {"p0": p0, "d": d, "normal": normal, "y_cut": 60.0, "width": 100.0, "depth": 100.0}
+  return pieces, cut
+
+
+def test_magnet_pockets_avoid_rays_and_color_borders():
+  pieces, cut = magnet_test_cake()
+  pockets, z_levels, frames = print_model.place_magnets(pieces, cut, 30.0)
+  rh, length = print_model.magnet_dims()
+  m = print_model.MAGNET_MARGIN_MM
+  assert len(z_levels) == 2 and len(pockets) == 4 * len(frames)
+  for pk in pockets:
+    # 溝の上の端は層の境目、底からは MAGNET_FLOOR_MM 以上
+    assert pk["top"] / print_model.LAYER_MM == pytest.approx(round(pk["top"] / print_model.LAYER_MM))
+    assert pk["z"] - rh >= print_model.MAGNET_FLOOR_MM - 1e-9
+    # 色の境目(15 mm)をまたがない
+    assert pk["z"] + rh + m <= 15 + 1e-6 or pk["z"] - rh - m >= 15 - 1e-6
+    # 東西の面では、高さ 8 mm の通り道にかからない
+    if pk["face"] < 2:
+      assert abs(pk["z"] - 8) >= rh + 0.45 - 1e-6
+  # 同じ合わせ面・同じ段の溝は、となりと離れている
+  for a in pockets:
+    for b in pockets:
+      if a is not b and a["face"] == b["face"] and a["z"] == b["z"]:
+        assert abs(a["s"] - b["s"]) >= 2 * rh
+
+
+def test_magnet_holes_are_closed_inside():
+  pieces, cut = magnet_test_cake()
+  manifold3d = pytest.importorskip("manifold3d")
+  before = {p: sum(s.volume() for s in mats.values()) for p, mats in pieces.items()}
+  whole = {p: manifold3d.Manifold.batch_boolean(list(mats.values()), manifold3d.OpType.Add) for p, mats in pieces.items()}
+  pockets, _z, frames = print_model.place_magnets(pieces, cut, 30.0)
+  holes = print_model.cut_magnet_holes(pieces, pockets, frames)
+  rh, length = print_model.magnet_dims()
+  one = math.pi * rh ** 2 * length + 2 * rh * rh * length   # 円柱と、上の半分の箱(重なる分を引く)
+  one -= math.pi * rh ** 2 / 2 * length
+  for p, mats in pieces.items():
+    n = sum(1 for pk in pockets for side in (pk["a"], pk["b"]) if side == p)
+    after = sum(s.volume() for s in mats.values())
+    assert before[p] - after == pytest.approx(n * one, rel=0.02)
+    assert holes[p].volume() == pytest.approx(n * one, rel=0.02)
+    # 溝はすべて部品の中(外に出ない閉じた空洞)
+    assert (holes[p] - whole[p]).volume() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_magnet_pocket_has_wall_to_face():
+  pieces, cut = magnet_test_cake()
+  frames = print_model.magnet_face_frames(cut)
+  rh, length = print_model.magnet_dims()
+  frame = frames[0]
+  pocket = print_model.magnet_pocket(frame, 30.0, 6.0, frame[5])   # north の側(y が大きい方)
+  x0, y0, z0, x1, y1, z1 = pocket.bounding_box()
+  assert y0 == pytest.approx(60 + print_model.MAGNET_WALL_MM) and y1 == pytest.approx(60 + print_model.MAGNET_WALL_MM + length)
+  assert x1 - x0 == pytest.approx(2 * rh, rel=1e-3) and z1 == pytest.approx(6.0 + rh)
+  other = print_model.magnet_pocket(frame, 30.0, 6.0, -frame[5])   # southwest の側
+  assert other.bounding_box()[4] == pytest.approx(60 - print_model.MAGNET_WALL_MM)

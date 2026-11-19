@@ -9,6 +9,8 @@
 #       パーツごとにフィラメントを割り当てる
 #   使い方: python3 scripts/print_model.py --above 1.5 --south 6 [--scale 20] [--exaggeration 1.0] [--rays manten] [--name 名前]
 #     --exaggeration は縦の倍率(全体)。--above は海面より上だけの倍率(深さはそのまま)。--south は東西の切り口から南の奥行き [km]
+#     --magnets [--magnet-size 5x2] [--magnet-z 5,25]: 合わせ面に磁石を閉じ込める U字の溝を開ける(cake のとき。TODO 47)。
+#       一時停止の高さと磁石の向きは README.txt、溝の位置の図は magnets.png
 import argparse
 import json
 import math
@@ -57,6 +59,8 @@ MATERIALS = {
   "quake":    ("震源", "#d62728"),
   "marker":   ("拠点・P波の通り道(core の形ではコアの上の印も)", "#f5f5f5"),
 }
+
+PREVIEW_COLORS = {**MATERIALS, "magnet": ("磁石の溝(確認用。STL には無い)", "#e000e0")}
 
 # 代表の地震(有珠山付近の地震の一覧の開始。分まで)。断面の上に置くものと、コアに入れるもの
 DEFAULT_SECTION_QUAKES = ["2026-05-20 23:51", "2025-09-03 23:23"]   # 火口原直下、昭和新山の下
@@ -428,10 +432,10 @@ def write_preview(path, preview, ny, offsets=None, max_tris=1_500_000):
     elif name.startswith("core"):
       v[:, 2] += 40
     n = len(tris)
-    data.append({"type": "mesh3d", "name": f"{name} {MATERIALS[mat][0]}", "x": np.round(v[:, 0], 2).tolist(),
+    data.append({"type": "mesh3d", "name": f"{name} {PREVIEW_COLORS[mat][0]}", "x": np.round(v[:, 0], 2).tolist(),
                  "y": np.round(v[:, 1], 2).tolist(), "z": np.round(v[:, 2], 2).tolist(),
                  "i": list(range(0, 3 * n, 3)), "j": list(range(1, 3 * n, 3)), "k": list(range(2, 3 * n, 3)),
-                 "color": MATERIALS[mat][1], "flatshading": True, "showlegend": True,
+                 "color": PREVIEW_COLORS[mat][1], "flatshading": True, "showlegend": True,
                  "lighting": {"ambient": 0.55, "diffuse": 0.7, "specular": 0.05}, "hoverinfo": "name"})
   layout = {"title": {"text": "3Dプリントの模型(試作)の確認 [mm]"}, "margin": {"l": 0, "r": 0, "t": 40, "b": 0},
             "scene": {"aspectmode": "data", "camera": {"eye": {"x": -0.6, "y": -1.6, "z": 0.9}}}}
@@ -822,7 +826,7 @@ def build_cake(section_starts, blast_starts, scale=SCALE_MM_PER_KM, exaggeration
       if mat != "quake":
         mats[mat] = drop_small_parts(mats[mat], MIN_PART_MM3 / 10 if mat == "marker" else MIN_PART_MM3)
   size = (width, depth_mm, float(top.max()))
-  return pieces, notes, size, {"p0": p0, "d": d}
+  return pieces, notes, size, {"p0": p0, "d": d, "normal": normal, "y_cut": ymm(y_cut), "width": width, "depth": depth_mm, "sea": sea_mm}
 
 
 def mesh_triangles(m):
@@ -832,9 +836,298 @@ def mesh_triangles(m):
   return v[t].astype(np.float32)
 
 
+# --- 磁石の穴(TODO 47) ---
+#   合わせ面の両側の部品に、円柱の磁石を、軸を横にして(平らな面を合わせ面に向けて立てて)入れる「上が開いた U字の溝」を開ける。
+#   底を下にしてプリントし、溝の上の端の高さで一時停止して磁石を落としこみ、接着剤で止めて続ける(続きの層が溝にふたをする)。
+#   合わせ面には MAGNET_WALL_MM の薄い壁が残り、磁石は外から見えない。
+#   溝(とまわりの MAGNET_MARGIN_MM)は1つの色の中に収め、通り道(白の管)や震源の球にかからない所を選ぶ。
+#   高さは2段(各段に2個、合わせ面ごとに4個)で、段の高さは3つの合わせ面で共通にする(一時停止は2回で済む)
+MAGNET_DIAMETER_MM = 5.0   # 磁石の直径 [mm]
+MAGNET_HEIGHT_MM = 2.0     # 磁石の高さ(厚さ) [mm]
+MAGNET_GAP_MM = 0.3        # 溝のすき間の余裕(直径・厚さに足す) [mm]
+MAGNET_WALL_MM = 0.8       # 合わせ面と溝の間の壁の厚さ [mm](ノズル 0.4 mm で2本分)
+MAGNET_MARGIN_MM = 0.8     # 溝のまわりに要る同じ色の厚さ [mm](色の境目・通り道・震源からこれだけ離す)
+MAGNET_EDGE_MM = 2.0       # 合わせ面の端(3つの部品が出会う所を含む)から溝までの距離 [mm]
+MAGNET_FLOOR_MM = 1.2      # ブロックの底と溝の間の厚さの最小 [mm]
+MAGNET_Z_TARGETS = (0.125, 0.625)   # 2段の溝の中心の高さの目安(底から海面までの高さとの比。A の模型で 5 mm と 25 mm)
+LAYER_MM = 0.2             # 層の厚さ [mm](溝の上の端を層の境目にそろえる)
+MAGNET_PX_MM = 0.25        # 位置を探す格子の細かさ [mm]
+# 合わせ面: (名前, 側の部品 A, 側の部品 B)。磁石の向き: 「印」の面(磁石を積み重ねて上の面にペンで印を付ける)を
+#   合わせ面に向けるか。A と B で逆にするので、どの合わせ面でも引き合う
+MAGNET_FACES = [("東西・西(north と southwest)", "north", "southwest"),
+                ("東西・東(north と southeast)", "north", "southeast"),
+                ("山頂から発破(southwest と southeast)", "southwest", "southeast")]
+MAGNET_MARKED = {("north", 0): True, ("southwest", 0): False, ("north", 1): True, ("southeast", 1): False,
+                 ("southwest", 2): True, ("southeast", 2): False}
+
+
+def magnet_face_frames(cut):
+  """合わせ面ごとの座標 [(名前, A, B, 原点, 面に沿った向き u, A の内向き nA, s の範囲)](B の内向きは -nA)"""
+  p0, d, normal = np.asarray(cut["p0"], float), np.asarray(cut["d"], float), np.asarray(cut["normal"], float)
+  w, yc = cut["width"], cut["y_cut"]
+  o = np.array([0.0, yc])
+  # 山頂から発破の切り口が、ブロックの端(西・南)に届くまでの長さ(d は西南の向き)
+  s_end = float(min(-p0[0] / d[0] if d[0] < 0 else np.inf, -p0[1] / d[1] if d[1] < 0 else np.inf))
+  names = [f[0] for f in MAGNET_FACES]
+  return [(names[0], "north", "southwest", o, np.array([1.0, 0.0]), np.array([0.0, 1.0]), (0.0, float(p0[0]))),
+          (names[1], "north", "southeast", o, np.array([1.0, 0.0]), np.array([0.0, 1.0]), (float(p0[0]), float(w))),
+          (names[2], "southwest", "southeast", p0, d, -normal, (0.0, s_end))]
+
+
+def _to_local(o, u, n):
+  """世界の座標 → 面の座標 (s: 面に沿って, z: 高さ, t: 部品の内へ) の 3×4 の行列"""
+  return np.array([[u[0], u[1], 0.0, -float(u @ o)], [0.0, 0.0, 1.0, 0.0], [n[0], n[1], 0.0, -float(n @ o)]])
+
+
+def _to_world(o, u, n):
+  return np.array([[u[0], 0.0, n[0], o[0]], [u[1], 0.0, n[1], o[1]], [0.0, 1.0, 0.0, 0.0]])
+
+
+def rasterize(cs, s_grid, z_grid):
+  """断面(CrossSection)の内側の格子の点(s_grid × z_grid)を True にする(輪郭の向きで穴を引く)"""
+  from matplotlib.path import Path as MPath
+  inside = np.zeros((len(z_grid), len(s_grid)), int)
+  ss, zz = np.meshgrid(s_grid, z_grid)
+  for poly in cs.to_polygons():
+    poly = np.asarray(poly, float)
+    if len(poly) < 3:
+      continue
+    area = 0.5 * float(np.sum(poly[:, 0] * np.roll(poly[:, 1], -1) - np.roll(poly[:, 0], -1) * poly[:, 1]))
+    i0, i1 = np.searchsorted(s_grid, [poly[:, 0].min(), poly[:, 0].max()])
+    j0, j1 = np.searchsorted(z_grid, [poly[:, 1].min(), poly[:, 1].max()])
+    if i1 <= i0 or j1 <= j0:
+      continue
+    pts = np.stack([ss[j0:j1, i0:i1].ravel(), zz[j0:j1, i0:i1].ravel()], 1)
+    hit = MPath(poly).contains_points(pts).reshape(j1 - j0, i1 - i0)
+    inside[j0:j1, i0:i1] += np.where(hit, 1 if area > 0 else -1, 0)
+  return inside > 0
+
+
+def magnet_dims():
+  rh = (MAGNET_DIAMETER_MM + MAGNET_GAP_MM) / 2
+  return rh, MAGNET_HEIGHT_MM + MAGNET_GAP_MM
+
+
+def magnet_footprint(px):
+  """溝(下が丸く上が開いた U字)とまわりの余裕の、面の上の形(中心が真ん中の格子)"""
+  rh, _ = magnet_dims()
+  r = rh + MAGNET_MARGIN_MM
+  k = int(math.ceil(r / px))
+  ds, dz = np.meshgrid(np.arange(-k, k + 1) * px, np.arange(-k, k + 1) * px)
+  return (ds ** 2 + dz ** 2 <= r ** 2) | ((np.abs(ds) <= r) & (dz >= 0) & (dz <= r))
+
+
+def magnet_valid_map(pieces, frame, height):
+  """合わせ面の上で、溝の中心を置ける所(両側とも1つの色の中に収まる)の地図 (s の格子, z の格子, 置ける)"""
+  from scipy import ndimage
+  _name, a, b, o, u, n, (s0, s1) = frame
+  px = MAGNET_PX_MM
+  rh, length = magnet_dims()
+  s_grid = np.arange(s0 + px / 2, s1, px)
+  z_grid = np.arange(px / 2, height, px)
+  ts = [0.1, MAGNET_WALL_MM, MAGNET_WALL_MM + length / 2, MAGNET_WALL_MM + length, MAGNET_WALL_MM + length + MAGNET_MARGIN_MM]
+  foot = magnet_footprint(px)
+  ok = np.ones((len(z_grid), len(s_grid)), bool)
+  for piece, nn in ((a, n), (b, -n)):
+    # 両側とも同じ s・z(合わせ面の上の同じ点)で、t だけ部品の内へ向ける
+    m2l = _to_local(o, u, nn)
+    side = np.zeros_like(ok)
+    for mat, sol in pieces[piece].items():
+      if sol.is_empty():
+        continue
+      loc = sol.transform(m2l)
+      every = np.ones_like(ok)
+      for t in ts:
+        every &= rasterize(loc.slice(t), s_grid, z_grid)
+        if not every.any():
+          break
+      side |= ndimage.binary_erosion(every, structure=foot)
+    ok &= side
+  # 合わせ面の端から MAGNET_EDGE_MM + 溝の半径 より内だけ
+  edge = MAGNET_EDGE_MM + rh
+  ok &= ((s_grid > s0 + edge) & (s_grid < s1 - edge))[None, :]
+  return s_grid, z_grid, ok
+
+
+def place_magnets(pieces, cut, height, per_row=2, rows=2, z_levels=None, targets=None):
+  """磁石の溝の位置 [{face, a, b, s, z, top, center_a, ...}] と、段の高さ(溝の中心)[mm]"""
+  rh, _ = magnet_dims()
+  frames = magnet_face_frames(cut)
+  maps = [magnet_valid_map(pieces, f, height) for f in frames]
+  sep = 2 * rh + 2 * MAGNET_MARGIN_MM   # となりの溝の中心の間
+  # 溝の上の端が層の境目になる中心の高さ
+  cand = [k * LAYER_MM - rh for k in range(1, int(height / LAYER_MM)) if k * LAYER_MM - 2 * rh >= MAGNET_FLOOR_MM]
+  def spots(m, z):
+    s_grid, z_grid, ok = m
+    j = int(round((z - z_grid[0]) / MAGNET_PX_MM))
+    if j < 0 or j >= len(z_grid):
+      return np.array([])
+    return s_grid[ok[j]]
+  def pick(ss, count, ok_more=lambda s: True):
+    """置ける所 ss から、count 個をなるべく広げて選ぶ(となりと sep 離す。ok_more は、ほかの合わせ面の溝とのぶつかりの確かめ)"""
+    if len(ss) == 0:
+      return []
+    lo, hi = ss.min(), ss.max()
+    targets = [lo + (hi - lo) * (k + 0.5) / count for k in range(count)]
+    chosen = []
+    for tg in targets:
+      for s in ss[np.argsort(np.abs(ss - tg))]:
+        if all(abs(s - c) >= sep for c in chosen) and ok_more(s):
+          chosen.append(float(s))
+          break
+    return chosen if len(chosen) == count else []
+  lengths = [f[6][1] - f[6][0] for f in frames]
+  def spread(z):
+    """高さ z で、どの合わせ面でも per_row 個置けるとき、選んだ点の広がり(合わせ面の長さとの比)のいちばん小さいもの"""
+    out = 1.0
+    for m, ln in zip(maps, lengths):
+      ss = pick(spots(m, z), per_row)
+      if len(ss) < per_row:
+        return None
+      out = min(out, (max(ss) - min(ss)) / ln if per_row > 1 else 1.0)
+    return out
+  if z_levels is None:
+    good = {z: sp for z in cand if (sp := spread(z)) is not None}
+    z_levels = []
+    if good:
+      zs = sorted(good)
+      if rows >= 2:
+        # 2段: 目安の高さ(targets。底から海面までの高さとの比)にいちばん近い組
+        tg = [t * cut.get("sea", height) for t in (targets or MAGNET_Z_TARGETS)]
+        pairs = [(z1, z2) for i, z1 in enumerate(zs) for z2 in zs[i + 1:] if z2 - z1 >= sep]
+        if pairs:
+          z_levels = list(min(pairs, key=lambda p: abs(p[0] - tg[0]) + abs(p[1] - tg[1])))
+      if not z_levels:
+        z_levels = [max(zs, key=lambda z: good[z])]
+  else:
+    z_levels = [min(cand, key=lambda c: abs(c - z)) for z in z_levels]
+  pockets = []
+  count = per_row if len(z_levels) >= rows else per_row * rows
+  # 同じ部品のほかの合わせ面の溝(南西のくさびの先では、2つの合わせ面が近い)から、溝の奥まで含めて離す
+  _rh, length = magnet_dims()
+  reach = sep + 2 * (MAGNET_WALL_MM + length + MAGNET_MARGIN_MM)
+  for fi, (frame, m) in enumerate(zip(frames, maps)):
+    name, a, b, o, u, n, _r = frame
+    for z in z_levels:
+      others = [pk for pk in pockets if pk["z"] == float(z) and {pk["a"], pk["b"]} & {a, b}]
+      def clear(s):
+        xy = o + s * u
+        return all(math.hypot(xy[0] - pk["xy"][0], xy[1] - pk["xy"][1]) >= reach for pk in others)
+      for s in pick(spots(m, z), count, clear):
+        xy = o + s * u
+        pockets.append({"face": fi, "face_name": name, "a": a, "b": b, "s": s, "z": float(z), "top": float(z + rh),
+                        "xy": (float(xy[0]), float(xy[1]))})
+  return pockets, z_levels, frames
+
+
+def magnet_pocket(frame, s, z, inward):
+  """1つの溝の形(世界の座標)。inward: 部品の内への向き(A は nA、B は -nA)"""
+  import manifold3d
+  M = manifold3d.Manifold
+  _name, _a, _b, o, u, _n, _r = frame
+  rh, length = magnet_dims()
+  # 面の座標 (s, z, t) で作る: t の向きに長さ length の円柱と、その上半分から溝の上の端までの箱
+  cyl = M.cylinder(length, rh, rh, 48).translate((s, z, MAGNET_WALL_MM))
+  slot = M.cube((2 * rh, rh, length)).translate((s - rh, z, MAGNET_WALL_MM))
+  return (cyl + slot).transform(_to_world(o, u, inward))
+
+
+def cut_magnet_holes(pieces, pockets, frames):
+  """部品の色ごとの形から、磁石の溝を引く。溝の形 {部品: Manifold} も返す(確認用)"""
+  import manifold3d
+  holes = {}
+  for pk in pockets:
+    frame = frames[pk["face"]]
+    n = frame[5]
+    for piece, inward in ((pk["a"], n), (pk["b"], -n)):
+      holes.setdefault(piece, []).append(magnet_pocket(frame, pk["s"], pk["z"], inward))
+  out = {}
+  for piece, parts in holes.items():
+    h = manifold3d.Manifold.batch_boolean(parts, manifold3d.OpType.Add)
+    pieces[piece] = {mat: sol - h for mat, sol in pieces[piece].items()}
+    out[piece] = h
+  return out
+
+
+def magnet_notes(pockets, z_levels):
+  """README に書く、磁石の入れ方と一時停止の高さ"""
+  rh, length = magnet_dims()
+  lines = ["磁石の溝(TODO 47):",
+           f"  磁石: 直径 {MAGNET_DIAMETER_MM:g} mm × 高さ {MAGNET_HEIGHT_MM:g} mm の円柱(ネオジム)。溝は幅 {2 * rh:.2f} mm・"
+           f"厚さ {length:.2f} mm の、下が丸く上が開いた U字。合わせ面との間に {MAGNET_WALL_MM:g} mm の壁が残る",
+           f"  合わせ面ごとに {len(pockets) // len(MAGNET_FACES)} 個、合わせて {2 * len(pockets)} 個"
+           f"(合わせ面の両側に1個ずつで1組、{len(pockets)} 組)", ""]
+  tops = sorted({pk["top"] for pk in pockets})
+  lines.append("  一時停止する高さ(どの部品も同じ。底を下にして置き、層の厚さ 0.2 mm のとき):")
+  for k, top in enumerate(tops, 1):
+    lines.append(f"    {k}回目: {round((top + LAYER_MM) / LAYER_MM)} 層目({top + LAYER_MM:.2f} mm の層)の前"
+                 f"(溝の上の端 {top:.2f} mm。この層から溝にふたができる)")
+  lines += ["",
+            "  Bambu Studio での一時停止の入れ方:",
+            "    1. スライスしたあと、プレビューの右の縦のスライダーで、上の高さの層を選ぶ(数字は層の上の面の高さ)",
+            "    2. スライダーのつまみを右クリック →「一時停止を追加」(Add Pause)。その層を印刷する前に止まる",
+            "    3. 1つ下の層で、溝が開いたままなこと、選んだ層で溝にふたがかかることを、プレビューで確かめる",
+            "    4. 止まったら、溝に磁石を立てて(平らな面を合わせ面に向けて)落としこみ、瞬間接着剤を少しつけて押さえる。",
+            "       磁石の上の端が溝の上の端より下にあること(ノズルが当たらないように)を確かめて、続ける",
+            "    (磁石は鉄に引かれるので、ピンセットはプラスチックか木のものがよい。となりの溝の磁石どうしも引き合う)", "",
+            "  磁石の向き: 磁石を何個か積み重ねて、いちばん上の面にペンで印を付け、1個ずつ外す(どの磁石も「印」の面が同じ極になる)",
+            "    合わせ面ごとに、片方の部品は「印」の面、もう片方は「印のない面」を合わせ面に向ける(引き合う):"]
+  seen = set()
+  for pk in pockets:
+    if pk["face"] in seen:
+      continue
+    seen.add(pk["face"])
+    fi = pk["face"]
+    mark = lambda p: "印の面" if MAGNET_MARKED[(p, fi)] else "印のない面"
+    lines.append(f"    {pk['face_name']}: {pk['a']} は{mark(pk['a'])}、{pk['b']} は{mark(pk['b'])}を合わせ面に向ける")
+  lines += ["", "  溝の位置(合わせ面に沿った位置 s は、東西の面は西の端から、山頂から発破の面は山頂の位置から [mm]):"]
+  for pk in pockets:
+    lines.append(f"    {pk['face_name']}: s {pk['s']:.1f} mm、溝の中心の高さ {pk['z']:.2f} mm(上の端 {pk['top']:.2f} mm)、"
+                 f"上から見た位置 x {pk['xy'][0]:.1f}・y {pk['xy'][1]:.1f} mm")
+  return lines
+
+
+def write_magnet_figure(path, maps_pieces, frames, pockets, height):
+  """合わせ面ごとに、面の上の色と溝の位置を描いた図(確認用)"""
+  import matplotlib
+  matplotlib.use("Agg")
+  import matplotlib.pyplot as plt
+  from matplotlib.patches import Rectangle, Circle
+  plt.rcParams["font.family"] = ["Hiragino Sans", "Yu Gothic", "Meiryo", "sans-serif"]
+  rh, _ = magnet_dims()
+  fig, axes = plt.subplots(len(frames), 1, figsize=(12, 3.2 * len(frames)))
+  px = 0.5
+  for ax, (fi, frame) in zip(np.atleast_1d(axes), enumerate(frames)):
+    name, a, _b, o, u, n, (s0, s1) = frame
+    s_grid = np.arange(s0 + px / 2, s1, px)
+    z_grid = np.arange(px / 2, height, px)
+    img = np.ones((len(z_grid), len(s_grid), 3))
+    loc_m = _to_local(o, u, n)
+    for mat, sol in maps_pieces[a].items():
+      if sol.is_empty():
+        continue
+      r = rasterize(sol.transform(loc_m).slice(0.1), s_grid, z_grid)
+      img[r] = matplotlib.colors.to_rgb(MATERIALS[mat][1])
+    ax.imshow(img, origin="lower", extent=(s0, s1, 0, height), interpolation="nearest")
+    for pk in pockets:
+      if pk["face"] != fi:
+        continue
+      ax.add_patch(Circle((pk["s"], pk["z"]), rh, fill=False, ec="#e000e0", lw=1.5))
+      ax.add_patch(Rectangle((pk["s"] - rh, pk["z"]), 2 * rh, rh, fill=False, ec="#e000e0", lw=1.5))
+    for top in sorted({pk["top"] for pk in pockets}):
+      ax.axhline(top, color="#e000e0", lw=0.6, ls=":")
+    ax.set_title(f"{name}(合わせ面を {a} の側から見る。紫: 磁石の溝、点線: 溝の上の端 = 一時停止)", fontsize=10)
+    ax.set_xlabel("合わせ面に沿った位置 s [mm]")
+    ax.set_ylabel("高さ [mm]")
+    ax.set_aspect("equal")
+  fig.tight_layout()
+  fig.savefig(path, dpi=130)
+  plt.close(fig)
+
+
 CAKE_OFFSETS = {"north": (0, 18, 0), "southwest": (-14, -10, 0), "southeast": (8, -14, 0)}   # 確認用に部品を離す [mm]
 
-def write_cake(out_dir, pieces, notes, size, scale, exaggeration, above):
+def write_cake(out_dir, pieces, notes, size, scale, exaggeration, above, magnet_lines=()):
   out_dir.mkdir(parents=True, exist_ok=True)
   for old in out_dir.glob("*.stl"):
     old.unlink()
@@ -858,14 +1151,18 @@ def write_cake(out_dir, pieces, notes, size, scale, exaggeration, above):
   lines += [f"  {k}. {mat}: {desc}" for k, (mat, (desc, _c)) in enumerate(MATERIALS.items(), 1)]
   lines += ["", "地震:"] + [f"  {n}" for n in notes]
   lines += ["", "Bambu Studio: 部品ごとに STL をまとめて読み込み、「1つの物体の複数のパーツとして読み込む」を選ぶ。",
-            "  パーツごとにフィラメントを割り当てる。切り口の面を下にして置くと、切り口がきれいに仕上がる。", "",
-            f"{gsi_tiles.DEM_ATTRIBUTION}。地下の層と P波の通り道は、震源を求めるのに使う深さで速度が変わる構造(模式的なもの)", "",
+            "  パーツごとにフィラメントを割り当てる。切り口の面を下にして置くと、切り口がきれいに仕上がる"
+            + ("(磁石の溝があるときは、底を下にして置く)" if magnet_lines else "") + "。", ""]
+  if magnet_lines:
+    lines += list(magnet_lines) + [""]
+  lines += [f"{gsi_tiles.DEM_ATTRIBUTION}。地下の層と P波の通り道は、震源を求めるのに使う深さで速度が変わる構造(模式的なもの)", "",
             "ファイル(三角形の数、体積):"] + [f"  {fn} ({n}、{v:.1f} cm3)" for fn, n, v in files]
   (out_dir / "README.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
   return files, preview
 
 
 def main():
+  global MAGNET_DIAMETER_MM, MAGNET_HEIGHT_MM
   ap = argparse.ArgumentParser(description="3Dプリント用の模式的な模型を、色ごとの STL に書き出す(試作)")
   ap.add_argument("--layout", choices=("cake", "core"), default="cake",
                   help="cake: 東西と山頂から発破への面で3つに切る(manifold3d が要る)。core: 南北に割り、発破はコアにする")
@@ -876,20 +1173,40 @@ def main():
                   help="東西の切り口から南の奥行き [km](cake のとき。海岸まで入れるなら 6〜9.5)")
   ap.add_argument("--rays", choices=("manten", "near"), default="manten",
                   help="P波の通り道(cake のとき)。manten: 満点の拠点すべて、near: 切り口の近くの拠点(外部の観測点も含む)")
+  ap.add_argument("--magnets", action="store_true",
+                  help="(cake のとき)合わせ面に、磁石を閉じ込める U字の溝を開ける(合わせ面ごとに 2段×2個。README に一時停止の高さ)")
+  ap.add_argument("--magnet-size", default=f"{MAGNET_DIAMETER_MM:g}x{MAGNET_HEIGHT_MM:g}",
+                  help="磁石の 直径x高さ [mm](例 5x2)")
+  ap.add_argument("--magnet-z", default=None,
+                  help="溝の中心の高さ [mm] をカンマで(例 5,25。省略すると、底から海面までの 1/8 と 5/8 の高さに近い、"
+                       "3つの合わせ面で共通に置ける高さを探す)")
   ap.add_argument("--name", default=None, help="出力のフォルダの名前(省略すると usu_<layout>)")
   args = ap.parse_args()
   out = app_paths.BATCH_PLOTS_DIR / "print_model" / (args.name or f"usu_{args.layout}")
   if args.layout == "cake":
-    pieces, notes, size, _cut = build_cake(DEFAULT_SECTION_QUAKES, DEFAULT_BLAST_QUAKES, args.scale, args.exaggeration, args.above, args.south, args.rays)
-    files, _preview = write_cake(out, pieces, notes, size, args.scale, args.exaggeration, args.above)
+    MAGNET_DIAMETER_MM, MAGNET_HEIGHT_MM = (float(v) for v in args.magnet_size.lower().split("x"))
+    pieces, notes, size, cut = build_cake(DEFAULT_SECTION_QUAKES, DEFAULT_BLAST_QUAKES, args.scale, args.exaggeration, args.above, args.south, args.rays)
+    pockets, frames, magnet_lines = [], None, []
+    if args.magnets:
+      zs = [float(v) for v in args.magnet_z.split(",")] if args.magnet_z else None
+      pockets, z_levels, frames = place_magnets(pieces, cut, size[2], z_levels=zs)
+      if not pockets:
+        raise SystemExit("磁石の溝を置ける所が見つからない(--magnet-z で高さを指定してみる)")
+      magnet_lines = magnet_notes(pockets, z_levels)
+      out.mkdir(parents=True, exist_ok=True)
+      write_magnet_figure(out / "magnets.png", pieces, frames, pockets, size[2])
+      cut_magnet_holes(pieces, pockets, frames)
+    files, _preview = write_cake(out, pieces, notes, size, args.scale, args.exaggeration, args.above, magnet_lines)
     # 確認用の HTML(地形の格子を粗くして作り直す)
     global GRID_MM
     GRID_MM = PREVIEW_CELL_MM
     pieces, _n, _s, _c = build_cake(DEFAULT_SECTION_QUAKES, DEFAULT_BLAST_QUAKES, args.scale, args.exaggeration, args.above, args.south, args.rays)
+    holes = cut_magnet_holes(pieces, pockets, frames) if pockets else {}
     preview = [(name, mat, mesh_triangles(m)) for name, mats in pieces.items() for mat, m in mats.items()
                if not m.is_empty()]
+    preview += [(name, "magnet", mesh_triangles(h)) for name, h in holes.items()]
     write_preview(out / "preview.html", preview, 0, offsets=CAKE_OFFSETS)
-    print("\n".join(notes))
+    print("\n".join(notes + magnet_lines))
     print(f"大きさ {size[0]:.0f} × {size[1]:.0f} × {size[2]:.0f} mm、ファイル {len(files)} 個: {out}")
     return
   global CELL_MM
