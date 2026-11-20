@@ -1,6 +1,7 @@
 # shake_print.py
 # 「この揺れは何?」クイズと、揺れを並べて比べるページを、紙の教材(A4 の PDF)にする(TODO 41・44)
 #   - クイズの問題用紙 ... 1問1ページ。4拠点の上下動(フィルタなし。答える前の画面と同じ)、選択肢、音を聴く QR コード
+#     折り線の下に「ヒント」(その揺れが見やすいフィルタをかけた波形。どのフィルタかは書かない。折ると隠せる)
 #   - クイズの答え ... 1ページに2問。答え・説明・注意、見やすいフィルタの波形と基準の時刻・P波・S波の線、答えの音の QR コード
 #   - 比べる ... 1テーマ1ページ。題・説明・見どころ、段を縦に並べた図(紙のフィルタの数だけ横に並べる)、音の QR コード
 #   紙では音が出ないので、問題・答え・テーマごとに「聴くページ」(小さな HTML)と音(WAV)を作り、QR コードはその聴くページを開く
@@ -345,6 +346,7 @@ def quiz_listen(folder, events):
   return pages
 
 def quiz_pdf(path, events, pages, base):
+  import matplotlib.lines
   from matplotlib.backends.backend_pdf import PdfPages
   import matplotlib.pyplot as plt
   PNG["count"], PNG["name"] = 0, Path(path).stem
@@ -356,14 +358,22 @@ def quiz_pdf(path, events, pages, base):
       fig.text(0.07, 0.915, ("印を付けた「この揺れ」は何の揺れでしょう?" if info["focus"] else "何の揺れでしょう?")
                + "  有珠山のまわりの満点地震計 4 か所の上下動です。", fontsize=10, color=INK, va="top")
       rows = [(station_names.full(nm), waves.get(nm), None) for nm in sq.STATIONS]
-      draw_rows(fig, (0.07, 0.40, 0.86, 0.48), rows, 0.0, info["rate"], False,
-                focus=-info["t0"] if info["focus"] else None)
-      fig.text(0.07, 0.345, "答え(1つに○)", fontsize=11, weight="bold", color=INK, va="top")
+      focus = -info["t0"] if info["focus"] else None
+      draw_rows(fig, (0.07, 0.545, 0.86, 0.34), rows, 0.0, info["rate"], False, focus=focus)
+      fig.text(0.07, 0.505, "答え(1つに○)", fontsize=11, weight="bold", color=INK, va="top")
       for i, name in enumerate(c[0] for c in (sq.KINDS[k] for k in sq.CHOICES)):
-        fig.text(0.09 + (i % 2) * 0.32, 0.31 - (i // 2) * 0.035, f"□ {name}", fontsize=11, color=INK, va="top")
-      fig.text(0.07, 0.165, wrap(sq.CHOICE_NOTE, 40), fontsize=8, color=MUTED, va="top", linespacing=1.5)
-      fig.text(0.07, 0.10, "縦の大きさは拠点ごとにそろえています(右上の数字が、その段の上端の速さ)。", fontsize=7.5, color=MUTED)
-      draw_qr(fig, (0.75, 0.13, 0.17, 0.12), page_url(base, pages[no][0]), f"音で聴く(×{sq.COMMON_SPEED})")
+        fig.text(0.09 + (i % 2) * 0.30, 0.475 - (i // 2) * 0.031, f"□ {name}", fontsize=10.5, color=INK, va="top")
+      fig.text(0.07, 0.345, wrap(sq.CHOICE_NOTE, 44), fontsize=7.5, color=MUTED, va="top", linespacing=1.45)
+      fig.text(0.07, 0.305, "縦の大きさは拠点ごとにそろえています(右上の数字が、その段の上端の速さ)。", fontsize=7, color=MUTED, va="top")
+      draw_qr(fig, (0.77, 0.335, 0.15, 0.105), page_url(base, pages[no][0]), f"音で聴く(×{sq.COMMON_SPEED})")
+      # ヒント: その揺れが見やすいフィルタをかけた波形(どのフィルタかは書かない)。折り線より下に置き、折って隠せるようにする
+      fig.add_artist(matplotlib.lines.Line2D([0.04, 0.96], [0.285, 0.285], transform=fig.transFigure, color=MUTED, lw=0.8, ls=(0, (4, 3))))
+      fig.text(0.96, 0.29, "ここで折ると、ヒントを隠せます", fontsize=6.5, color=MUTED, ha="right", va="bottom")
+      fig.text(0.07, 0.268, "ヒント", fontsize=10, weight="bold", color=P_COLOR, va="top")
+      fig.text(0.15, 0.266, "上と同じ記録に、ある高さ(周波数)の揺れだけを通すフィルタをかけました。どのフィルタかは、答えのページにあります。",
+               fontsize=7.5, color=INK, va="top")
+      hint = [(station_names.full(nm), filtered(waves[nm], info["best"], info["rate"]) if nm in waves else None, None) for nm in sq.STATIONS]
+      draw_rows(fig, (0.07, 0.075, 0.86, 0.165), hint, 0.0, info["rate"], False, focus=focus)
       footer(fig, f"「この揺れは何?」 問題 {no} / {len(events)}")
       save_page(pdf, fig)
       plt.close(fig)
