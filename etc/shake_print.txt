@@ -1,0 +1,7 @@
+# 紙の教材(shake_print.py)の設定
+#   「名前 = 値」の形で書く。# から後は注
+#
+# 音の置き場所 ... 聴くページと音(出力のフォルダの listen の中身)を置く URL。紙の QR コードは「この URL/q13.html」などを開く
+#   空のあいだは、QR コードの所に枠だけを出す。決まったら書いて、shake_print.py を動かし直す
+#   例: 音の置き場所 = https://example.jp/manten/listen
+音の置き場所 = https://amatubu.sakura.ne.jp/usu/list

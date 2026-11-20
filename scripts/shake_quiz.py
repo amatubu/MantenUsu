@@ -5,13 +5,14 @@
 #     問題, 種類, 基準の時刻, 基準(0 秒にする時刻の名前), 表示の始まり[秒], 表示の終わり[秒](基準からの秒), 内容(答えのあとに出す説明),
 #     この揺れの印(書いてあれば、答える前から「この揺れ」の印を基準の時刻に出す。同じ画面に列車などのほかの揺れが入っている問題),
 #     注意(答えのあとに出す補足), 2つめの地震(同じ画面に入っているもう1つの地震の気象庁の発震時刻。P2・S2 の線を引く),
-#     答えの音の拠点(空なら自動で選ぶ)
+#     答えの音の拠点(空なら自動で選ぶ), 答えのフィルタ(答えたあとに切り替えるフィルタ。空なら種類ごとの見やすいフィルタ。L は海外の地震だけ)
 #   画面でできること
 #   - 答え方: 波形だけ・音だけ・両方(一覧の画面で選ぶ。正解の数は答え方ごとに、その端末のブラウザに覚える)
 #   - 波形: ピンチで拡大・縮小、1本指で移動、ダブルタップで全体に戻す。最初はフィルタなしで、フィルタ A〜D(帯域は答えたあとに明かす)と
 #     「ヒント」(その揺れが見やすいフィルタにする)がある
 #   - 音: 波形を速く再生した音(答える前は全部 ×40、答えたあとは種類ごとの倍率と ×40)。再生中は波形の上を緑の線が動く。
 #     音は「♪」の拠点の記録で、波形をタップすると拠点を変えられる(答える前はどの問題も Kawaminami から)
+#   - 海外の地震は、答えたあとだけ L(0.1〜0.5 Hz、もっと低い音)のフィルタも使える(近い揺れは海の波のゆっくりした揺れに埋もれるので、答える前には出さない)
 #   - 答えると、正解・説明・A〜D の帯域(とても低い音〜とても高い音)、基準の時刻の線、P波・S波の到着の見込みの線(気象庁の震源リストと
 #     USGS の地震)を出し、その揺れが見やすいフィルタに切り替える
 #   波形の読み込み・符号化・描画は quake_wave_view.py と同じ。入れるのは満点の拠点の波形だけ(再配布できない外部の観測点の波形は入れない)
@@ -39,6 +40,9 @@ LONG_SECONDS = 150    # これより長い表示は 125 Hz に間引く(ファ�
 
 # フィルタ: (記号, 低, 高, 音のたとえ)。帯域は答えたあとに明かす
 FILTERS = [("A", 0.5, 2.0, "とても低い音"), ("B", 2.0, 10.0, "低い音"), ("C", 8.0, 25.0, "高い音"), ("D", 20.0, 40.0, "とても高い音")]
+# 答えのあとだけに出すフィルタ(海外の地震の答え)。とても長い周期の揺れ。近い揺れは、海の波が起こすゆっくりした揺れ(脈動)に埋もれて見えなくなる
+LOW_FILTER = ("L", 0.1, 0.5, "もっと低い音")
+ALL_FILTERS = FILTERS + [LOW_FILTER]
 
 # 種類: (選択肢の名前, いちばん見やすいフィルタ, 説明)。{b} は Bamba の表示の名前
 KINDS = {
@@ -58,7 +62,8 @@ KINDS = {
              "B(低い音)にすると P波と S波の到着がはっきりする。A(とても低い音)でも大きく見えるが、P波・S波の始まりはぼやける。"
              "C・D(高い音)では小さくなる(遠くから来る揺れは、高い音の成分が途中で弱まる)。"),
   "さらに遠い地震(海外)": ("海外の地震", "A", "数千 km 離れた外国の大きな地震。地球の中を通って P波が届く。A(とても低い音)にすると 4 拠点で同じような揺れが見え、"
-                    "近くの車などの揺れ(高い音)は消える。"),
+                    "近くの車などの揺れ(高い音)は消える。答えのあとに使える L(もっと低い音)にすると、最初の波の始まりがさらにはっきりし、"
+                    "4 拠点の揺れの形がよく似てくる。"),
 }
 CHOICES = list(KINDS)
 # 選択肢の区切りの説明(一覧の画面に出す)
@@ -66,6 +71,7 @@ CHOICE_NOTE = ("「少し遠い地震」は震央までの距離が 200 km 未�
                "「海外の地震」は外国(数千 km 先)の地震です。")
 JMA_KINDS = ("少し遠い地震", "より遠い地震")
 WORLD_KIND = "さらに遠い地震(海外)"
+LOW_KINDS = (WORLD_KIND,)      # 答えのあとに L のフィルタを出す種類
 
 # --- 音で聴く(TODO 44) ---
 #   答える前は全部 COMMON_SPEED 倍、答えたあとは種類ごとの倍率でも聴ける(実際に聴いて決めた値、2026-11-19)
@@ -98,13 +104,16 @@ def read_quiz(path=None):
   for r in rows:
     if r["種類"] not in KINDS:
       raise ValueError(f"問題 {r['問題']}: 種類「{r['種類']}」は使えません({', '.join(KINDS)} のどれか)")
+    answer_filter = (r.get("答えのフィルタ") or "").strip()
+    if answer_filter and answer_filter not in [k for k, *_ in FILTERS] + ([LOW_FILTER[0]] if r["種類"] in LOW_KINDS else []):
+      raise ValueError(f"問題 {r['問題']}: 答えのフィルタ「{answer_filter}」は使えません")
     station = (r.get("答えの音の拠点") or "").strip()
     if station and station not in STATIONS:
       raise ValueError(f"問題 {r['問題']}: 答えの音の拠点「{station}」は満点の拠点ではありません")
     out.append({"no": int(r["問題"]), "kind": r["種類"], "t": datetime.strptime(r["基準の時刻"], "%Y-%m-%d %H:%M:%S"),
                 "ref": r["基準"], "show": (float(r["表示の始まり[秒]"]), float(r["表示の終わり[秒]"])), "label": r["内容"],
                 "focus": (r.get("この揺れの印") or "").strip(), "note": (r.get("注意") or "").strip(),
-                "second": (r.get("2つめの地震") or "").strip(), "audio_station": station})
+                "second": (r.get("2つめの地震") or "").strip(), "audio_station": station, "answer_filter": answer_filter})
   numbers = [q["no"] for q in out]
   if len(set(numbers)) != len(numbers):
     raise ValueError("問題の番号が重なっています")
@@ -149,7 +158,15 @@ def world_phases(ref, stations):
   import world_quakes
   center = jma_match.array_center(stations)
   best = None
-  for q in world_quakes.quakes_between(ref - timedelta(minutes=30), ref):
+  candidates = world_quakes.quakes_between(ref - timedelta(minutes=30), ref)
+  if not candidates:     # 保存してある一覧(M7 以上)に無ければ、USGS から M6 以上の月の一覧を取る(地球の反対側の M6.4 など)
+    try:
+      month = ref.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+      candidates = [q for q in world_quakes.parse_usgs(world_quakes.fetch_month(month, 6.0))
+                    if ref - timedelta(minutes=30) <= q["日時"] <= ref]
+    except Exception:
+      candidates = []
+  for q in candidates:
     a = world_quakes.arrivals(q, center)
     dt = abs((a["waves"][0][1] - ref).total_seconds())
     if best is None or dt < best[0]:
@@ -245,7 +262,7 @@ def event_data(q, st, steps, stations):
       waves[nm] = {"U": item}
   info = {"no": q["no"], "kind": CHOICES.index(q["kind"]), "rate": rate, "n": n, "t0": before,
           "time": f"{q['t']:%Y-%m-%d %H:%M:%S}", "ref": display_names(q["ref"]), "label": display_names(q["label"]),
-          "best": KINDS[q["kind"]][1], "phases": phase_lines(q, stations), "phases2": second_phases(q, stations),
+          "best": q.get("answer_filter") or KINDS[q["kind"]][1], "low": q["kind"] in LOW_KINDS, "phases": phase_lines(q, stations), "phases2": second_phases(q, stations),
           "focus": bool(q["focus"]), "note": display_names(q["note"]), "disabled": [], "have": list(waves),
           "audio": {"station": audio_station(q, st), "speed": SPEEDS[q["kind"]], "far": q["kind"] in FAR_KINDS}}
   return info, waves
@@ -259,8 +276,8 @@ def write_page(path, events):
     "stations": [{"id": nm, "label": station_names.full(nm)} for nm in STATIONS],
     "choiceNote": CHOICE_NOTE,
     "choices": [{"name": KINDS[k][0], "best": KINDS[k][1], "text": KINDS[k][2].format(b=b)} for k in CHOICES],
-    "filters": [{"key": key, "low": lo, "high": hi, "sound": sound,
-                 "sections": {str(rate): filter_sections((lo, hi), rate) for rate in rates}} for key, lo, hi, sound in FILTERS],
+    "filters": [{"key": key, "low": lo, "high": hi, "sound": sound, "extra": key == LOW_FILTER[0],
+                 "sections": {str(rate): filter_sections((lo, hi), rate) for rate in rates}} for key, lo, hi, sound in ALL_FILTERS],
     "events": [info for info, _ in events],
     "audio": {"common": COMMON_SPEED, "first": FIRST_SOUND,
               "sections": {str(rate): {"base": audio_sections(rate, False), "far": audio_sections(rate, True)} for rate in rates}},
@@ -268,6 +285,7 @@ def write_page(path, events):
   blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}">{script_json(waves)}</script>' for info, waves in events)
   page = (PAGE.replace("__FIRST__", html.escape(station_names.full(FIRST_SOUND[0])))
           .replace("__TITLE__", html.escape(TITLE))
+          .replace("__COMMON_JS__", COMMON_JS)
           .replace("__META__", script_json(meta))
           .replace("__WAVES__", blocks))
   path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,6 +301,173 @@ def write_answers(path, events):
       w.writerow([info["no"], KINDS[CHOICES[info["kind"]]][0], info["time"], info["label"], info["best"],
                   station_names.full(info["audio"]["station"]), f"×{info['audio']['speed']}"])
 
+
+# クイズと、揺れを並べて比べるページ(shake_compare.py)で同じ JS(波形を戻す・フィルタ・1本の波形を描く・音にする)
+COMMON_JS = r"""
+// --- 波形を戻す(quake_wave_view と同じ) ---
+async function gunzipBase64(text) {
+  const bin = atob(text), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+function decodeSamples(b) {
+  const n = b.length / 4, out = new Int32Array(n);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum = (sum + (b[i] | b[n + i] << 8 | b[2 * n + i] << 16 | b[3 * n + i] << 24)) | 0;
+    out[i] = sum;
+  }
+  return out;
+}
+function buildLevels(v) {
+  const levels = [];
+  let mins = v, maxs = v, size = 1;
+  while (mins.length > 16) {
+    const n = Math.floor(mins.length / 4), lo = new Int32Array(n), hi = new Int32Array(n);
+    for (let i = 0; i < n; i++) {
+      let a = mins[4 * i], b = maxs[4 * i];
+      for (let j = 1; j < 4; j++) {
+        if (mins[4 * i + j] < a) a = mins[4 * i + j];
+        if (maxs[4 * i + j] > b) b = maxs[4 * i + j];
+      }
+      lo[i] = a; hi[i] = b;
+    }
+    size *= 4;
+    levels.push({ size, lo, hi });
+    mins = lo; maxs = hi;
+  }
+  return levels;
+}
+function rangeOf(tr, a, b, out) {
+  const v = tr.v, levels = tr.levels;
+  let lo = Infinity, hi = -Infinity, i = a;
+  while (i < b) {
+    let done = false;
+    for (let k = levels.length - 1; k >= 0; k--) {
+      const L = levels[k], s = L.size;
+      if (i % s === 0 && i + s <= b && i / s < L.lo.length) {
+        const j = i / s;
+        if (L.lo[j] < lo) lo = L.lo[j];
+        if (L.hi[j] > hi) hi = L.hi[j];
+        i += s; done = true;
+        break;
+      }
+    }
+    if (!done) {
+      if (v[i] < lo) lo = v[i];
+      if (v[i] > hi) hi = v[i];
+      i++;
+    }
+  }
+  out.lo = lo; out.hi = hi;
+}
+// 往復でかける帯域通過フィルタ(時間のずれがない)。カウントに 16 倍の余裕を持たせて整数に丸める
+const FINE = 16;
+function applySections(x, sections) {
+  const n = x.length;
+  for (const [b0, b1, b2, a1, a2] of sections) {
+    let z1 = 0, z2 = 0;
+    for (let i = 0; i < n; i++) {
+      const input = x[i], output = b0 * input + z1;
+      z1 = b1 * input - a1 * output + z2;
+      z2 = b2 * input - a2 * output;
+      x[i] = output;
+    }
+  }
+}
+function filterSamples(v, sections) {
+  const x = new Float64Array(v), out = new Int32Array(v.length);
+  applySections(x, sections); x.reverse(); applySections(x, sections); x.reverse();
+  for (let i = 0; i < x.length; i++) out[i] = Math.round(x[i] * FINE);
+  return out;
+}
+
+// --- 1本の波形を描く(全体の S.v0・S.span・S.dpr と ctx・canvas・colors を使う) ---
+function drawTrace(tr, top, h, center, half, n) {
+  const W = canvas.width, d = S.dpr, v = tr.v, spp = S.span / W;
+  const mid = top + h / 2, gain = half > 0 ? (h / 2 - 2 * d) / (half / tr.step) : 0, c = center / tr.step;
+  const yOf = value => mid - (value - c) * gain;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, top, W, h); ctx.clip();
+  ctx.fillStyle = colors.gap;
+  for (const [a, b] of tr.gaps) {
+    const x0 = (a - S.v0) / spp, x1 = (b - S.v0) / spp;
+    if (x1 > 0 && x0 < W) ctx.fillRect(x0, top, x1 - x0, h);
+  }
+  ctx.strokeStyle = colors.wave;
+  ctx.beginPath();
+  if (spp < 2) {
+    const a = Math.max(0, Math.floor(S.v0) - 1), b = Math.min(n - 1, Math.ceil(S.v0 + S.span) + 1);
+    for (let i = a; i <= b; i++) {
+      const x = (i - S.v0) / spp, y = yOf(v[i]);
+      if (i === a) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.lineWidth = Math.max(1, d * 0.8);
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  } else {
+    const out = { lo: 0, hi: 0 };
+    let prevTop = null, prevBottom = null;
+    for (let px = 0; px < W; px++) {
+      const a = Math.max(0, Math.floor(S.v0 + px * spp)), b = Math.min(n, Math.floor(S.v0 + (px + 1) * spp));
+      if (b <= a) continue;
+      rangeOf(tr, a, b, out);
+      let y0 = yOf(out.hi), y1 = yOf(out.lo);
+      const t0 = y0, t1 = y1;
+      if (prevBottom !== null) {
+        if (y0 > prevBottom) y0 = prevBottom;
+        if (y1 < prevTop) y1 = prevTop;
+      }
+      if (y1 - y0 < 1) y1 = y0 + 1;
+      ctx.moveTo(px + 0.5, y0); ctx.lineTo(px + 0.5, y1);
+      prevTop = t0; prevBottom = t1;
+    }
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// --- 音(WAV) ---
+function zeroPhase(x, sections) { applySections(x, sections); x.reverse(); applySections(x, sections); x.reverse(); }
+function wavBlob(y, rate) {
+  const n = y.length, buf = new ArrayBuffer(44 + 2 * n), v = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + 2 * n, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, 2 * n, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + 2 * i, Math.round(Math.max(-1, Math.min(1, y[i])) * 32767), true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+// 帯域を制限した補間(sinc)で、fin [Hz] で再生する波形 x を音のサンプリングに直す。戻り値 ... {y, rate}
+function resampleForSound(x, fin) {
+  const n = x.length, rate = fin <= 16000 ? 16000 : 32000, stepIn = fin / rate, HALF = 8;
+  const m = Math.floor(n / stepIn), y = new Float32Array(m);
+  for (let i = 0; i < m; i++) {
+    const u = i * stepIn, k = Math.floor(u);
+    let sum = 0;
+    for (let j = k - HALF + 1; j <= k + HALF; j++) {
+      if (j < 0 || j >= n) continue;
+      const dd = u - j, win = 0.5 + 0.5 * Math.cos(Math.PI * dd / HALF);
+      sum += x[j] * (dd === 0 ? 1 : Math.sin(Math.PI * dd) / (Math.PI * dd)) * win;
+    }
+    y[i] = sum;
+  }
+  return { y, rate };
+}
+// 音の大きさを g 倍にし、始めと終わりを 30 ms で絞る
+function finishSound(y, rate, g) {
+  const m = y.length, fade = Math.floor(0.03 * rate);
+  for (let i = 0; i < m; i++) {
+    let s = y[i] * g;
+    if (i < fade) s *= i / fade;
+    if (m - 1 - i < fade) s *= (m - 1 - i) / fade;
+    y[i] = s;
+  }
+  return y;
+}
+"""
 
 PAGE = r"""<!DOCTYPE html>
 <html lang="ja">
@@ -415,6 +600,7 @@ const canvas = $("wave"), ctx = canvas.getContext("2d");
 const S = { idx: -1, data: null, filter: "", common: false, v0: 0, span: 1, dpr: 1, token: 0, listY: 0 };
 const cache = new Map();
 let colors = {}, drawQueued = false;
+__COMMON_JS__
 
 // --- 答えの記録(この端末だけ) ---
 // 答え方: wave(波形だけ)・sound(音だけ)・both(両方)。答えの記録は答え方ごと(両方は以前と同じ場所)
@@ -440,84 +626,6 @@ for (const b of document.querySelectorAll("#modeSeg button")) b.addEventListener
 function waveHidden() { return S.mode === "sound" && !answered(); }
 function soundHidden() { return S.mode === "wave" && !answered(); }
 
-// --- 波形を戻す(quake_wave_view と同じ) ---
-async function gunzipBase64(text) {
-  const bin = atob(text), bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-function decodeSamples(b) {
-  const n = b.length / 4, out = new Int32Array(n);
-  let sum = 0;
-  for (let i = 0; i < n; i++) {
-    sum = (sum + (b[i] | b[n + i] << 8 | b[2 * n + i] << 16 | b[3 * n + i] << 24)) | 0;
-    out[i] = sum;
-  }
-  return out;
-}
-function buildLevels(v) {
-  const levels = [];
-  let mins = v, maxs = v, size = 1;
-  while (mins.length > 16) {
-    const n = Math.floor(mins.length / 4), lo = new Int32Array(n), hi = new Int32Array(n);
-    for (let i = 0; i < n; i++) {
-      let a = mins[4 * i], b = maxs[4 * i];
-      for (let j = 1; j < 4; j++) {
-        if (mins[4 * i + j] < a) a = mins[4 * i + j];
-        if (maxs[4 * i + j] > b) b = maxs[4 * i + j];
-      }
-      lo[i] = a; hi[i] = b;
-    }
-    size *= 4;
-    levels.push({ size, lo, hi });
-    mins = lo; maxs = hi;
-  }
-  return levels;
-}
-function rangeOf(tr, a, b, out) {
-  const v = tr.v, levels = tr.levels;
-  let lo = Infinity, hi = -Infinity, i = a;
-  while (i < b) {
-    let done = false;
-    for (let k = levels.length - 1; k >= 0; k--) {
-      const L = levels[k], s = L.size;
-      if (i % s === 0 && i + s <= b && i / s < L.lo.length) {
-        const j = i / s;
-        if (L.lo[j] < lo) lo = L.lo[j];
-        if (L.hi[j] > hi) hi = L.hi[j];
-        i += s; done = true;
-        break;
-      }
-    }
-    if (!done) {
-      if (v[i] < lo) lo = v[i];
-      if (v[i] > hi) hi = v[i];
-      i++;
-    }
-  }
-  out.lo = lo; out.hi = hi;
-}
-// 往復でかける帯域通過フィルタ(時間のずれがない)。カウントに 16 倍の余裕を持たせて整数に丸める
-const FINE = 16;
-function applySections(x, sections) {
-  const n = x.length;
-  for (const [b0, b1, b2, a1, a2] of sections) {
-    let z1 = 0, z2 = 0;
-    for (let i = 0; i < n; i++) {
-      const input = x[i], output = b0 * input + z1;
-      z1 = b1 * input - a1 * output + z2;
-      z2 = b2 * input - a2 * output;
-      x[i] = output;
-    }
-  }
-}
-function filterSamples(v, sections) {
-  const x = new Float64Array(v), out = new Int32Array(v.length);
-  applySections(x, sections); x.reverse(); applySections(x, sections); x.reverse();
-  for (let i = 0; i < x.length; i++) out[i] = Math.round(x[i] * FINE);
-  return out;
-}
 function traceOf(stationId) {
   const tr = S.data[stationId] && S.data[stationId].U;
   if (!tr || !S.filter) return tr;
@@ -583,50 +691,6 @@ function labelBox(text, x, y, align, color) {
   ctx.fillRect(left - 2 * d, y - 1 * d, w + 4 * d, 14 * d);
   ctx.globalAlpha = 1; ctx.fillStyle = color; ctx.textAlign = "left"; ctx.textBaseline = "top";
   ctx.fillText(text, left, y);
-}
-function drawTrace(tr, top, h, center, half, n) {
-  const W = canvas.width, d = S.dpr, v = tr.v, spp = S.span / W;
-  const mid = top + h / 2, gain = half > 0 ? (h / 2 - 2 * d) / (half / tr.step) : 0, c = center / tr.step;
-  const yOf = value => mid - (value - c) * gain;
-  ctx.save();
-  ctx.beginPath(); ctx.rect(0, top, W, h); ctx.clip();
-  ctx.fillStyle = colors.gap;
-  for (const [a, b] of tr.gaps) {
-    const x0 = (a - S.v0) / spp, x1 = (b - S.v0) / spp;
-    if (x1 > 0 && x0 < W) ctx.fillRect(x0, top, x1 - x0, h);
-  }
-  ctx.strokeStyle = colors.wave;
-  ctx.beginPath();
-  if (spp < 2) {
-    const a = Math.max(0, Math.floor(S.v0) - 1), b = Math.min(n - 1, Math.ceil(S.v0 + S.span) + 1);
-    for (let i = a; i <= b; i++) {
-      const x = (i - S.v0) / spp, y = yOf(v[i]);
-      if (i === a) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.lineWidth = Math.max(1, d * 0.8);
-    ctx.lineJoin = "round";
-    ctx.stroke();
-  } else {
-    const out = { lo: 0, hi: 0 };
-    let prevTop = null, prevBottom = null;
-    for (let px = 0; px < W; px++) {
-      const a = Math.max(0, Math.floor(S.v0 + px * spp)), b = Math.min(n, Math.floor(S.v0 + (px + 1) * spp));
-      if (b <= a) continue;
-      rangeOf(tr, a, b, out);
-      let y0 = yOf(out.hi), y1 = yOf(out.lo);
-      const t0 = y0, t1 = y1;
-      if (prevBottom !== null) {
-        if (y0 > prevBottom) y0 = prevBottom;
-        if (y1 < prevTop) y1 = prevTop;
-      }
-      if (y1 - y0 < 1) y1 = y0 + 1;
-      ctx.moveTo(px + 0.5, y0); ctx.lineTo(px + 0.5, y1);
-      prevTop = t0; prevBottom = t1;
-    }
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
-  ctx.restore();
 }
 function answered() { const ev = META.events[S.idx]; return ev && answers[ev.no] !== undefined; }
 function draw() {
@@ -745,16 +809,6 @@ function drawCursor() {
 //   フィルタ(A〜D)を選んでいればそれもかける。最大で 0.9 にそろえ、始めと終わりを 30 ms で絞る
 const AUD = { el: new Audio(), url: "", ev: -1, speed: 0, raf: 0 };
 AUD.el.addEventListener("ended", stopAudio);
-function zeroPhase(x, sections) { applySections(x, sections); x.reverse(); applySections(x, sections); x.reverse(); }
-function wavBlob(y, rate) {
-  const n = y.length, buf = new ArrayBuffer(44 + 2 * n), v = new DataView(buf);
-  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
-  w(0, "RIFF"); v.setUint32(4, 36 + 2 * n, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
-  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, 2 * n, true);
-  for (let i = 0; i < n; i++) v.setInt16(44 + 2 * i, Math.round(Math.max(-1, Math.min(1, y[i])) * 32767), true);
-  return new Blob([buf], { type: "audio/wav" });
-}
 function makeSound(ev, speed) {
   const tr = S.data && S.data[S.audioStation] && S.data[S.audioStation].U;
   if (!tr) return null;
@@ -766,29 +820,10 @@ function makeSound(ev, speed) {
   for (const [a, b] of tr.gaps) x.fill(0, a, b);
   zeroPhase(x, META.audio.sections[String(ev.rate)][ev.audio.far ? "far" : "base"]);
   if (S.filter) zeroPhase(x, META.filters.find(f => f.key === S.filter).sections[String(ev.rate)]);
-  // 帯域を制限した補間(sinc)で、音のサンプリングに直す
-  const fin = ev.rate * speed, rate = fin <= 16000 ? 16000 : 32000, stepIn = fin / rate, HALF = 8;
-  const m = Math.floor(n / stepIn), y = new Float32Array(m);
+  const s = resampleForSound(x, ev.rate * speed);
   let peak = 0;
-  for (let i = 0; i < m; i++) {
-    const u = i * stepIn, k = Math.floor(u);
-    let sum = 0;
-    for (let j = k - HALF + 1; j <= k + HALF; j++) {
-      if (j < 0 || j >= n) continue;
-      const dd = u - j, win = 0.5 + 0.5 * Math.cos(Math.PI * dd / HALF);
-      sum += x[j] * (dd === 0 ? 1 : Math.sin(Math.PI * dd) / (Math.PI * dd)) * win;
-    }
-    y[i] = sum;
-    if (Math.abs(sum) > peak) peak = Math.abs(sum);
-  }
-  const g = peak > 0 ? 0.9 / peak : 0, fade = Math.floor(0.03 * rate);
-  for (let i = 0; i < m; i++) {
-    let s = y[i] * g;
-    if (i < fade) s *= i / fade;
-    if (m - 1 - i < fade) s *= (m - 1 - i) / fade;
-    y[i] = s;
-  }
-  return wavBlob(y, rate);
+  for (let i = 0; i < s.y.length; i++) if (Math.abs(s.y[i]) > peak) peak = Math.abs(s.y[i]);
+  return wavBlob(finishSound(s.y, s.rate, peak > 0 ? 0.9 / peak : 0), s.rate);
 }
 // key ... 音にするフィルタ(undefined なら今の表示と同じ)。指定したときは、表示もそのフィルタに切り替える
 async function playAudio(speed, key) {
@@ -813,6 +848,7 @@ function stopAudio() {
   updateListenButtons();
   requestDraw();
 }
+const LOW_KEY = (META.filters.find(f => f.extra) || {}).key;
 function filterName() { return S.filter ? `フィルタ ${S.filter}` : "フィルタなし"; }
 function updateListenButtons() {
   const playing = (speed, key) => AUD.ev === S.idx && AUD.speed === speed && AUD.key === key && !AUD.el.paused;
@@ -820,8 +856,9 @@ function updateListenButtons() {
   if (!ev) return;
   $("listen").textContent = playing(common, S.filter) ? "■ 止める" : `▶ 聴く(${filterName()})`;
   // 答えの画面: 速さの切り替えと、フィルタなし・見やすいフィルタの 2 つのボタン
-  const best = META.choices[ev.kind].best, sp = S.ansSpeed || ev.audio.speed;
-  const raw = $("listenRaw"), filt = $("listenBest");
+  const best = ev.best, sp = S.ansSpeed || ev.audio.speed;
+  const raw = $("listenRaw"), filt = $("listenBest"), low = $("listenLow");
+  if (low) low.textContent = playing(sp, LOW_KEY) ? "■ 止める" : `▶ フィルタ ${LOW_KEY}`;
   if (raw) raw.textContent = playing(sp, "") ? "■ 止める" : "▶ フィルタなし";
   if (filt) filt.textContent = playing(sp, best) ? "■ 止める" : `▶ フィルタ ${best}`;
   for (const b of document.querySelectorAll("#speedSeg button")) b.setAttribute("aria-pressed", Number(b.dataset.speed) === sp);
@@ -915,6 +952,7 @@ function buildFilterButtons() {
     b.type = "button"; b.textContent = f.name; b.dataset.key = f.key;
     b.setAttribute("aria-label", f.key ? `フィルタ ${f.key}` : "フィルタなし");
     b.addEventListener("click", () => setFilter(f.key));
+    if (META.filters.some(x => x.key === f.key && x.extra)) b.dataset.extra = "1";
     box.append(b);
   }
 }
@@ -943,7 +981,7 @@ function answer(i) {
   answers[ev.no] = { pick: i, hint: !!S.hintUsed };
   saveAnswers(answers);
   S.audioStation = ev.audio.station;       // 答えたら、その揺れがいちばんよく聞こえる拠点の音にする
-  setFilter(META.choices[ev.kind].best);   // 答えたら、その揺れがいちばん見やすいフィルタにする(ほかにも切り替えられる)
+  setFilter(ev.best);   // 答えたら、その揺れがいちばん見やすいフィルタにする(ほかにも切り替えられる)
   showResult();
   requestDraw();
 }
@@ -955,28 +993,31 @@ function showResult() {
   $("hiddenWave").hidden = !waveHidden();
   $("amp").hidden = waveHidden();
   [...$("choices").children].forEach((b, i) => { b.disabled = (ev.disabled || []).includes(i); });
+  for (const b of $("filters").children) if (b.dataset.extra) b.hidden = !(done && ev.low);
   $("ask").textContent = ev.focus ? "印を付けた「この揺れ」は何の揺れでしょう?" : "何の揺れでしょう?";
   $("heading").textContent = `問題 ${ev.no}` + (done ? `  ${META.choices[ev.kind].name}` : `(${MODES[S.mode]})`);
   if (!done) return;
   const ok = a.pick === ev.kind, c = META.choices[ev.kind];
-  const rows = META.filters.map(f => `<tr class="${f.key === c.best ? "best" : ""}"><td>${f.key}</td><td>${f.low}〜${f.high} Hz</td>`
-    + `<td>${f.sound}</td><td>${f.key === c.best ? "← この揺れが見やすい" : ""}</td></tr>`).join("");
+  const best = ev.best, bestF = META.filters.find(f => f.key === best);
+  const rows = META.filters.filter(f => !f.extra || ev.low).map(f => `<tr class="${f.key === best ? "best" : ""}"><td>${f.key}</td><td>${f.low}〜${f.high} Hz</td>`
+    + `<td>${f.sound}</td><td>${f.key === best ? "← この揺れが見やすい" : f.extra ? "← 答えのあとだけ使える" : ""}</td></tr>`).join("");
   $("result").innerHTML = `<h2 class="${ok ? "ok" : "ng"}">${ok ? "正解!" : "ざんねん"} 答えは「${c.name}」</h2>`
     + (ok ? "" : `<p>あなたの答え: ${META.choices[a.pick].name}</p>`)
     + `<p>${escapeHtml(ev.time)}  ${escapeHtml(ev.label)}</p>`
     + `<div class="listenRow"><button class="listen" id="listenRaw" type="button"></button>`
     + `<button class="listen alt" id="listenBest" type="button"></button>`
+    + (ev.low && best !== LOW_KEY ? `<button class="listen alt" id="listenLow" type="button"></button>` : "")
     + (ev.audio.speed !== META.audio.common
        ? `<div class="seg" id="speedSeg" role="group" aria-label="速さ"><button type="button" data-speed="${ev.audio.speed}">×${ev.audio.speed}</button>`
          + `<button type="button" data-speed="${META.audio.common}">×${META.audio.common}</button></div>` : "")
-    + `</div><p class="note">フィルタなしの音と、この揺れが見やすいフィルタ ${c.best}(${escapeHtml(META.filters.find(f => f.key === c.best).sound)})の音を聴き比べられます。`
+    + `</div><p class="note">フィルタなしの音と、この揺れが見やすいフィルタ ${best}(${escapeHtml(bestF.sound)})の音を聴き比べられます。`
     + `×${ev.audio.speed} は ${ev.audio.speed} 倍の速さで、揺れの周波数も ${ev.audio.speed} 倍になります`
     + `(たとえば 5 Hz の揺れが ${5 * ev.audio.speed} Hz の音に)。${ev.audio.speed !== META.audio.common ? `×${META.audio.common} は答える前と同じ速さです。` : ""}`
     + `音は「♪」の付いた拠点の上下動です(波形をタップすると、その拠点の音に変えられます)。大きさは最大でそろえています。</p>`
     + `<p>${escapeHtml(c.text)}</p>`
     + (ev.note ? `<p><b>この問題の注意:</b> ${escapeHtml(ev.note)}</p>` : "")
     + `<table><tr><th>フィルタ</th><th>帯域</th><th>音でいうと</th><th></th></tr>${rows}</table>`
-    + `<p class="note">波形は、いちばん見やすいフィルタ ${c.best} に切り替えました。上のボタンでほかのフィルタやフィルタなし(元)にも戻せます。`
+    + `<p class="note">波形は、いちばん見やすいフィルタ ${best} に切り替えました。上のボタンでほかのフィルタやフィルタなし(元)にも戻せます。`
     + `時間の目盛りは「${escapeHtml(ev.ref)}」を 0 秒にしました(紫の破線)。`
     + (Object.keys(ev.phases || {}).length ? "青の P・赤の S の破線は、震源から計算した到着の見込みです(実際とは 1〜2 秒ずれることがあります)。" : "")
     + `${a.hint ? "ヒントを使いました。" : ""}</p>`
@@ -984,7 +1025,8 @@ function showResult() {
   $("nextQ").addEventListener("click", () => S.idx < META.events.length - 1 ? step(1) : (location.hash = ""));
   S.ansSpeed = ev.audio.speed;
   $("listenRaw").addEventListener("click", () => playAudio(S.ansSpeed, ""));
-  $("listenBest").addEventListener("click", () => playAudio(S.ansSpeed, c.best));
+  $("listenBest").addEventListener("click", () => playAudio(S.ansSpeed, best));
+  if ($("listenLow")) $("listenLow").addEventListener("click", () => playAudio(S.ansSpeed, LOW_KEY));
   for (const b of document.querySelectorAll("#speedSeg button")) {
     b.addEventListener("click", () => { stopAudio(); S.ansSpeed = Number(b.dataset.speed); updateListenButtons(); });
   }
@@ -1008,7 +1050,7 @@ async function openQuestion(idx) {
   $("list").hidden = true; $("view").hidden = false;
   $("prev").disabled = idx === 0;
   $("next").disabled = idx === META.events.length - 1;
-  setFilter(answers[ev.no] ? META.choices[ev.kind].best : "");
+  setFilter(answers[ev.no] ? ev.best : "");
   showResult();
   $("bottom").scrollTop = 0;
   $("status").textContent = "波形を読み込んでいます…";

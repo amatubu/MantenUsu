@@ -14,7 +14,7 @@ import shake_quiz as sq
 
 T0 = datetime(2026, 5, 20, 23, 51, 57)
 HEADER = ["問題", "種類", "基準の時刻", "基準", "表示の始まり[秒]", "表示の終わり[秒]", "内容", "この揺れの印", "注意",
-          "2つめの地震", "答えの音の拠点"]
+          "2つめの地震", "答えの音の拠点", "答えのフィルタ"]
 
 
 def write_quiz(path, rows):
@@ -42,18 +42,21 @@ def test_quiz_file_is_valid():
 
 def test_read_quiz_sorts_and_reads_settings(tmp_path):
   path = write_quiz(tmp_path / "q.csv", [
-    [2, "花火", "2026-06-27 21:04:46", "Hokudai に音が届いた時刻", -60, 40, "花火", "", "", "", ""],
-    [1, "少し遠い地震", "2026-01-09 04:30:03", "発生時刻(気象庁)", -10, 110, "渡島", "印", "注意の文", "2026-01-09 04:30:42.6", "Hokudai"],
+    [2, "花火", "2026-06-27 21:04:46", "Hokudai に音が届いた時刻", -60, 40, "花火", "", "", "", "", ""],
+    [1, "少し遠い地震", "2026-01-09 04:30:03", "発生時刻(気象庁)", -10, 110, "渡島", "印", "注意の文", "2026-01-09 04:30:42.6", "Hokudai", ""],
+    [3, "さらに遠い地震(海外)", "2026-07-11 19:46:43", "PKIKP", -60, 600, "南", "", "", "", "", "L"],
   ])
   quiz = sq.read_quiz(path)
-  assert [q["no"] for q in quiz] == [1, 2]
+  assert [q["no"] for q in quiz] == [1, 2, 3]
   assert quiz[0]["focus"] == "印" and quiz[0]["note"] == "注意の文" and quiz[0]["second"] == "2026-01-09 04:30:42.6"
   assert quiz[0]["audio_station"] == "Hokudai" and quiz[0]["show"] == (-10.0, 110.0)
-  assert quiz[1]["focus"] == "" and quiz[1]["audio_station"] == ""
+  assert quiz[1]["focus"] == "" and quiz[1]["audio_station"] == "" and quiz[1]["answer_filter"] == ""
+  assert quiz[2]["answer_filter"] == "L"
 
 
 @pytest.mark.parametrize("rows, message", [
   ([[1, "雷", "2026-06-27 21:04:46", "x", -1, 1, "x", "", "", "", ""]], "種類"),
+  ([[1, "花火", "2026-06-27 21:04:46", "x", -1, 1, "x", "", "", "", "", "L"]], "答えのフィルタ"),   # L は海外の地震だけ
   ([[1, "花火", "2026-06-27 21:04:46", "x", -1, 1, "x", "", "", "", "KBBY"]], "満点の拠点"),
   ([[1, "花火", "2026-06-27 21:04:46", "x", -1, 1, "x", "", "", "", ""],
     [1, "発破", "2026-05-21 12:09:25", "x", -1, 1, "x", "", "", "", ""]], "重なって"),
@@ -87,7 +90,7 @@ def test_audio_sections_remove_mains_hum(rate, far, count):
 
 def quiz_item(kind, **kw):
   q = {"no": 1, "kind": kind, "t": T0, "ref": "x", "show": (-10.0, 50.0), "label": "x", "focus": "", "note": "",
-       "second": "", "audio_station": ""}
+       "second": "", "audio_station": "", "answer_filter": ""}
   q.update(kw)
   return q
 
@@ -118,7 +121,7 @@ def test_event_data_and_written_page(tmp_path, stations):
   assert list(waves) == ["Hokudai"] and info["have"] == ["Hokudai"]
   assert info["rate"] == 250 and info["n"] == 60 * 250 and info["t0"] == -10.0
   assert info["kind"] == sq.CHOICES.index("発破") and info["best"] == "A" and info["focus"] is True
-  assert info["phases"] == {} and info["audio"] == {"station": "Hokudai", "speed": 20, "far": False}
+  assert info["phases"] == {} and info["low"] is False and info["audio"] == {"station": "Hokudai", "speed": 20, "far": False}
 
   path = tmp_path / "quiz.html"
   size = sq.write_page(path, [(info, waves)])
@@ -127,7 +130,8 @@ def test_event_data_and_written_page(tmp_path, stations):
   assert not re.search(r"__[A-Z]+__", text)                            # 置き換え忘れが無い
   assert not re.search(r"""(?:src|href)=["']?https?:""", text)          # 外部のファイルを読まない
   meta = json.loads(re.search(r'id="meta">(.*?)</script>', text, re.S).group(1))
-  assert len(meta["choices"]) == len(sq.KINDS) and [f["key"] for f in meta["filters"]] == ["A", "B", "C", "D"]
+  assert len(meta["choices"]) == len(sq.KINDS) and [f["key"] for f in meta["filters"]] == ["A", "B", "C", "D", "L"]
+  assert [f["extra"] for f in meta["filters"]] == [False] * 4 + [True]          # L は答えのあとだけ
   assert meta["filters"][0]["sections"]["250"] == wv.filter_sections((0.5, 2.0), 250)
   assert meta["audio"]["common"] == sq.COMMON_SPEED and meta["audio"]["first"] == sq.FIRST_SOUND
   data = json.loads(re.search(r'id="w1">(.*?)</script>', text, re.S).group(1))

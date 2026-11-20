@@ -3,3 +3,4 @@
 #   テストの実行: python3 -m pytest(プロジェクトのフォルダで。README の「テスト」を参照)
 -r requirements.txt
 pytest>=8.0                     # 9.2.0
+segno>=1.6                      # 1.6.6  紙の教材(shake_print.py)の QR コード
