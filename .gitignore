@@ -15,6 +15,7 @@ scripts/build/
 scripts/dist/
 scripts/*.spec
 UsuMantenViewer*.zip
+UsuMantenCFTool*.zip
 etc/hypocenter_params.json
 UsuMantenViewer.app
 UsuMantenViewer-mac/
@@ -31,6 +32,7 @@ etc/train_timetable*.bak_*
 v-net/
 scripts/vnet_bookmarklet.js
 scripts/build_res/
+scripts/build_res_cftool/
 docs/manual/_build/
 
 # テスト(pytest)の作業ファイル

@@ -266,6 +266,7 @@ python3 scripts/UsuMantenViewer.py --locate-quakes batch_plots/quakes/quake_cand
  ┣ 📜 start_env.bat         # Windows: conda 環境を有効にしたコマンドプロンプトを開く
  ┣ 📜 build_win.bat         # Windows: ビルド
  ┣ 📜 build_mac.sh          # Mac: ビルド
+ ┣ 📜 build_cftool_mac.sh   # Mac: CF カードのメンテナンスツールのビルド
  ┣ 📜 pack_data_win.bat     # Windows: 別のマシンに移すデータを zip にまとめる
  ┣ 📜 pack_data_mac.sh      # Mac: 別のマシンに移すデータを zip にまとめる
  ┣ 📜 windows.md            # Windows の構築・ビルド手順
@@ -445,6 +446,7 @@ PyInstaller で、Python が入っていないパソコンでも動くアプリ�
 
 - Windows: `build_win.bat` → `UsuMantenViewer.zip`
 - Mac: `./build_mac.sh`（`.app` 形式は `./build_mac.sh --app`） → `UsuMantenViewer-mac.zip`
+- Mac の CF カードのメンテナンスツール: `./build_cftool_mac.sh`（`.app` 形式。フォルダ形式は `--folder`） → `UsuMantenCFTool-mac.zip`。使うライブラリは numpy と tkinter だけで、アプリの中の `etc` には拠点のチャンネル（`*.ch`・`*.tbl`）とロガーの校正値（`logger_cal.txt`）を入れる。ユーザーの設定・データフォルダは本体と同じものを使い、カードのイメージはデータフォルダの `raw/image` に書く。校正値を求め直したら、ビルドし直すか、ユーザーの設定の `etc` に `logger_cal.txt` を置く
 
 `etc` の初期値と `tools` はアプリの中に入ります（ファイルの置き場所は「[ファイルの置き場所](#ファイルの置き場所)」）。詳しくは [windows.md](windows.md) / [mac.md](mac.md) を参照してください。
 

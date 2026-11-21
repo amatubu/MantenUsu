@@ -49,12 +49,14 @@ import cf_catalog                               # noqa: E402
 import make_cf_image                            # noqa: E402
 import raw_to_win                               # noqa: E402
 import repackage_to_daily_zip                   # noqa: E402
+import app_paths                               # noqa: E402
 from app_paths import DATA_DIR, ZIPS_DIR        # noqa: E402
 from cf_card import CardError, Cancelled        # noqa: E402
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-ETC_DIR = PROJECT_DIR / "etc"
-IMAGE_DIR = PROJECT_DIR / "raw" / "image"
+# 設定(チャンネル表など)は app_paths の etc(.app ならアプリの中、開発中はプロジェクトの etc)
+ETC_DIR = Path(app_paths.ETC_DIR)
+# カードのイメージはデータフォルダの raw/image(開発中はデータフォルダがプロジェクトのフォルダなので、前と同じ場所)
+IMAGE_DIR = DATA_DIR / "raw" / "image"
 SOURCE_ZIPS_DIR = DATA_DIR / "source_zips"
 CATALOG, CATALOG_LOG = cf_catalog.catalog_paths(DATA_DIR)   # カードの台帳(cf_catalog.py)
 LABEL_PREFIX = "満点10-"  # カードに貼ってあるラベルの、番号の前の決まった所(「次に差すカードのラベル」の欄の初め)

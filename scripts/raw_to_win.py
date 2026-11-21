@@ -65,7 +65,8 @@ GPS_ROLLOVER = timedelta(days=7168)
 GPS_ROLLOVER_END = datetime(2019, 4, 7)
 COARSE_SHIFT = 6           # 粗い記録の値の位置(V = (4 × 値 + 下 2 ビット) × 64)
 CHUNK = 65536             # 一度に読むレコードの数(64 MB)
-CAL_FILE = app_paths.PROJECT_DIR / "etc" / "logger_cal.txt"
+# 校正値のファイル。ユーザーの設定の etc にあればそれを、無ければアプリに付く etc のもの(開発中はプロジェクトの etc)
+CAL_FILE = app_paths.ETC_DIR / "logger_cal.txt"
 
 
 class RawError(Exception):
