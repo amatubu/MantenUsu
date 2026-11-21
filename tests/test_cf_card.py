@@ -281,3 +281,23 @@ def test_disk_nodes(tmp_path):
     (tmp_path / n).write_bytes(b"")
   assert {n for n, _ in cf_card.disk_nodes(tmp_path)} == {"disk4", "disk12"}
   assert cf_card.disk_nodes(tmp_path / "none") is None
+
+
+# パソコンで FAT32 に初期化されたカード: diskutil の TotalSize はファイルシステムの大きさになるので、ディスクの大きさ
+# (Size)で CF カードと見分ける。先頭のブートセクタで「パソコンで初期化された」と分かる
+def test_pc_formatted_card():
+  run = fake_diskutil({
+    "disk13": {"info": {"DeviceNode": "/dev/disk13", "Size": make_cf_image.CARD_SIZE, "TotalSize": 4068257792,
+                        "MediaName": "Multiple Reader", "Internal": False},
+               "parts": [{"DeviceIdentifier": "disk13", "MountPoint": "/Volumes/NO NAME"}]},
+  })
+  d = cf_card.list_disks(run)[0]
+  assert d.is_card and d.mounted
+  boot = bytearray(2048)
+  boot[3:11] = b"MSDOS5.0"
+  boot[0x52:0x5a] = b"FAT32   "
+  boot[510:512] = b"\x55\xaa"
+  info = cf_card.card_info(bytes(boot))
+  assert info.pc_format and not info.station and not info.empty
+  assert "パソコンの形式" in cf_card.card_summary(info)
+  assert not cf_card.card_info(setting() + b"\xff" * 1024).pc_format

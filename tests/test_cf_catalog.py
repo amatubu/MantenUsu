@@ -117,3 +117,8 @@ def test_sorted_rows_uninstalled_last():
   rows = {r["ラベル"]: r for r in [rec("A", "1472580096", "1472580096"), rec("B", "1070432002", "Nizaemn"),
                                    rec("C", "1070432003", "Bamba")]}
   assert [r["ラベル"] for r in cc.sorted_rows(rows, installed={"1070432002", "1070432003"})] == ["C", "B", "A"]
+
+
+def test_pc_format_card():
+  p = SimpleNamespace(station="", index=0, cards=0, has_data=False, empty=False, pc_format=True)
+  assert cc.set_content(cc.new_row("A"), p, "", None)["状態"] == cc.PC_FORMAT

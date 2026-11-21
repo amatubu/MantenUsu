@@ -23,6 +23,7 @@ RECORDED = "記録あり"
 BLANK = "初期化済み"
 FOREIGN = "ロガーのカードではない"
 EMPTY = "何も書かれていない"   # 先頭が全部 0xFF(設定値も無い。ロガーで使うには初期化する)
+PC_FORMAT = "パソコンで初期化された"   # FAT32 などで初期化された(ロガーの記録は残っていない。ロガーで使うには初期化する)
 
 WIN_OK = "daily_zips にある"
 WIN_PART = "daily_zips に一部だけ"
@@ -93,7 +94,8 @@ def set_content(row, info, name, rng, now=None, as_station=""):
   row["確かめた日時"] = (now or datetime.now()).strftime(TIME_FMT)
   row["読み替え"] = as_station or ""
   if not info.station:
-    row.update({"状態": EMPTY if getattr(info, "empty", False) else FOREIGN, "拠点ID": "", "拠点名": "", "枚目": "", "全枚数": ""})
+    row.update({"状態": EMPTY if getattr(info, "empty", False)
+                else PC_FORMAT if getattr(info, "pc_format", False) else FOREIGN, "拠点ID": "", "拠点名": "", "枚目": "", "全枚数": ""})
     clear_record(row)
     return row
   row.update({"拠点ID": info.station, "拠点名": name, "全枚数": str(info.cards)})
@@ -182,7 +184,7 @@ def reusable(row):
 def list_key(row):
   if reusable(row):
     group = 0
-  elif row.get("状態") in (BLANK, EMPTY):
+  elif row.get("状態") in (BLANK, EMPTY, PC_FORMAT):
     group = 1
   elif row.get("状態") == RECORDED:
     group = 2
@@ -211,7 +213,7 @@ def collection_start(rows, row):
 #   初期化してよい順 ... list_key と同じ
 #   ラベル ... ラベルの番号の順
 def _state_group(row):
-  return {RECORDED: 0, BLANK: 1, EMPTY: 2}.get(row.get("状態"), 3)
+  return {RECORDED: 0, BLANK: 1, EMPTY: 2, PC_FORMAT: 2}.get(row.get("状態"), 3)
 
 
 # installed ... 設置している拠点の拠点ID(チャンネル表の拠点)。それ以外(まだ設置していない機体など)は拠点の最後にする

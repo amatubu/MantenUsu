@@ -1120,7 +1120,7 @@ class CfCardWindow:
       rec = r["状態"] == cf_catalog.RECORDED
       period = f"{r['記録の始め']} 〜 {r['記録の終わり']}" + ("(いっぱい)" if r["いっぱい"] == "はい" else "") if rec else ""
       init = " ".join(x for x in (r["初期化した日"], r["初期化の拠点"]) if x)
-      tag = "reuse" if cf_catalog.reusable(r) else "blank" if r["状態"] in (cf_catalog.BLANK, cf_catalog.EMPTY) else ""
+      tag = "reuse" if cf_catalog.reusable(r) else "blank" if r["状態"] in (cf_catalog.BLANK, cf_catalog.EMPTY, cf_catalog.PC_FORMAT) else ""
       self.tree.insert("", tk.END, iid=r["ラベル"], tags=(tag,),
                        values=(r["ラベル"], r["状態"], (r["拠点名"] or r["拠点ID"]) + ("(読み替え)" if r["読み替え"] else ""), r["枚目"], period, r["WIN"],
                                r["イメージ"], init, r["メモ"]))

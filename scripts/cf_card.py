@@ -109,7 +109,9 @@ def list_disks(run=spawn_run):
     except CardError:
       pass
     disks.append(Disk(node=info.get("DeviceNode", f"/dev/{ident}"),
-                      size=int(info.get("TotalSize") or info.get("Size") or 0),
+                      # ディスクの大きさ。TotalSize は、ファイルシステムがディスクに直接あると(パソコンで FAT32 に
+                      # 初期化されたカードなど)その大きさ(4,068,257,792 バイト)になり、カードとみなせないので使わない
+                      size=int(info.get("IOKitSize") or info.get("Size") or info.get("TotalSize") or 0),
                       media=str(info.get("MediaName") or info.get("IORegistryEntryName") or ""),
                       internal=bool(info.get("Internal", False)),
                       mounted=mounted))
@@ -216,6 +218,7 @@ class CardInfo:
   setting: dict       # make_cf_image.describe の結果(読めないときは None)
   unset: bool = False # 設定値が書かれないまま記録した(拠点ID 0000000000 など。raw_to_win.is_unset)
   empty: bool = False # 先頭が全部 0xFF(何も書かれていない。設定値も無い)
+  pc_format: bool = False  # パソコンの形式(FAT など。先頭がブートセクタ)で初期化されている
 
 
 def card_info(head):
@@ -232,7 +235,14 @@ def card_info(head):
                   has_data=head[SETTING_SIZE] != FILL,
                   setting=setting,
                   unset=station.isdigit() and raw_to_win.is_unset(raw_to_win.read_header(head[:SETTING_SIZE])),
-                  empty=set(head[:SETTING_SIZE]) == {FILL})
+                  empty=set(head[:SETTING_SIZE]) == {FILL},
+                  pc_format=is_pc_format(head))
+
+
+# パソコンの形式で初期化されたか(先頭がブートセクタ: 終わりが 55 AA で、FAT か exFAT の印がある)
+def is_pc_format(head):
+  return (len(head) >= 512 and head[510:512] == b"\x55\xaa"
+          and (head[3:11] == b"EXFAT   " or b"FAT" in head[0x36:0x3e] or b"FAT" in head[0x52:0x5a]))
 
 
 # カードの中身を言葉にする
@@ -240,6 +250,8 @@ def card_summary(info):
   if not info.station:
     if info.empty:
       return "何も書かれていません(先頭が全部 0xFF。ロガーで使うには初期化します)"
+    if info.pc_format:
+      return "パソコンの形式(FAT32 など)で初期化されています(ロガーで使うには、このツールで初期化します)"
     return "ロガーのカードではないようです(先頭に拠点ID がありません)"
   state = "記録あり" if info.has_data else "記録なし(初期化したまま)"
   index = f"{info.index} 枚目" if info.index else "番号なし"
