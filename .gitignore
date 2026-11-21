@@ -19,6 +19,7 @@ UsuMantenCFTool*.zip
 etc/hypocenter_params.json
 UsuMantenViewer.app
 UsuMantenViewer-mac/
+UsuMantenCFTool-mac/
 *.pdf
 *.pptx
 ._*
