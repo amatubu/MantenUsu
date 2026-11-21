@@ -299,6 +299,33 @@ label { font-size: 14px; display: inline-flex; gap: 4px; align-items: center; }
 canvas { width: 100%; display: block; background: var(--panel); border-radius: 8px; }
 #earth { aspect-ratio: 1 / 1; }
 #waves { height: 440px; }
+/* スマートフォンなど狭い画面: 地震は選択リスト、設定はたたむ、再生と時刻のバーは画面の下に固定、断面と波形を 1 画面に収める */
+#evsel { display: none; font: inherit; font-size: 16px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.opts > summary { display: none; cursor: pointer; color: var(--muted); font-size: 14px; padding: 4px 0; }
+@media (max-width: 760px) {
+  main { padding-bottom: 120px; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  #events { display: none; }
+  #evsel { display: block; width: 100%; }
+  #info { font-size: 12px; margin: 2px 0 4px; }
+  .opts > summary { display: list-item; }
+  /* 下に固定する欄: フィルタ(変えたときの波形の変わり方を見られるように)と再生・時刻のバー */
+  .dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--bg); border-top: 1px solid var(--line);
+    padding: 6px 16px calc(8px + env(safe-area-inset-bottom)); }
+  #dockbands #bands { flex-wrap: nowrap; }
+  #dockbands #bands > span { display: none; }   /* 見出しは省き、3 つのボタンを横 1 列に */
+  #dockbands button { flex: 1 1 0; font-size: 13px; padding: 5px 4px; white-space: nowrap; }
+  .playbar { margin: 6px 0 0; flex-wrap: nowrap; gap: 10px; }
+  #seek { min-width: 0; flex: 1 1 auto; }
+  #clock { min-width: 0; font-size: 13px; white-space: nowrap; }
+  #clock .lbl { display: none; }
+  .stage { gap: 8px; }
+  .stage > div { display: contents; }   /* 凡例を波形の下に回す */
+  #earth { order: 1; width: min(100%, 36vh); margin: 0 auto; }
+  #waves { order: 2; height: 28vh; min-height: 190px; }
+  .legend { order: 3; font-size: 12px; margin-top: 0; }
+  .note { font-size: 13px; }
+}
 .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); margin-top: 6px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
 .note { color: var(--muted); font-size: 14px; margin-top: 10px; max-width: 900px; } .note p { margin: 6px 0; }
@@ -307,17 +334,20 @@ canvas { width: 100%; display: block; background: var(--panel); border-radius: 8
 <body>
 <main>
 <h1>世界の地震が届く</h1>
-<div class="bar"><div class="group" id="events"><span>地震</span></div></div>
+<div class="bar"><div class="group" id="events"><span>地震</span></div><select id="evsel" aria-label="地震"></select></div>
 <div id="info"></div>
-<div class="bar">
+<div class="dock"><div id="dockbands"></div>
+<div class="bar playbar">
   <button id="play">▶ 再生</button>
   <input id="seek" type="range" min="0" max="1000" step="0.1" value="0" aria-label="時刻">
   <span id="clock"></span>
-</div>
+</div></div>
+<details class="opts" id="opts" open>
+<summary>設定(速さ・音など)</summary>
 <div class="bar">
   <div class="group" id="speeds"><span>速さ</span></div>
   <label><input type="checkbox" id="fast" checked>届くまでは早送り</label>
-  <div class="group" id="bands"><span>波形のフィルタ</span></div>
+  <span id="bandshome"></span><div class="group" id="bands"><span>波形のフィルタ</span></div>
   <label><input type="checkbox" id="codes">波の記号(PKIKP など)</label>
   <label><input type="checkbox" id="carry">波形を運ぶ</label>
 </div>
@@ -326,6 +356,7 @@ canvas { width: 100%; display: block; background: var(--panel); border-radius: 8
   <div class="group" id="sstations"><span>音の拠点</span></div>
   <span class="hint">音は ×40・×80 がよく聞こえます(×10・×20 ではとても低い音)。イヤホンかヘッドホンで</span>
 </div>
+</details>
 <div class="stage">
   <div>
     <canvas id="earth"></canvas>
@@ -500,7 +531,7 @@ function drawEarth() {
   // 時刻
   g.textAlign = "left"; g.font = "bold 14px sans-serif"; g.fillStyle = css("--ink");
   // 時刻は、震源の名前と重ならないよう、震源が下半分なら左上、上半分なら左下に
-  g.fillText(`発生から ${mmss(t)}`, 10, ly > cy ? 20 : H - 10);
+  if (W >= 400) g.fillText(`発生から ${mmss(t)}`, 10, ly > cy ? 20 : H - 10);   // 狭い画面では下の欄の時刻を見る
 }
 // 運ばれる波形: 有珠山で記録された、その波が届いてから PACK_D 秒の揺れを、通り道にそって描く
 //   τ 秒あとに有珠山に届く揺れは、いま「波の先頭が τ 秒前にいた所」にあるので、通り道の t − τ の位置に置く
@@ -590,7 +621,9 @@ function drawWaves() {
   const [g, W, H] = fit($("waves"));
   if (W < 200 || H < 100) return;
   g.clearRect(0, 0, W, H);
-  const left = 96, right = 12, top = 22 + 14 * ev.rays.length, bottom = 46;
+  const narrow = W < 500;   // スマートフォン: 拠点名の欄を狭く
+  const row = narrow ? 12 : 14;   // 波の名前の段の高さ
+  const left = narrow ? 80 : 96, right = 12, top = 8 + row * (ev.rays.length + 1), bottom = narrow ? 40 : 46;
   const t0 = Math.max(0, ev.first - 120), t1 = ev.end;
   const X = (s) => left + (s - t0) / (t1 - t0) * (W - left - right);
   const rows = META.stations.length, rh = (H - top - bottom) / rows;
@@ -602,7 +635,7 @@ function drawWaves() {
     g.beginPath(); g.moveTo(X(s), top); g.lineTo(X(s), H - bottom); g.stroke();
     g.fillText(`${Math.floor(s / 60)}分${s % 60 ? String(s % 60).padStart(2, "0") + "秒" : ""}`, X(s), H - bottom + 16);
   }
-  g.textAlign = "right"; g.fillText("発生からの時間", W - right, H - 6);
+  if (!narrow) { g.textAlign = "right"; g.fillText("発生からの時間", W - right, H - 6); }
   // 表面波の見込みの帯(届き始めてから)
   const sf = ev.surface;
   if (t >= sf.t0 && sf.t0 < t1) {
@@ -616,10 +649,10 @@ function drawWaves() {
     if (t < r.time || r.time < t0) return;
     g.strokeStyle = r.p ? css("--p") : css("--s"); g.lineWidth = 1.5; g.setLineDash(r.weak ? [2, 4] : [5, 4]);
     g.globalAlpha = r.weak ? 0.6 : 1;
-    g.beginPath(); g.moveTo(X(r.time), 16 + j * 14 - 10);   /* 名前の段の高さから引き、どの名前の線かわかるようにする */ g.lineTo(X(r.time), H - bottom); g.stroke(); g.setLineDash([]);
-    g.fillStyle = g.strokeStyle; g.textAlign = "left"; g.font = "bold 12px sans-serif";
+    g.beginPath(); g.moveTo(X(r.time), 6 + row * (j + 1) - row + 2);   /* 名前の段の高さから引き、どの名前の線かわかるようにする */ g.lineTo(X(r.time), H - bottom); g.stroke(); g.setLineDash([]);
+    g.fillStyle = g.strokeStyle; g.textAlign = "left"; g.font = narrow ? "bold 11px sans-serif" : "bold 12px sans-serif";
     // 名前は波形の上の段に置く(近い波の名前が重ならないよう 1 本ずつ段をずらし、最後の段も波形の上に収める)
-    g.fillText(label(r), Math.min(X(r.time) + 3, W - right - g.measureText(label(r)).width), 16 + j * 14);
+    g.fillText(label(r), Math.min(X(r.time) + 3, W - right - g.measureText(label(r)).width), 6 + row * (j + 1));
     g.globalAlpha = 1;
   });
   // 波形(今の時刻まで)
@@ -627,7 +660,7 @@ function drawWaves() {
   const now = Math.min(t, t1);
   ws.forEach((w, k) => {
     const yc = top + rh * (k + 0.5);
-    g.fillStyle = css("--ink"); g.textAlign = "left"; g.font = "bold 13px sans-serif";
+    g.fillStyle = css("--ink"); g.textAlign = "left"; g.font = narrow ? "bold 11px sans-serif" : "bold 13px sans-serif";
     g.fillText(META.stations[k].label + ($("sound").checked && META.stations[k].id === sndStation ? " ♪" : ""), 6, yc + 4);
     if (!w) { g.fillStyle = css("--muted"); g.font = "12px sans-serif"; g.fillText("記録なし", left + 6, yc + 4); return; }
     g.strokeStyle = css("--wave"); g.lineWidth = 1;
@@ -654,7 +687,8 @@ function drawWaves() {
     g.fillText(`最初の波が有珠山に届くまで あと ${mmss(ev.first - t)}`, (left + W) / 2, H / 2);
   }
   g.fillStyle = css("--muted"); g.textAlign = "left"; g.font = "12px sans-serif";
-  g.fillText(`上下動 ${META.bands[band][0]}〜${META.bands[band][1]} Hz(拠点ごとに大きさをそろえる)`, left, H - 6);
+  g.fillText(narrow ? `上下動 ${META.bands[band][0]}〜${META.bands[band][1]} Hz・横は発生からの時間`
+                     : `上下動 ${META.bands[band][0]}〜${META.bands[band][1]} Hz(拠点ごとに大きさをそろえる)`, narrow ? 6 : left, H - 6);
 }
 
 // --- 音 ---
@@ -699,7 +733,7 @@ function restartSound() { if (playing) startSound(); else stopSound(); }
 function draw() {
   drawEarth(); drawWaves();
   $("seek").value = t;
-  $("clock").textContent = `発生から ${mmss(t)}`;
+  $("clock").innerHTML = `<span class="lbl">発生から </span>${mmss(t)}`;
 }
 function tick(now) {
   if (!playing) { last = null; return; }
@@ -747,7 +781,19 @@ function pick(no) {
   setPlaying(false); draw();
 }
 const evs = [...META.events].sort((a, b) => a.deg - b.deg);
-buttons($("events"), evs.map((e) => [e.no, `${e.place} ${Math.round(e.deg)}°`]), evs[0].no, pick);
+buttons($("events"), evs.map((e) => [e.no, `${e.place} ${Math.round(e.deg)}°`]), evs[0].no, (no) => { pick(no); $("evsel").value = no; });
+for (const e of evs) $("evsel").add(new Option(`${e.place} ${Math.round(e.deg)}°`, e.no));
+$("evsel").onchange = () => { pick($("evsel").value); mark($("events"), $("evsel").value); };
+// 狭い画面: 設定はたたんでおき、フィルタは下に固定した欄に出す(設定を開かずに切り替え、波形の変わり方を見られるように)
+const narrowMq = matchMedia("(max-width: 760px)");
+if (narrowMq.matches) $("opts").open = false;
+function placeBands() {
+  if (narrowMq.matches) $("dockbands").appendChild($("bands"));
+  else $("bandshome").after($("bands"));
+  if (ev) draw();
+}
+narrowMq.addEventListener("change", placeBands);
+placeBands();
 buttons($("speeds"), SPEEDS.map((s) => [s, `×${s}`]), speed, (s) => { speed = +s; restartSound(); });
 buttons($("sstations"), META.stations.map((s) => [s.id, s.label]), META.events[0].sound_station, (nm) => { sndStation = nm; restartSound(); draw(); });
 sndStation = META.events[0].sound_station;
