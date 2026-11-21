@@ -44,3 +44,7 @@ cf_cards/
 
 # 作業用のスクリプト(観測成果報告の図の作成など。リポジトリには入れない)
 work_scripts/
+
+# Claude Code が画面の確かめのたびに作り直す設定と、手元だけの設定
+.claude/launch.json
+.claude/settings.local.json
