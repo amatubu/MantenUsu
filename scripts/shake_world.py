@@ -25,7 +25,13 @@ import shake_quiz as sq
 OUTPUT = sq.OUTPUT_DIR / "world.html"
 CACHE_DIR = app_paths.OUTPUT_DIR / "shake_world"
 RATE = 10                       # 波形の間引き [Hz]
-BANDS = {"L": (0.1, 0.5), "A": (0.5, 2.0)}
+BANDS = {"V": (0.04, 0.1), "L": (0.1, 0.5), "A": (0.5, 2.0)}   # V は表面波(周期 10〜25 秒)が見える帯域
+# 表面波(地表にそって伝わる波)の速さの目安 [km/s]。4 拠点の 0.04〜0.1 Hz の包絡線で、浅く大きな地震(カムチャツカ・アラスカ・フィリピン)の
+# 表面波は 2.7〜3.2 km/s で届いていた(山の時刻)。周期で速さが変わり、ゆっくりした揺れはそのあとも続く(カムチャツカは発生の約 13 分後、2.3 km/s まで)。
+# 速いほうと遅いほうの間を幅で描く
+SURFACE_KMS = (3.6, 2.3)
+SURFACE_MAX_DEPTH = 100.0       # これより深い地震は表面波が弱いので、波形の表示を表面波までのばさない
+SURFACE_MAX_DEG = 60.0          # これより遠い地震も(届くのが遅く、M7 前後では記録に見えない)
 # 音: 0.3〜15 Hz を 50 Hz に間引き、最初の波の 1 分前から入れる。画面の速さ(×10〜×80)で鳴らすので 3〜1200 Hz の音になる
 SOUND_BAND = (0.3, 15.0)
 SOUND_RATE = 50              # 記録(250 Hz)を割り切れる間引き
@@ -161,7 +167,7 @@ def waveforms(t0, seconds, bands=None, rate=RATE, load=None):
 
 def cached_waveforms(no, t0, seconds, bands=None, rate=RATE):
   bands = bands or BANDS
-  tag = "" if bands is BANDS else "_" + "_".join(f"{lo:g}-{hi:g}" for lo, hi in bands.values())
+  tag = "_" + "_".join(f"{lo:g}-{hi:g}" for lo, hi in bands.values())
   path = CACHE_DIR / f"q{no}_{t0:%Y%m%d%H%M%S}_{seconds:.0f}s_{rate}Hz{tag}.npz"
   if path.exists():
     with np.load(path) as z:
@@ -199,6 +205,11 @@ def event_data(no, a, place):
   rays = usu_rays(depth, a["deg"])
   first = min(r["time"] for r in rays)
   end = max(first + AFTER, max(r["time"] for r in rays) + 120)   # 描く波がすべて届いて 2 分後まで
+  km = float(a["dist_km"])
+  surface = {"fast": SURFACE_KMS[0], "slow": SURFACE_KMS[1], "t0": round(km / SURFACE_KMS[0], 1), "t1": round(km / SURFACE_KMS[1], 1),
+             "shown": depth < SURFACE_MAX_DEPTH and a["deg"] < SURFACE_MAX_DEG}
+  if surface["shown"]:
+    end = max(end, surface["t1"] + 120)                         # 浅く近い地震は、表面波が届き終わる 2 分後まで
   seconds = BEFORE + end
   t0 = a["日時"] - timedelta(seconds=BEFORE)
   wf = cached_waveforms(no, t0, seconds)
@@ -212,7 +223,7 @@ def event_data(no, a, place):
   return {"no": no, "place": place, "usgs": a["震央地名"], "M": a["M"], "depth": round(depth, 1),
           "origin": f"{a['日時']:%Y/%m/%d %H:%M}", "deg": round(a["deg"], 1), "km": round(a["dist_km"]),
           "first": first, "end": round(end, 1), "before": BEFORE, "rate": RATE,
-          "band": "A" if depth > 300 else "L", "rays": rays, "front": front_key(depth), "waves": waves,
+          "band": "A" if depth > 300 else "L", "rays": rays, "front": front_key(depth), "waves": waves, "surface": surface,
           "sound": sound, "sound_station": SOUND_STATION}
 
 _fronts = {}
@@ -240,11 +251,11 @@ PAGE = r"""<!DOCTYPE html>
 <title>__TITLE__</title>
 <style>
 :root { color-scheme: light dark; --bg: #fff; --ink: #1c2126; --muted: #68727d; --panel: #f4f5f7; --line: #d5d9de;
-  --p: #c8501e; --s: #1565c0; --mantle: #efe7da; --outer: #dfe3e8; --inner: #c6cdd6; --wave: #1c2126; --btn: #e9ecef; --on: #1c2126; --onink: #fff; }
+  --p: #c8501e; --s: #1565c0; --sf: #2e7d32; --mantle: #efe7da; --outer: #dfe3e8; --inner: #c6cdd6; --wave: #1c2126; --btn: #e9ecef; --on: #1c2126; --onink: #fff; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14171a; --ink: #e8ecef; --muted: #9aa5af; --panel: #1f2428; --line: #39424a;
-  --p: #ff8a50; --s: #64a8f0; --mantle: #3a332b; --outer: #2c333b; --inner: #3d4650; --wave: #e8ecef; --btn: #2a3036; --on: #e8ecef; --onink: #14171a; } }
+  --p: #ff8a50; --s: #64a8f0; --sf: #66bb6a; --mantle: #3a332b; --outer: #2c333b; --inner: #3d4650; --wave: #e8ecef; --btn: #2a3036; --on: #e8ecef; --onink: #14171a; } }
 :root[data-theme="dark"] { --bg: #14171a; --ink: #e8ecef; --muted: #9aa5af; --panel: #1f2428; --line: #39424a;
-  --p: #ff8a50; --s: #64a8f0; --mantle: #3a332b; --outer: #2c333b; --inner: #3d4650; --wave: #e8ecef; --btn: #2a3036; --on: #e8ecef; --onink: #14171a; }
+  --p: #ff8a50; --s: #64a8f0; --sf: #66bb6a; --mantle: #3a332b; --outer: #2c333b; --inner: #3d4650; --wave: #e8ecef; --btn: #2a3036; --on: #e8ecef; --onink: #14171a; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; }
 main { max-width: 1280px; margin: 0 auto; padding: 12px 16px 24px; }
@@ -300,6 +311,7 @@ canvas { width: 100%; display: block; background: var(--panel); border-radius: 8
       <span><i style="background:var(--p)"></i>P波の仲間(押したり引いたりする揺れ。液体の中も進む)</span>
       <span><i style="background:var(--s)"></i>S波の仲間(横にずれる揺れ。液体の中は進めない)</span>
       <span><i style="background:var(--muted);opacity:.5"></i>うすい点: はね返った波・核のふちを回り込む波</span>
+      <span><i style="background:var(--sf)"></i>表面波(地表にそって伝わる、ゆっくりで長い揺れ)</span>
     </div>
   </div>
   <canvas id="waves"></canvas>
@@ -313,9 +325,12 @@ S波は液体の中を進めないので、外核には P波に姿を変えて�
 核に曲げられて、有珠山から見て 100〜140° くらい離れた所の地震からは、P波があまり届きません(影)。</p>
 <p><b>運ばれる波形(黒い線)</b> … 有珠山の地震計に記録された揺れ(音を出している拠点、届いてから 40 秒間)を、その波の通り道にそって描いています。
 波が有珠山に着くと、下の波形にその揺れが現れます。見やすいように、通り道の上では波形を長くのばしています。</p>
+<p><b>表面波(緑)</b> … 地球の中を通る P波・S波とは別に、地表にそって伝わる波です。P波・S波より遅く(この地域の記録では 1 秒に約 2.7〜3.2 km)、ゆっくりした大きな揺れが長く続きます。
+有珠山の地震計では、0.04〜0.1 Hz(周期 10〜25 秒)のフィルタにすると見えます。浅い大きな地震(カムチャツカ・アラスカ・フィリピン)ではっきりし、深い地震(ボルネオ・イタリア)ではほとんど出ません。
+緑の帯は、1 秒に 3.6〜2.3 km で進むとしたときの見込みです。</p>
 <p><b>太い線</b> … 有珠山に届く波の通り道です。地面ではね返ってから届く波(細い線)は、遠い地震の波形で、P波のあとに来る大きな揺れになることがあります。</p>
 <p><b>波形</b> … 4 か所の地震計の上下の揺れで、それぞれ見やすい大きさにしています。4 か所は地球の大きさから見るとほぼ同じ場所なので、遠い地震の波は 4 か所にほぼ同時に届きます。</p>
-<p>波の通り道と届く時刻は、地球の中の速さの標準的なモデル(iasp91)からの見込みです。地球の表面を伝わる波(表面波)は、まだ描いていません。</p>
+<p>波の通り道と届く時刻は、地球の中の速さの標準的なモデル(iasp91)からの見込みです。地球の表面波は、速さを決めて描いた目安です。</p>
 </div>
 </main>
 <script>
@@ -428,6 +443,7 @@ function drawEarth() {
       g.fillStyle = c; g.beginPath(); g.arc(...Q(q[0], q[1]), 5, 0, 2 * Math.PI); g.fill();
     }
   }
+  drawSurface(g, Q);
   if ($("carry").checked) for (const r of ev.rays) if (!r.refl) carryWave(g, Q, r);
   // 震源と有珠山
   const [ex, ey] = Q(0, META.R - ev.depth), [lx, ly] = Q(0, META.R * 1.06);
@@ -494,6 +510,25 @@ function carryWave(g, Q, r) {
     g.beginPath(); for (const c of line) g.lineTo(c[0], c[1]); g.stroke();
   }
 }
+// 表面波: 震源から地表にそって両側へ進む。速いほう(fast)と遅いほう(slow)の間を、波打つ帯で描く
+//   地球の反対側(180°)を過ぎた分は描かない(反対側で両側からの波が出会う)
+function drawSurface(g, Q) {
+  const sf = ev.surface, R = META.R;
+  const a1 = Math.min(Math.PI, sf.fast * t / R), a0 = Math.min(Math.PI, sf.slow * t / R);
+  if (t <= 0 || a1 <= a0) return;
+  const n = Math.max(8, Math.round((a1 - a0) * 400));
+  g.strokeStyle = css("--sf"); g.lineWidth = 2.2; g.lineJoin = "round";
+  for (const side of [1, -1]) {
+    g.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const f = i / n, a = a0 + (a1 - a0) * f;
+      const env = Math.sin(Math.PI * f);                       // 帯の両端は小さく
+      const rr = R + Math.sin(a * R / 260 * 2 * Math.PI) * 140 * env + 90;   // 地表の少し外側で波打たせる(波長は約 260 km)
+      g.lineTo(...Q(side * rr * Math.sin(a), rr * Math.cos(a)));
+    }
+    g.stroke();
+  }
+}
 function star(g, x, y, r, c) {
   g.beginPath();
   for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; g.lineTo(x + rr * Math.cos(a), y + rr * Math.sin(a)); }
@@ -512,12 +547,20 @@ function drawWaves() {
   const ws = waves(ev, band);
   // 時間の目盛り(発生からの分)
   g.strokeStyle = css("--line"); g.fillStyle = css("--muted"); g.font = "12px sans-serif"; g.textAlign = "center"; g.lineWidth = 1;
-  const tick = (t1 - t0) > 600 ? 120 : 60;
+  const tick = (t1 - t0) > 1200 ? 300 : (t1 - t0) > 600 ? 120 : 60;
   for (let s = Math.ceil(t0 / tick) * tick; s <= t1; s += tick) {
     g.beginPath(); g.moveTo(X(s), top); g.lineTo(X(s), H - bottom); g.stroke();
     g.fillText(`${Math.floor(s / 60)}分${s % 60 ? String(s % 60).padStart(2, "0") + "秒" : ""}`, X(s), H - bottom + 16);
   }
   g.textAlign = "right"; g.fillText("発生からの時間", W - right, H - 6);
+  // 表面波の見込みの帯(届き始めてから)
+  const sf = ev.surface;
+  if (t >= sf.t0 && sf.t0 < t1) {
+    const xa = X(Math.max(sf.t0, t0)), xb = X(Math.min(sf.t1, t1, t));
+    g.fillStyle = css("--sf"); g.globalAlpha = 0.12; g.fillRect(xa, top, xb - xa, H - bottom - top); g.globalAlpha = 1;
+    g.fillStyle = css("--sf"); g.font = "bold 12px sans-serif"; g.textAlign = "left";
+    g.fillText($("codes").checked ? "表面波の見込み(レイリー波など)" : "表面波の見込み", Math.min(xa + 3, W - right - 110), H - bottom - 6);
+  }
   // 届いた波の線
   ev.rays.forEach((r, j) => {
     if (t < r.time || r.time < t0) return;
