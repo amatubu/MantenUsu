@@ -5,17 +5,22 @@
 #     テーマ(番号), 題, 説明, 見どころ, 基準(0 秒にする時刻の名前), 表示の始まり[秒], 表示の終わり[秒](基準からの秒),
 #     P波でそろえる(○ なら、段ごとに P波の到着の見込みを 0 秒にする。気象庁の震源リスト・USGS の地震から計算。見つからない段は基準の時刻のまま),
 #     はじめの拠点(段の「拠点」が空のテーマで、最初に見せる拠点。画面で 4 拠点を切り替えられる),
-#     振幅(段ごと・共通), フィルタ(最初のフィルタ。空ならフィルタなし), 音の速さ(空白で区切った倍率。最初が既定),
-#     紙のフィルタ(紙の教材 shake_print.py で横に並べるフィルタ。空白で区切り、元はフィルタなし。空なら「フィルタ」と同じ 1 列),
+#     振幅(段ごと・共通・基準に合わせる), フィルタ(最初のフィルタ。空ならフィルタなし), 音の速さ(空白で区切った倍率。最初が既定),
+#     紙のフィルタ(紙の教材 shake_print.py で横に並べるフィルタ。空白で区切り、元はフィルタなし。空なら「フィルタ」と同じ 1 列。
+#                 「なし」なら紙の教材に入れない(画面だけ)),
 #     見方(波形・周波数。空なら波形。周波数のテーマは、段ごとの「どの高さの揺れが入っているか」(振幅スペクトル)を 1 つの図に重ねる),
 #     周波数の範囲[秒](スペクトルを求める範囲。「始まり 終わり」で基準からの秒。空なら表示の全部),
 #     目印の帯域(周波数の図に色を付ける帯域。「下限-上限」を空白で区切る。例: 1.8-3.9 4-10),
+#     0秒の線の名前(書いてあれば、0 秒の紫の破線の上にその名前を出す。例: 外核を通り内核で反射した P波),
+#     目印の線(0 秒のほかに引く紫の点線。「秒 名前」を「;」で区切る。例: 90 PP(地表で 1 回はね返った P波)),
+#     振幅の基準(「始まり 終わり 名前」。書いてあれば、振幅のボタンに「名前に合わせる」が増え、その時間 [基準からの秒] の揺れで
+#                 縦の大きさを段ごとに決める(ほかの大きな揺れは枠の外に切れ、何倍大きいかを出す)。例: -60 400 ベネズエラ),
 #     段の名前(空なら拠点の名前), 種類(クイズと同じ種類の名前。遠くの地震の音の処理と P波・S波の線に使う), 基準の時刻,
 #     拠点(書いてあればその拠点だけ。空なら 4 拠点), 2つめの地震(同じ画面に入っているもう1つの地震の気象庁の発震時刻),
 #     グループ(周波数の図で同じ色にする組の名前。空なら種類の名前)
 #   一覧の画面では、波形のテーマ(波形の形や S-P 時間で見分ける)と、周波数のテーマ(含まれている周波数で見分ける)に分けて並べる
 #   画面でできること
-#   - 波形: ピンチで拡大・縮小、1本指で移動、ダブルタップで全体に戻す(全部の段がいっしょに動く)。フィルタ A〜D、振幅を段ごと・共通
+#   - 波形: ピンチで拡大・縮小、1本指で移動、ダブルタップで全体に戻す(全部の段がいっしょに動く)。フィルタ A〜D・L(0.1〜0.5 Hz)、振幅を段ごと・共通
 #   - 音: 「♪」の段の音、または「上から順に聴く」。速さはテーマごとに選べる。音の大きさは、それぞれ最大にそろえるか、本当の大きさの比のまま
 #   - P波・S波の到着の見込みの線(気象庁の震源リストと USGS の地震)
 #   波形の読み込み・符号化・描画・音にする処理は shake_quiz.py と同じ。入れるのは満点の拠点の波形だけ
@@ -36,12 +41,12 @@ from quake_wave_view import count_steps, filter_sections, load_stream, script_js
 THEME_FILE = "shake_compare.csv"
 OUTPUT_DIR = sq.OUTPUT_DIR
 TITLE = "揺れを比べてみよう"
-THEME_COLUMNS = ["題", "説明", "見どころ", "基準", "表示の始まり[秒]", "表示の終わり[秒]", "P波でそろえる", "はじめの拠点", "振幅", "フィルタ", "音の速さ", "紙のフィルタ", "見方", "周波数の範囲[秒]", "目印の帯域"]
+THEME_COLUMNS = ["題", "説明", "見どころ", "基準", "表示の始まり[秒]", "表示の終わり[秒]", "P波でそろえる", "はじめの拠点", "振幅", "フィルタ", "音の速さ", "紙のフィルタ", "見方", "周波数の範囲[秒]", "目印の帯域", "振幅の基準", "0秒の線の名前", "目印の線"]
 VIEWS = {"": "wave", "波形": "wave", "周波数": "freq"}
 GROUP_TITLES = {"wave": "波形の形や S-P 時間で見分ける", "freq": "含まれている周波数で見分ける"}
 SPEC_MIN = 0.05          # スペクトルの下の端 [Hz]
 SPEC_BINS = 120          # スペクトルの帯の数(対数の間隔)
-AMP_MODES = ("段ごと", "共通")
+AMP_MODES = ("段ごと", "共通", "基準に合わせる")   # 基準に合わせる ... 「振幅の基準」の時間で決める(その列が要る)
 
 
 def parse_time(text):
@@ -62,8 +67,8 @@ def read_themes(path=None):
           raise ValueError(f"{where}: テーマ {no} の最初の行に題がありません")
         if r["振幅"] and r["振幅"] not in AMP_MODES:
           raise ValueError(f"{where}: 振幅は {'・'.join(AMP_MODES)} のどれかです: {r['振幅']}")
-        if r["フィルタ"] and r["フィルタ"] not in [key for key, *_ in sq.FILTERS]:
-          raise ValueError(f"{where}: フィルタは A〜D か空です: {r['フィルタ']}")
+        if r["フィルタ"] and r["フィルタ"] not in [key for key, *_ in sq.ALL_FILTERS]:
+          raise ValueError(f"{where}: フィルタは A〜D・L か空です: {r['フィルタ']}")
         if r["はじめの拠点"] and r["はじめの拠点"] not in sq.STATIONS:
           raise ValueError(f"{where}: 満点の拠点ではありません: {r['はじめの拠点']}")
         show = (float(r["表示の始まり[秒]"]), float(r["表示の終わり[秒]"]))
@@ -71,8 +76,10 @@ def read_themes(path=None):
           raise ValueError(f"{where}: 表示の始まりが終わりより後です")
         speeds = [int(v) for v in r["音の速さ"].split()] or [sq.COMMON_SPEED]
         paper = ["" if v == "元" else v for v in r["紙のフィルタ"].split()] or [r["フィルタ"]]
-        if any(v not in ["", *(key for key, *_ in sq.FILTERS)] for v in paper):
-          raise ValueError(f"{where}: 紙のフィルタは 元・A〜D です: {r['紙のフィルタ']}")
+        if r["紙のフィルタ"] == "なし":       # 紙の教材には入れない(画面だけ)
+          paper = []
+        if any(v not in ["", *(key for key, *_ in sq.ALL_FILTERS)] for v in paper):
+          raise ValueError(f"{where}: 紙のフィルタは 元・A〜D・L です: {r['紙のフィルタ']}")
         view = r.get("見方", "")
         if view not in VIEWS:
           raise ValueError(f"{where}: 見方は 波形・周波数 のどちらかです: {view}")
@@ -90,10 +97,31 @@ def read_themes(path=None):
           if not 0 < lo < hi:
             raise ValueError(f"{where}: 目印の帯域は「下限-上限」です: {part}")
           marks.append([lo, hi])
+        amp_window = None
+        if r.get("振幅の基準"):
+          parts = r["振幅の基準"].split()
+          try:
+            amp_window = [float(parts[0]), float(parts[1]), " ".join(parts[2:]) or "前半"]
+          except (ValueError, IndexError):
+            amp_window = None
+          if not amp_window or not show[0] <= amp_window[0] < amp_window[1] <= show[1]:
+            raise ValueError(f"{where}: 振幅の基準は「始まり 終わり 名前」で、表示の中に書きます: {r['振幅の基準']}")
+        if r["振幅"] == "基準に合わせる" and not amp_window:
+          raise ValueError(f"{where}: 振幅を「基準に合わせる」にするときは、振幅の基準を書きます")
+        lines = []
+        for part in filter(None, (v.strip() for v in r.get("目印の線", "").split(";"))):
+          sec, _, name = part.partition(" ")
+          try:
+            lines.append([float(sec), name.strip()])
+          except ValueError:
+            raise ValueError(f"{where}: 目印の線は「秒 名前」を「;」で区切ります: {part}")
+          if not show[0] <= lines[-1][0] <= show[1]:
+            raise ValueError(f"{where}: 目印の線が表示の外です: {part}")
         themes[no] = {"no": no, "title": r["題"], "text": r["説明"], "look": r["見どころ"], "ref": r["基準"], "show": show,
-                      "align_p": bool(r["P波でそろえる"]), "first": r["はじめの拠点"], "common": r["振幅"] == "共通",
+                      "align_p": bool(r["P波でそろえる"]), "first": r["はじめの拠点"], "common": {"共通": True, "基準に合わせる": "win"}.get(r["振幅"], False),
                       "filter": r["フィルタ"], "speeds": speeds, "paper": paper, "view": VIEWS[view], "spec_window": spec_window,
-                      "marks": marks, "rows": []}
+                      "marks": marks, "amp_window": amp_window,
+                      "zero_label": r.get("0秒の線の名前", ""), "lines": lines, "rows": []}
       elif any(r[c] for c in THEME_COLUMNS):
         raise ValueError(f"{where}: テーマの設定({'・'.join(c for c in THEME_COLUMNS if r[c])})は、テーマの最初の行にだけ書きます")
       if r["種類"] and r["種類"] not in sq.KINDS:
@@ -111,7 +139,8 @@ def read_themes(path=None):
       th["first"] = sq.FIRST_SOUND[0]
     if not th["pick"] and any(not row["label"] for row in th["rows"]) and len({row["t"] for row in th["rows"]}) > 1:
       raise ValueError(f"{path.name}: テーマ {th['no']} の段の名前が空です(時刻の違う段には名前を付けます)")
-  return [themes[k] for k in sorted(themes)]
+  # 一覧と前後の移動は、波形のテーマのあとに周波数のテーマ(それぞれ番号の順)
+  return sorted(themes.values(), key=lambda th: (th["view"] != "wave", th["no"]))
 
 
 # 段の P波・S波の到着の見込み(拠点ごと。段の基準の時刻からの秒。2つめの地震は p2・s2)
@@ -187,7 +216,9 @@ def theme_data(th, load, steps, stations):
   info = {"no": th["no"], "title": th["title"], "text": sq.display_names(th["text"]), "look": sq.display_names(th["look"]),
           "ref": sq.display_names(th["ref"]), "rate": rate, "n": n, "t0": before, "pick": th["pick"], "first": th["first"],
           "common": th["common"], "filter": th["filter"], "speeds": th["speeds"], "paper": th["paper"], "view": th["view"],
-          "spec_window": th["spec_window"], "marks": th["marks"], "rows": rows}
+          "spec_window": th["spec_window"], "marks": th["marks"], "amp_window": th.get("amp_window"),
+          "zero_label": sq.display_names(th.get("zero_label", "")),
+          "lines": [[t, sq.display_names(name)] for t, name in th.get("lines", [])], "rows": rows}
   if th["view"] == "freq":
     info["spec_f"] = amplitude_spectrum([0.0] * n, rate)[0]
   return info, waves
@@ -200,7 +231,7 @@ def write_page(path, themes):
     "title": TITLE,
     "stations": [{"id": nm, "label": station_names.full(nm)} for nm in sq.STATIONS],
     "filters": [{"key": key, "low": lo, "high": hi, "sound": sound,
-                 "sections": {str(rate): filter_sections((lo, hi), rate) for rate in rates}} for key, lo, hi, sound in sq.FILTERS],
+                 "sections": {str(rate): filter_sections((lo, hi), rate) for rate in rates}} for key, lo, hi, sound in sq.ALL_FILTERS],
     "themes": [info for info, _ in themes],
     "groupTitles": GROUP_TITLES,
     "audio": {"sections": {str(rate): {"base": sq.audio_sections(rate, False), "far": sq.audio_sections(rate, True)} for rate in rates}},
@@ -302,7 +333,7 @@ header button:disabled { color: var(--line); cursor: default; }
       <button id="viewFreq" type="button">周波数</button><button id="viewWave" type="button">波形</button>
     </div>
     <div class="seg" id="amp" role="group" aria-label="振幅">
-      <button id="ampEach" type="button">段ごと</button><button id="ampCommon" type="button">共通</button>
+      <button id="ampEach" type="button">段ごと</button><button id="ampCommon" type="button">共通</button><button id="ampWin" type="button" hidden></button>
     </div>
   </div>
   <div class="tools" id="stationBox"><div class="seg" id="stationSeg" role="group" aria-label="拠点"></div></div>
@@ -438,33 +469,42 @@ function draw() {
     ctx.fillStyle = colors.muted;
     ctx.fillText(t.toFixed(digits) + " 秒", Math.min(W - 20 * d, Math.max(20 * d, x)), plotH + axisH / 2);
   }
-  // 0 秒(基準の時刻)
+  // 0 秒(基準の時刻)と目印の線
   const x0 = Math.round(xOfTime(0)) + 0.5;
-  if (x0 >= 0 && x0 <= W) {
-    ctx.strokeStyle = colors.ref; ctx.lineWidth = Math.max(1, d); ctx.setLineDash([4 * d, 3 * d]);
-    ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, plotH); ctx.stroke(); ctx.setLineDash([]);
+  for (const t of [0, ...(th.lines || []).map(l => l[0])]) {
+    const x = Math.round(xOfTime(t)) + 0.5;
+    if (x < 0 || x > W) continue;
+    ctx.strokeStyle = colors.ref; ctx.lineWidth = Math.max(1, d); ctx.setLineDash(t === 0 ? [4 * d, 3 * d] : [2 * d, 3 * d]);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke(); ctx.setLineDash([]);
   }
 
   const a = Math.max(0, Math.floor(S.v0)), b = Math.min(n, Math.ceil(S.v0 + S.span));
   const out = { lo: 0, hi: 0 }, centers = [], halves = [];
   let allHalf = 0;
+  // 「名前に合わせる」では、決めた時間の揺れで縦の大きさを決める(見えているほかの大きな揺れは枠の外)
+  const win = S.common === "win" && th.amp_window;
+  const wa = win ? Math.max(0, Math.round((th.amp_window[0] - th.t0) * rate)) : a;
+  const wb = win ? Math.min(n, Math.round((th.amp_window[1] - th.t0) * rate)) : b;
+  const over = [];
   th.rows.forEach((row, k) => {
     const tr = traceOf(k);
     if (!tr) return;
-    rangeOf(tr, a, b, out);
+    rangeOf(tr, wa, wb, out);
     const lo = out.lo * tr.step, hi = out.hi * tr.step;
     centers[k] = (lo + hi) / 2; halves[k] = (hi - lo) / 2;
     allHalf = Math.max(allHalf, halves[k]);
+    if (win) { rangeOf(tr, a, b, out); over[k] = (out.hi - out.lo) * tr.step / 2 / (halves[k] || 1); }
   });
   th.rows.forEach((row, k) => {
     const top = k * blockH, tr = traceOf(k), id = stationOf(row);
-    const half = S.common ? allHalf : halves[k];
+    const half = S.common === true ? allHalf : halves[k];
     if (tr) drawTrace(tr, top, blockH, centers[k], half, n);
     const sound = k === S.sel;
     ctx.font = `${sound ? "600 " : ""}${11 * d}px ${FONT}`;
     labelBox((sound ? "♪ " : "") + row.label, 6 * d, top + 2 * d, "left", sound ? colors.cursor : colors.ink);
     ctx.font = `${11 * d}px ${FONT}`;
-    if (tr) labelBox("±" + formatAmp(half), W - 6 * d, top + 2 * d, "right", colors.muted);
+    if (tr) labelBox("±" + formatAmp(half) + (win && over[k] > 1.5 ? `(最大はこの ${over[k] >= 100 ? Math.round(over[k]).toLocaleString() : over[k].toFixed(1)} 倍)` : ""),
+                     W - 6 * d, top + 2 * d, "right", colors.muted);
     else {
       ctx.fillStyle = colors.muted; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(`記録なし(${stationLabel(id)})`, W / 2, top + blockH / 2);
@@ -487,6 +527,16 @@ function draw() {
     const yLine = Math.round(top + blockH) + 0.5;
     ctx.beginPath(); ctx.moveTo(0, yLine); ctx.lineTo(W, yLine); ctx.stroke();
   });
+  // 0 秒の線の名前(段の上に重ねて、いちばん上に書く)
+  const names = [[0, th.zero_label], ...(th.lines || [])].filter(l => l[1]);
+  ctx.font = `600 ${11 * d}px ${FONT}`;
+  names.forEach(([t, name], i) => {       // 名前は下から順に積む(となりの線の名前と重ならないように)
+    const x = Math.round(xOfTime(t)) + 0.5;
+    if (x < 0 || x > W) return;
+    const right = x > W * 0.6;
+    labelBox("▲ " + name, right ? x - 4 * d : x + 4 * d, plotH - (16 + 15 * i) * d, right ? "right" : "left", colors.ref);
+  });
+  ctx.font = `${11 * d}px ${FONT}`;
 }
 // --- 周波数の図(段ごとの振幅スペクトルを重ねる。横は対数の周波数、縦はいちばん大きいところを 1) ---
 const PALETTE = ["#1565c0", "#d84e00", "#2e7d32", "#7b4fb5", "#6d4c41", "#00838f", "#c2185b"];
@@ -553,7 +603,7 @@ function drawCursor() {
   const th = theme();
   if (!th || freqMode() || AUD.theme !== S.idx || AUD.el.paused || AUD.row < 0) return;
   const W = canvas.width, d = S.dpr, { blockH } = layout();
-  const i = AUD.el.currentTime * AUD.speed * th.rate, x = Math.round((i - S.v0) / S.span * W) + 0.5;
+  const i = AUD.off + AUD.el.currentTime * AUD.speed * th.rate, x = Math.round((i - S.v0) / S.span * W) + 0.5;
   if (x < 0 || x > W) return;
   ctx.strokeStyle = colors.cursor; ctx.lineWidth = Math.max(2, 2 * d);
   ctx.beginPath(); ctx.moveTo(x, AUD.row * blockH); ctx.lineTo(x, (AUD.row + 1) * blockH); ctx.stroke();
@@ -562,7 +612,7 @@ function drawCursor() {
 // --- 音 ---
 //   段の波形を speed 倍の速さで再生する音(shake_quiz と同じ処理)。音の大きさは、それぞれ最大(0.9)にそろえるか、
 //   テーマの全部の段で同じ倍率にする(本当の大きさの比。いちばん大きい段が 0.9)
-const AUD = { el: new Audio(), url: "", theme: -1, row: -1, speed: 0, key: null, queue: [], raf: 0 };
+const AUD = { el: new Audio(), url: "", theme: -1, row: -1, speed: 0, key: null, queue: [], raf: 0, off: 0 };
 AUD.el.addEventListener("ended", () => {
   if (AUD.queue.length) {
     const next = AUD.queue.shift();
@@ -584,7 +634,14 @@ function soundSamples(k, speed) {
   for (const [a, b] of tr.gaps) x.fill(0, a, b);
   zeroPhase(x, META.audio.sections[String(th.rate)][row.far ? "far" : "base"]);
   if (S.filter) zeroPhase(x, META.filters.find(f => f.key === S.filter).sections[String(th.rate)]);
-  return resampleForSound(x, th.rate * speed);
+  // 「名前に合わせる」のときは、その時間だけを音にする(ほかの大きな揺れに合わせて小さくなり、聞こえなくなるのを防ぐ)
+  const [a, b] = soundRange(th);
+  return resampleForSound(x.subarray(a, b), th.rate * speed);
+}
+// 音にする範囲 [始まり, 終わり](サンプルの番号)
+function soundRange(th) {
+  if (S.common !== "win" || !th.amp_window) return [0, th.n];
+  return [Math.max(0, Math.round((th.amp_window[0] - th.t0) * th.rate)), Math.min(th.n, Math.round((th.amp_window[1] - th.t0) * th.rate))];
 }
 function peakOf(y) { let p = 0; for (let i = 0; i < y.length; i++) if (Math.abs(y[i]) > p) p = Math.abs(y[i]); return p; }
 function makeSound(k, speed) {
@@ -605,6 +662,7 @@ async function startRow(k) {
   if (!blob) { if (AUD.queue.length) startRow(AUD.queue.shift()); else stopAudio(); return; }
   if (AUD.url) URL.revokeObjectURL(AUD.url);
   AUD.url = URL.createObjectURL(blob); AUD.el.src = AUD.url; AUD.theme = S.idx; AUD.row = k; AUD.speed = S.speed; AUD.key = S.filter;
+  AUD.off = soundRange(theme())[0];
   S.sel = k;
   const play = AUD.el.play();
   updateListenButtons();
@@ -744,9 +802,12 @@ function setFilter(key) {
   for (const b of $("filters").children) b.setAttribute("aria-pressed", b.dataset.key === key);
   updateListenButtons(); showMore(); requestDraw();
 }
+// v ... false(段ごと)・true(共通)・"win"(振幅の基準の時間に合わせる)
 function setCommon(v) {
+  if (playing() && (v === "win") !== (S.common === "win")) stopAudio();
   S.common = v;
-  $("ampCommon").setAttribute("aria-pressed", v); $("ampEach").setAttribute("aria-pressed", !v);
+  $("ampCommon").setAttribute("aria-pressed", v === true); $("ampEach").setAttribute("aria-pressed", v === false);
+  $("ampWin").setAttribute("aria-pressed", v === "win");
   requestDraw();
 }
 function setMode(mode) {
@@ -786,7 +847,7 @@ async function openTheme(idx) {
   stopAudio();
   const th = META.themes[idx], token = ++S.token;
   if ($("view").hidden) S.listY = window.scrollY;
-  S.idx = idx; S.data = null; S.sel = 0; S.real = th.common;
+  S.idx = idx; S.data = null; S.sel = 0; S.real = th.common === true;
   $("list").hidden = true; $("view").hidden = false;
   $("heading").textContent = th.title;
   $("prev").disabled = idx === 0;
@@ -801,6 +862,8 @@ async function openTheme(idx) {
     $("speedSeg").append(b);
   }
   S.speed = th.speeds[0];
+  $("ampWin").hidden = !th.amp_window;
+  if (th.amp_window) $("ampWin").textContent = `${th.amp_window[2]}に合わせる`;
   setCommon(th.common);
   $("viewSeg").hidden = th.view !== "freq";
   S.mode = th.view;
@@ -861,6 +924,7 @@ $("prev").addEventListener("click", () => step(-1));
 $("next").addEventListener("click", () => step(1));
 $("ampEach").addEventListener("click", () => setCommon(false));
 $("ampCommon").addEventListener("click", () => setCommon(true));
+$("ampWin").addEventListener("click", () => setCommon("win"));
 window.addEventListener("hashchange", route);
 new ResizeObserver(resize).observe(canvas);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); requestDraw(); });

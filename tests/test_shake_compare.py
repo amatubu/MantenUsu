@@ -14,7 +14,7 @@ import shake_quiz as sq
 
 T0 = datetime(2026, 5, 20, 23, 51, 57)
 HEADER = ["テーマ", "題", "説明", "見どころ", "基準", "表示の始まり[秒]", "表示の終わり[秒]", "P波でそろえる", "はじめの拠点", "振幅",
-          "フィルタ", "音の速さ", "紙のフィルタ", "見方", "周波数の範囲[秒]", "目印の帯域", "段の名前", "種類", "基準の時刻", "拠点", "2つめの地震",
+          "フィルタ", "音の速さ", "紙のフィルタ", "見方", "周波数の範囲[秒]", "目印の帯域", "振幅の基準", "0秒の線の名前", "目印の線", "段の名前", "種類", "基準の時刻", "拠点", "2つめの地震",
           "グループ"]
 
 
@@ -48,11 +48,13 @@ def make_trace(data, station, start, rate=250.0):
 def test_theme_file_is_valid():
   from conftest import ETC_DIR
   themes = sc.read_themes(ETC_DIR / sc.THEME_FILE)
-  assert [th["no"] for th in themes] == list(range(1, len(themes) + 1))
+  assert sorted(th["no"] for th in themes) == list(range(1, len(themes) + 1))
+  views = [th["view"] for th in themes]
+  assert views == sorted(views, key=lambda v: v != "wave")                 # 波形のテーマのあとに周波数のテーマ
   for th in themes:
     assert th["title"] and th["text"] and th["look"] and th["rows"]
     assert th["show"][0] < 0 < th["show"][1]
-    assert th["filter"] in ("", "A", "B", "C", "D") and th["speeds"]
+    assert th["filter"] in ("", "A", "B", "C", "D", "L") and th["speeds"]
     assert not th["pick"] or th["first"] in sq.STATIONS
 
 
@@ -78,6 +80,7 @@ def test_read_themes_inherits_theme_settings(tmp_path):
   ([theme_row(1), row(1, **{"題": "2つめの題"})], "最初の行にだけ"),
   ([theme_row(1, **{"拠点": "Hokudai"}), row(1)], "全部の段に書くか"),
   ([theme_row(1, **{"フィルタ": "E"})], "フィルタ"),
+  ([theme_row(1, **{"フィルタ": "X"})], "A〜D・L"),
   ([theme_row(1, **{"紙のフィルタ": "元 X"})], "紙のフィルタ"),
   ([theme_row(1, **{"種類": "雷"})], "種類"),
   ([theme_row(1, **{"拠点": "KBBY"})], "満点の拠点"),
@@ -155,7 +158,7 @@ def test_written_page(tmp_path, stations):
   assert not re.search(r"""(?:src|href)=["']?https?:""", text)          # 外部のファイルを読まない
   assert "function resampleForSound(" in text and "function drawTrace(" in text   # クイズと同じ部品
   meta = json.loads(re.search(r'id="meta">(.*?)</script>', text, re.S).group(1))
-  assert [f["key"] for f in meta["filters"]] == ["A", "B", "C", "D"] and list(meta["audio"]["sections"]) == ["250"]
+  assert [f["key"] for f in meta["filters"]] == ["A", "B", "C", "D", "L"] and list(meta["audio"]["sections"]) == ["250"]
   t = meta["themes"][0]
   assert t["speeds"] == [20, 40] and t["pick"] and [r["label"] for r in t["rows"]] == ["地震", "発破"]
   for k in range(2):
@@ -197,3 +200,22 @@ def test_amplitude_spectrum_handles_gaps():
   v[1000:2000] = np.nan
   f, a = sc.amplitude_spectrum(v, 250)
   assert len(f) == sc.SPEC_BINS and all(np.isfinite(a)) and f[int(np.argmax(a))] == pytest.approx(5, rel=0.1)
+
+
+def test_paper_none_means_screen_only(tmp_path):
+  th = sc.read_themes(write_themes(tmp_path / "t.csv", [theme_row(1, **{"紙のフィルタ": "なし", "段の名前": "x"})]))[0]
+  assert th["paper"] == []
+
+
+def test_amp_window(tmp_path):
+  th = sc.read_themes(write_themes(tmp_path / "t.csv", [theme_row(1, **{"振幅の基準": "-5 10 前の揺れ", "段の名前": "x"})]))[0]
+  assert th["amp_window"] == [-5.0, 10.0, "前の揺れ"]
+  with pytest.raises(ValueError, match="振幅の基準"):
+    sc.read_themes(write_themes(tmp_path / "u.csv", [theme_row(1, **{"振幅の基準": "-5 99 x", "段の名前": "x"})]))
+
+
+def test_extra_lines(tmp_path):
+  th = sc.read_themes(write_themes(tmp_path / "t.csv", [theme_row(1, **{"目印の線": "5 PP(見込み); 12 SS", "段の名前": "x"})]))[0]
+  assert th["lines"] == [[5.0, "PP(見込み)"], [12.0, "SS"]]
+  with pytest.raises(ValueError, match="目印の線"):
+    sc.read_themes(write_themes(tmp_path / "u.csv", [theme_row(1, **{"目印の線": "99 x", "段の名前": "x"})]))

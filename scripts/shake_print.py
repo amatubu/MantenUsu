@@ -432,9 +432,9 @@ def compare_listen(folder, themes):
             name = f"t{no}_{k + 1}_x{sp}_{key or 'raw'}.wav"
             sounds.append((name, data[nm], rate, sp, row["far"], key))
             entries.append((f"{k + 1}. {row['label']}" + ("" if row["station"] else f"({station_names.full(nm)})"), name))
-        write_sounds(folder, sounds, real=info["common"])
+        write_sounds(folder, sounds, real=info["common"] is True)
         items.append((f"{FILTER_NAMES[key]}・×{sp}", entries))
-    lead = info["text"] + (" 音の大きさは、本当の揺れの大きさの比のままです。" if info["common"] else " 音の大きさは、それぞれ最大でそろえています。")
+    lead = info["text"] + (" 音の大きさは、本当の揺れの大きさの比のままです。" if info["common"] is True else " 音の大きさは、それぞれ最大でそろえています。")
     write_listen_page(folder / f"t{no}.html", f"{no}. {info['title']}", lead, items)
     pages[no] = f"t{no}.html"
   return pages
@@ -491,7 +491,7 @@ def compare_pdf(path, themes, pages, base):
           nm = row_station(info, row)
           v = filtered(data[nm], key, info["rate"]) if nm in data else None
           rows.append((row["label"], v, row["phases"].get(nm)))
-        draw_rows(fig, (0.07 + c * (width + 0.03), 0.30, width, 0.52), rows, info["t0"], info["rate"], info["common"],
+        draw_rows(fig, (0.07 + c * (width + 0.03), 0.30, width, 0.52), rows, info["t0"], info["rate"], info["common"] is True,
                   title=FILTER_NAMES[key], ref_line=0.0)
       where = "" if all(r["station"] for r in info["rows"]) else f"拠点は {station_names.full(info['first'])}。"
       if info.get("view") == "freq":
@@ -501,7 +501,7 @@ def compare_pdf(path, themes, pages, base):
                  "線ごとに、いちばん大きいところを 1 にそろえています。", 66), fontsize=7.5, color=MUTED, va="top", linespacing=1.4)
       else:
         fig.text(0.07, 0.265, f"0 秒(紫の破線)は「{info['ref']}」。{where}"
-                 + ("縦の大きさは全部の段で共通です。" if info["common"] else "縦の大きさは段ごとにそろえています。"),
+                 + ("縦の大きさは全部の段で共通です。" if info["common"] is True else "縦の大きさは段ごとにそろえています。"),
                  fontsize=7.5, color=MUTED, va="top")
       fig.text(0.07, 0.235, "ここを見てみよう", fontsize=10, weight="bold", color=P_COLOR, va="top")
       fig.text(0.07, 0.21, wrap(info["look"], 40), fontsize=8.5, color=INK, va="top", linespacing=1.5)
@@ -545,7 +545,7 @@ def main():
       answers_pdf(out / "quiz_answers.pdf", events, pages, base)
       print(f"答え: {out / 'quiz_answers.pdf'}")
   if "compare" in only:
-    themes = compare_themes(sc.read_themes(), stations, steps)
+    themes = compare_themes([th for th in sc.read_themes() if th["paper"] or th["view"] == "freq"], stations, steps)   # 「紙のフィルタ」が「なし」のテーマは画面だけ
     pages = compare_listen(listen, themes)
     compare_pdf(out / "compare.pdf", themes, pages, base)
     print(f"比べる: {out / 'compare.pdf'}({len(themes)} ページ)")
