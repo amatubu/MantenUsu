@@ -46,6 +46,18 @@ def test_usu_rays_far_and_near():
   assert np.degrees(np.arctan2(pts[-1][0], pts[-1][1])) == pytest.approx(16.4, abs=0.1)   # 16.4° 先の地表に着く
 
 
+def test_usu_rays_shadow():
+  # P波の影: まっすぐの P波は無く、核のふちを回り込む P波(弱い)と、核を通る P波・地表ではね返った P波
+  col = sw.usu_rays(116.0, 122.0)
+  assert [(r["name"], r["weak"]) for r in col][:3] == [("Pdiff", True), ("PKiKP", False), ("PP", False)]   # 内核をかすめるだけなので、はね返る波にする
+  mex = sw.usu_rays(22.0, 104.7)
+  assert [r["name"] for r in mex] == ["Pdiff", "PP", "SKS"]                  # 影の入り口: 最初に揺れるのは PP
+  assert not mex[1].get("refl")                                               # 最初の P波の仲間として太く描く
+  far = sw.usu_rays(26.0, 165.3)
+  assert all(r["name"] != "Pdiff" for r in far)                              # 影より遠ければ描かない
+  assert "PKIKP" in [r["name"] for r in far] and "PKiKP" not in [r["name"] for r in far]   # 内核の深くを通るので、内核を通る P波のまま
+
+
 def test_encode_wave_and_sound():
   y = np.concatenate([np.zeros(10), np.sin(np.linspace(0, 20, 200)), [np.nan]])
   w = sw.encode_wave(y, 10)

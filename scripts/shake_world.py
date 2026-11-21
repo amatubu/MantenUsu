@@ -30,6 +30,10 @@ BANDS = {"V": (0.04, 0.1), "L": (0.1, 0.5), "A": (0.5, 2.0)}   # V は表面波(
 # 表面波は 2.7〜3.2 km/s で届いていた(山の時刻)。周期で速さが変わり、ゆっくりした揺れはそのあとも続く(カムチャツカは発生の約 13 分後、2.3 km/s まで)。
 # 速いほうと遅いほうの間を幅で描く
 SURFACE_KMS = (3.6, 2.3)
+ICB_DEPTH = 5153.5              # 内核の表面の深さ [km](iasp91)
+GRAZE_KM = 100.0                # 内核を通る P波(PKIKP)が内核にこれより浅くしか入らないときは、内核の表面ではね返る P波(PKiKP)として描く
+SHADOW = (103.0, 142.0)         # P波の影 [度](断面に灰色の帯で描く)
+SHADOW_END = 145.0              # P波の影の遠い端 [度](核のふちを回り込む P波を描く範囲)
 SURFACE_MAX_DEPTH = 100.0       # これより深い地震は表面波が弱いので、波形の表示を表面波までのばさない
 SURFACE_MAX_DEG = 60.0          # これより遠い地震も(届くのが遅く、M7 前後では記録に見えない)
 # 音: 0.3〜15 Hz を 50 Hz に間引き、最初の波の 1 分前から入れる。画面の速さ(×10〜×80)で鳴らすので 3〜1200 Hz の音になる
@@ -47,12 +51,14 @@ REFLECTED = ("PcP", "ScS", "PP", "SS", "Pdiff", "Sdiff")   # 画面では薄く�
 FRONT_DEPTH = 50.0              # 波面は震源の深さをこの刻みに丸めて作り、同じ深さの地震で使い回す
 FRONT_STEP = 10.0               # 波面の通り道の時刻の刻み [秒]
 RAY_STEP = 2.0                  # 有珠山への通り道の時刻の刻み [秒]
-TO_USU = ["p", "P", "PKIKP", "PKP", "PP", "s", "S", "SKS", "SKIKS", "SS"]
+TO_USU = ["p", "P", "Pdiff", "PKIKP", "PKiKP", "PKP", "PP", "s", "S", "SKS", "SKIKS", "SS"]
 PHASE_NAMES = {"p": "P波", "P": "P波", "PKP": "外核を通るP波", "PKIKP": "内核を通るP波", "PP": "地表ではね返ったP波",
+               "Pdiff": "核のふちを回り込むP波(弱い)", "PKiKP": "内核の表面ではね返ったP波",
                "s": "S波", "S": "S波", "SKS": "外核を通るS波", "SKIKS": "内核を通るS波", "SS": "地表ではね返ったS波"}
 SOUND_STATION = "Nizaemn"     # 最初に音を出す拠点(遠い地震がいちばんはっきり聞こえる)
 # クイズに無い地震(発生時刻(日本時間、分まで), 画面に出す地名)。USGS の M6 以上の月の一覧からさがす
-EXTRA = [("2026-06-02 07:12", "イタリア南部")]
+#   メキシコ(105°)・コロンビア(122°)は P波の影の地震(まっすぐの P波は届かず、核を通る P波や地表ではね返った P波から揺れ始める)
+EXTRA = [("2026-06-02 07:12", "イタリア南部"), ("2026-07-17 23:48", "メキシコ"), ("2026-08-10 21:34", "コロンビア")]
 # 画面に出す震源の地名(問題の番号ごと)
 PLACES = {26: "カムチャツカ半島", 7: "アラスカ", 8: "フィリピン", 29: "ボルネオ島北部", 3: "インドネシア", 40: "南サンドウィッチ諸島付近"}
 
@@ -113,19 +119,35 @@ def front_rays(depth):
 # 有珠山への通り道(名前ごとに最初のもの)
 def usu_rays(depth, deg):
   import jma_match
-  rays, seen = [], set()
+  rays, seen, graze = [], set(), False
   for p in sorted(jma_match.model().get_ray_paths(source_depth_in_km=depth, distance_in_degree=deg, phase_list=TO_USU),
                   key=lambda p: p.time):
     if p.name in seen:
       continue
     seen.add(p.name)
+    if p.name == "PKIKP":
+      graze = float(p.path["depth"].max()) - ICB_DEPTH < GRAZE_KM
     rays.append({"name": p.name, "label": PHASE_NAMES[p.name], "p": is_p(p.name), "time": round(float(p.time), 1),
                  "xy": b64_int16(np.round(resample(p.path, RAY_STEP)).astype(int).ravel())})
   # P波の仲間・S波の仲間それぞれの最初の波と、それより後でも外核を通る P波(PKP)・核を通らない S波(S)は残す
+  # 核のふちを回り込む P波(Pdiff)は、まっすぐの P波が届かない影(約 100° より遠く 145° まで)でだけ、弱い波(weak)として残す
+  # 影の入り口(メキシコ 105° など)では、核を通る P波が無く、地表ではね返った P波(PP)が最初の P波の仲間になる
+  # 内核を通る P波が内核の表面をかすめるだけのとき(約 110〜130°。コロンビア 122° では 5 km)は、ほぼ同時に届く内核の表面ではね返る P波として描く。
+  # それ以外では、はね返る P波は描かない(ふつうは弱い)
   # 地表ではね返る波(PP・SS)は、最初の波から AFTER 秒以内に届き、はね返らない波と 1 分以上離れているときだけ
-  first_p = next((r for r in rays if r["p"]), None)
+  names = {r["name"] for r in rays}
+  if "PKIKP" in names and "PKiKP" in names and graze:
+    rays = [r for r in rays if r["name"] != "PKIKP"]
+  else:
+    rays = [r for r in rays if r["name"] != "PKiKP"]
+  names = {r["name"] for r in rays}
+  for r in rays:
+    r["weak"] = r["name"] == "Pdiff"
+  rays = [r for r in rays if not r["weak"] or ("P" not in names and deg < SHADOW_END)]
+  first_p = next((r for r in rays if r["p"] and not r["weak"] and r["name"] not in ("PP",)), None) or \
+            next((r for r in rays if r["p"] and not r["weak"]), None)
   first_s = next((r for r in rays if not r["p"]), None)
-  keep = [r for r in rays if r is first_p or r is first_s or r["name"] in ("PKP", "S")]
+  keep = [r for r in rays if r is first_p or r is first_s or r["weak"] or r["name"] in ("PKP", "S")]
   for r in rays:
     if r["name"] in ("PP", "SS") and r["time"] <= first_p["time"] + AFTER and \
        all(abs(r["time"] - k["time"]) >= 60 for k in keep if k["p"] == r["p"]):
@@ -235,7 +257,7 @@ def front_key(depth):
 
 def write_page(path, events):
   stations = [{"id": nm, "label": station_names.full(nm)} for nm in sq.STATIONS]
-  meta = {"events": events, "fronts": _fronts, "stations": stations, "bands": {b: list(v) for b, v in BANDS.items()},
+  meta = {"events": events, "fronts": _fronts, "shadow": list(SHADOW), "stations": stations, "bands": {b: list(v) for b, v in BANDS.items()},
           "R": R_EARTH, "cmb": 3482.0, "icb": 1217.0}
   from quake_wave_view import script_json
   page = PAGE.replace("__DATA__", script_json(meta)).replace("__TITLE__", html.escape("世界の地震が届く"))
@@ -294,7 +316,7 @@ canvas { width: 100%; display: block; background: var(--panel); border-radius: 8
 </div>
 <div class="bar">
   <div class="group" id="speeds"><span>速さ</span></div>
-  <label><input type="checkbox" id="fast" checked>届くまでは速送り</label>
+  <label><input type="checkbox" id="fast" checked>届くまでは早送り</label>
   <div class="group" id="bands"><span>波形のフィルタ</span></div>
   <label><input type="checkbox" id="codes">波の記号(PKIKP など)</label>
   <label><input type="checkbox" id="carry">波形を運ぶ</label>
@@ -311,6 +333,7 @@ canvas { width: 100%; display: block; background: var(--panel); border-radius: 8
       <span><i style="background:var(--p)"></i>P波の仲間(押したり引いたりする揺れ。液体の中も進む)</span>
       <span><i style="background:var(--s)"></i>S波の仲間(横にずれる揺れ。液体の中は進めない)</span>
       <span><i style="background:var(--muted);opacity:.5"></i>うすい点: はね返った波・核のふちを回り込む波</span>
+      <span><i style="background:var(--muted);opacity:.35;border-radius:2px"></i>P波の影(まっすぐの P波が届かない所)</span>
       <span><i style="background:var(--sf)"></i>表面波(地表にそって伝わる、ゆっくりで長い揺れ)</span>
     </div>
   </div>
@@ -322,7 +345,15 @@ canvas { width: 100%; display: block; background: var(--panel); border-radius: 8
 P波は核に入ると急に遅くなって大きく曲がるので、核の中の波面はマントルの波面から遅れ、ちぎれたり折れ曲がったりして見えます。
 そのとき一部の波は核の表面ではね返り、一部は核のふちを回り込みます(うすい点)。
 S波は液体の中を進めないので、外核には P波に姿を変えて入り、マントルに出るとまた S波にもどります。核の中の点が P波の色なのはそのためです。
-核に曲げられて、有珠山から見て 100〜140° くらい離れた所の地震からは、P波があまり届きません(影)。</p>
+</p>
+<p><b>P波の影(灰色の帯)</b> … 震源から 100° くらいまでは、マントルの中を曲がりながら進んだ P波が、そのまま地表に届きます。
+それより遠くへ向かう P波は、核にぶつかります。核の中では P波が急に遅くなるので、虫めがねのレンズを通る光のように大きく曲げられ、震源から 140° より遠い所へ集まります。
+そのため、震源からおよそ 100〜140° 離れた所には、まっすぐの P波がほとんど届きません。これを「P波の影」といいます。
+影の中にも、核のふちを回り込む P波(とても弱い)、内核の表面ではね返った P波、地表で 1 回はね返った P波などが届きますが、どれも弱いか、おくれて届きます。
+メキシコ(105°)とコロンビア(122°)の地震は、有珠山が影の中にあります。「核のふちを回り込む P波」の線の時刻には記録にほとんど何も見えず、
+3〜4 分おくれて、内核の表面ではね返った P波(コロンビア)や、地表ではね返った P波(メキシコ)で揺れ始めます。
+S波は液体の外核を通れないので、およそ 100° より遠くには、まっすぐの S波は届きません(S波の影)。<br>
+1914 年にグーテンベルクは、P波の影ができる所から、核の大きさ(深さ約 2900 km)を求めました。1936 年にレーマンは、影の中に届く弱い P波に気づき、核の中にもう 1 つ固い内核があることを見つけました。</p>
 <p><b>運ばれる波形(黒い線)</b> … 有珠山の地震計に記録された揺れ(音を出している拠点、届いてから 40 秒間)を、その波の通り道にそって描いています。
 波が有珠山に着くと、下の波形にその揺れが現れます。見やすいように、通り道の上では波形を長くのばしています。</p>
 <p><b>表面波(緑)</b> … 地球の中を通る P波・S波とは別に、地表にそって伝わる波です。P波・S波より遅く(この地域の記録では 1 秒に約 2.7〜3.2 km)、ゆっくりした大きな揺れが長く続きます。
@@ -340,7 +371,7 @@ const css = (name) => getComputedStyle(document.documentElement).getPropertyValu
 const dec16 = (s) => { const b = Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); return new Int16Array(b.buffer); };
 const dec8 = (s) => { const b = Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); return new Int8Array(b.buffer); };
 const SPEEDS = [10, 20, 40, 80];
-const FAST = 6;            // 速送りの倍率
+const FAST = 6;            // 早送りの倍率
 let ev = null, t = 0, playing = false, speed = 40, band = "L", last = null;
 
 // 地震ごとのデータをほどく
@@ -424,15 +455,15 @@ function drawEarth() {
   // 有珠山への通り道
   for (const r of ev.rays) {
     const n = r.pts.length / 2, c = r.p ? P : S;
-    g.strokeStyle = c; g.globalAlpha = 0.25; g.lineWidth = 2; g.setLineDash([4, 4]);
+    g.strokeStyle = c; g.globalAlpha = (r.weak ? 0.45 : 1) * 0.25; g.lineWidth = 2; g.setLineDash([4, 4]);   // 回り込む弱い波は全体をうすく
     g.beginPath(); for (let i = 0; i < n; i++) g.lineTo(...Q(r.pts[2 * i], r.pts[2 * i + 1])); g.stroke();
-    g.setLineDash([]); g.globalAlpha = 1;
-    if (t <= 0) continue;
+    g.setLineDash([]); g.globalAlpha = r.weak ? 0.45 : 1;
+    if (t <= 0) { g.globalAlpha = 1; continue; }
     // 進んだところまでを太く。S波の仲間も、核の中は P波として進むので P波の色にする
     const end = Math.min(t, r.time), m = Math.floor(Math.min(end / 2.0, n - 1));
     const q = rayAt(r, end);
     const seg = []; for (let i = 0; i <= m; i++) seg.push([r.pts[2 * i], r.pts[2 * i + 1]]); seg.push(q);
-    g.lineWidth = r.refl ? 2 : 3;
+    g.lineWidth = r.refl || r.weak ? 2 : 3;
     for (let i = 1; i < seg.length; i++) {
       const [x0, y0] = seg[i - 1], [x1, y1] = seg[i];
       const mid = ((x0 + x1) / 2) ** 2 + ((y0 + y1) / 2) ** 2;
@@ -440,11 +471,13 @@ function drawEarth() {
       g.beginPath(); g.moveTo(...Q(x0, y0)); g.lineTo(...Q(x1, y1)); g.stroke();
     }
     if (t < r.time) {
-      g.fillStyle = c; g.beginPath(); g.arc(...Q(q[0], q[1]), 5, 0, 2 * Math.PI); g.fill();
+      g.fillStyle = c; g.beginPath(); g.arc(...Q(q[0], q[1]), r.weak ? 3.5 : 5, 0, 2 * Math.PI); g.fill();
     }
+    g.globalAlpha = 1;
   }
+  drawShadow(g, Q);
   drawSurface(g, Q);
-  if ($("carry").checked) for (const r of ev.rays) if (!r.refl) carryWave(g, Q, r);
+  if ($("carry").checked) for (const r of ev.rays) if (!r.refl && !r.weak) carryWave(g, Q, r);
   // 震源と有珠山
   const [ex, ey] = Q(0, META.R - ev.depth), [lx, ly] = Q(0, META.R * 1.06);
   star(g, ex, ey, 9, "#d32f2f");
@@ -455,7 +488,7 @@ function drawEarth() {
   g.textAlign = "left";
   g.fillText(name, tx, ly + (ly > cy ? 14 : -4));
   const ux = cx, uy = cy - META.R * sc;
-  const arrived = ev.rays.filter((r) => t >= r.time);
+  const arrived = ev.rays.filter((r) => t >= r.time && !r.weak);   // 弱い波では輪を出さない
   if (arrived.length) {
     const age = t - Math.max(...arrived.map((r) => r.time));
     if (age < 30) { g.strokeStyle = css("--ink"); g.globalAlpha = 1 - age / 30; g.lineWidth = 2;
@@ -466,7 +499,8 @@ function drawEarth() {
   g.fillText("有珠山", ux + 10, uy - 8);
   // 時刻
   g.textAlign = "left"; g.font = "bold 14px sans-serif"; g.fillStyle = css("--ink");
-  g.fillText(`発生から ${mmss(t)}`, 10, H - 10);
+  // 時刻は、震源の名前と重ならないよう、震源が下半分なら左上、上半分なら左下に
+  g.fillText(`発生から ${mmss(t)}`, 10, ly > cy ? 20 : H - 10);
 }
 // 運ばれる波形: 有珠山で記録された、その波が届いてから PACK_D 秒の揺れを、通り道にそって描く
 //   τ 秒あとに有珠山に届く揺れは、いま「波の先頭が τ 秒前にいた所」にあるので、通り道の t − τ の位置に置く
@@ -509,6 +543,22 @@ function carryWave(g, Q, r) {
     g.strokeStyle = color; g.lineWidth = width;
     g.beginPath(); for (const c of line) g.lineTo(c[0], c[1]); g.stroke();
   }
+}
+// P波の影: 震源から 103〜142° の地表の外側に灰色の帯(両側)
+function drawShadow(g, Q) {
+  const R = META.R * 1.035, [a0, a1] = META.shadow.map((d) => d * Math.PI / 180);
+  g.strokeStyle = css("--muted"); g.globalAlpha = 0.35; g.lineWidth = 7; g.lineCap = "butt";
+  for (const side of [1, -1]) {
+    g.beginPath();
+    for (let i = 0; i <= 40; i++) { const a = a0 + (a1 - a0) * i / 40; g.lineTo(...Q(side * R * Math.sin(a), R * Math.cos(a))); }
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  // 名前は、有珠山と反対側(左)の帯の外側に
+  const am = (a0 + a1) / 2, [x, y] = Q(-R * 1.07 * Math.sin(am), R * 1.07 * Math.cos(am));
+  g.fillStyle = css("--muted"); g.font = "bold 12px sans-serif"; g.textAlign = "left";
+  const tw = g.measureText("P波の影").width, W = g.canvas.getBoundingClientRect().width;
+  g.fillText("P波の影", Math.max(4, Math.min(W - 4 - tw, x - tw / 2)), y + 4);   // 枠からはみ出さない
 }
 // 表面波: 震源から地表にそって両側へ進む。速いほう(fast)と遅いほう(slow)の間を、波打つ帯で描く
 //   地球の反対側(180°)を過ぎた分は描かない(反対側で両側からの波が出会う)
@@ -564,10 +614,13 @@ function drawWaves() {
   // 届いた波の線
   ev.rays.forEach((r, j) => {
     if (t < r.time || r.time < t0) return;
-    g.strokeStyle = r.p ? css("--p") : css("--s"); g.lineWidth = 1.5; g.setLineDash([5, 4]);
-    g.beginPath(); g.moveTo(X(r.time), top); g.lineTo(X(r.time), H - bottom); g.stroke(); g.setLineDash([]);
+    g.strokeStyle = r.p ? css("--p") : css("--s"); g.lineWidth = 1.5; g.setLineDash(r.weak ? [2, 4] : [5, 4]);
+    g.globalAlpha = r.weak ? 0.6 : 1;
+    g.beginPath(); g.moveTo(X(r.time), 16 + j * 14 - 10);   /* 名前の段の高さから引き、どの名前の線かわかるようにする */ g.lineTo(X(r.time), H - bottom); g.stroke(); g.setLineDash([]);
     g.fillStyle = g.strokeStyle; g.textAlign = "left"; g.font = "bold 12px sans-serif";
-    g.fillText(label(r), Math.min(X(r.time) + 3, W - right - 150), top - 8 + j * 14);   // 近い波の名前が重ならないよう段をずらす
+    // 名前は波形の上の段に置く(近い波の名前が重ならないよう 1 本ずつ段をずらし、最後の段も波形の上に収める)
+    g.fillText(label(r), Math.min(X(r.time) + 3, W - right - g.measureText(label(r)).width), 16 + j * 14);
+    g.globalAlpha = 1;
   });
   // 波形(今の時刻まで)
   const rate = ev.rate, i0 = Math.round((t0 + ev.before) * rate);
@@ -655,7 +708,7 @@ function tick(now) {
   } else if (last != null) {
     const dt = (now - last) / 1000;
     t = Math.min(ev.end, t + dt * speed * (inFast() ? FAST : 1));
-    if (!inFast() && $("sound").checked && !src) startSound();   // 速送りが終わったら音を出す
+    if (!inFast() && $("sound").checked && !src) startSound();   // 早送りが終わったら音を出す
   }
   if (t >= ev.end) setPlaying(false);
   last = now;
@@ -682,7 +735,7 @@ function pick(no) {
   ev = META.events.find((e) => e.no == no);
   band = ev.band; mark($("bands"), band);
   t = 0; $("seek").max = ev.end;
-  const firstRay = ev.rays.reduce((a, b) => (a.time < b.time ? a : b));
+  const firstRay = ev.rays.filter((r) => !r.weak).reduce((a, b) => (a.time < b.time ? a : b));
   $("info").textContent = `${ev.origin}(日本時間) ${ev.place} M${ev.M} 深さ ${Math.round(ev.depth)} km ・ 有珠山から ${Math.round(ev.deg)}°(${ev.km.toLocaleString()} km)` +
     ` ・ 最初に届く波: ${firstRay.label}(発生の ${mmss(firstRay.time)} 後)`;
   // 記録の無い拠点の音は選べない(選んでいた拠点に記録が無ければ、記録のある最初の拠点にする)
