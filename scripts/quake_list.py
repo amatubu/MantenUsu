@@ -342,6 +342,7 @@ def toggle_usu(cand, r, add):
 #   地震の候補の震源の画面で求め直した結果で置き換える(速度の構造を変えたときや、到着時刻を手直ししたとき)
 #   pairs ... [(候補, 震源の結果)]。一覧に無い候補は何もしない
 #   メモ・らしさ・終了は一覧のものを残し、画像は新しいものが無ければ一覧のものを残す
+#   気象庁の M も、新しい値が空なら一覧のものを残す(気象庁の震源の無い一覧から開いて更新したとき、消さないため)
 #   戻り値 ... 置き換えた件数
 def update_usu_locations(pairs, lists=None):
   lists = lists if lists is not None else load()
@@ -353,8 +354,10 @@ def update_usu_locations(pairs, lists=None):
       continue
     new = usu_entry_from_location(cand, r)
     fields = entry.setdefault("fields", {})
-    for key in ("発生時刻(推定)", "深さ[km]", "山頂から", "残差[秒]", "気象庁の M"):
+    for key in ("発生時刻(推定)", "深さ[km]", "山頂から", "残差[秒]"):
       fields[key] = new["fields"][key]
+    if new["fields"]["気象庁の M"]:
+      fields["気象庁の M"] = new["fields"]["気象庁の M"]
     entry["time"] = new["time"]
     if new["image"]:
       entry["image"] = new["image"]

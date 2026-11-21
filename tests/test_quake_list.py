@@ -208,7 +208,7 @@ def test_update_usu_locations_keeps_memo(user_files):
   import quake_locate
   lists = empty_lists()
   lists[USU] = [entry("2026-03-04 22:58:30", "2026-03-04 22:59:00", 深さ="1.7", メモ="KBBY で大きい", らしさ="高",
-                      **{"深さ[km]": "1.7", "山頂から": "0.9 km 西", "残差[秒]": "0.135"})]
+                      **{"深さ[km]": "1.7", "山頂から": "0.9 km 西", "残差[秒]": "0.135", "気象庁の M": "0.7"})]
   quake_list.save(lists)
   start = datetime(2026, 3, 4, 22, 58, 30)
   cand = {"start": start, "end": datetime(2026, 3, 4, 22, 59, 0), "jma": None, "row": {}}
@@ -222,6 +222,8 @@ def test_update_usu_locations_keeps_memo(user_files):
   assert e["fields"]["発生時刻(推定)"].startswith("2026-03-04 22:58:38.3")
   assert e["fields"]["メモ"] == "KBBY で大きい" and e["fields"]["らしさ"] == "高"
   assert e["end"] == "2026-03-04 22:59:00"
+  # 気象庁の震源の無い候補で更新しても、気象庁の M は消さない
+  assert e["fields"]["気象庁の M"] == "0.7"
 
 
 # --- 種別(地震・発破・未確定) ---
