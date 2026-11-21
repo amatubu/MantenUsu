@@ -773,13 +773,26 @@ function pick(no) {
   $("info").textContent = `${ev.origin}(日本時間) ${ev.place} M${ev.M} 深さ ${Math.round(ev.depth)} km ・ 有珠山から ${Math.round(ev.deg)}°(${ev.km.toLocaleString()} km)` +
     ` ・ 最初に届く波: ${firstRay.label}(発生の ${mmss(firstRay.time)} 後)`;
   // 記録の無い拠点の音は選べない(選んでいた拠点に記録が無ければ、記録のある最初の拠点にする)
+  //   選んだ拠点(prefStation)は覚えておき、記録のある地震ではその拠点にもどす
   for (const b of $("sstations").querySelectorAll("button")) b.disabled = !ev.sound.d[b.dataset.key];
-  if (!ev.sound.d[sndStation]) {
-    sndStation = META.stations.map((s) => s.id).find((id) => ev.sound.d[id]) || sndStation;
-    mark($("sstations"), sndStation);
-  }
-  setPlaying(false); draw();
+  sndStation = ev.sound.d[prefStation] ? prefStation : (META.stations.map((s) => s.id).find((id) => ev.sound.d[id]) || prefStation);
+  mark($("sstations"), sndStation);
+  setPlaying(false); draw(); saveSettings();
 }
+// --- 設定をブラウザに覚える(このブラウザの localStorage。ほかの人やサーバーには送らない) ---
+//   速さ・早送り・波の記号・波形を運ぶ・音を出す・音の拠点と、最後に見た地震。フィルタは地震ごとに見やすいものから始める
+const STORE = "usu_shake_world:settings";
+function loadSettings() { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch (_) { return {}; } }
+function saveSettings() {
+  try {
+    localStorage.setItem(STORE, JSON.stringify({ speed, station: prefStation, event: ev && ev.no,
+      fast: $("fast").checked, codes: $("codes").checked, carry: $("carry").checked, sound: $("sound").checked }));
+  } catch (_) {}
+}
+const saved = loadSettings();
+if (SPEEDS.includes(saved.speed)) speed = saved.speed;
+for (const id of ["fast", "codes", "carry", "sound"]) if (typeof saved[id] === "boolean") $(id).checked = saved[id];
+let prefStation = META.stations.some((s) => s.id === saved.station) ? saved.station : META.events[0].sound_station;
 const evs = [...META.events].sort((a, b) => a.deg - b.deg);
 buttons($("events"), evs.map((e) => [e.no, `${e.place} ${Math.round(e.deg)}°`]), evs[0].no, (no) => { pick(no); $("evsel").value = no; });
 for (const e of evs) $("evsel").add(new Option(`${e.place} ${Math.round(e.deg)}°`, e.no));
@@ -794,19 +807,21 @@ function placeBands() {
 }
 narrowMq.addEventListener("change", placeBands);
 placeBands();
-buttons($("speeds"), SPEEDS.map((s) => [s, `×${s}`]), speed, (s) => { speed = +s; restartSound(); });
-buttons($("sstations"), META.stations.map((s) => [s.id, s.label]), META.events[0].sound_station, (nm) => { sndStation = nm; restartSound(); draw(); });
-sndStation = META.events[0].sound_station;
+buttons($("speeds"), SPEEDS.map((s) => [s, `×${s}`]), speed, (s) => { speed = +s; restartSound(); saveSettings(); });
+buttons($("sstations"), META.stations.map((s) => [s.id, s.label]), prefStation, (nm) => { sndStation = prefStation = nm; restartSound(); draw(); saveSettings(); });
+sndStation = prefStation;
 buttons($("bands"), Object.entries(META.bands).map(([k, v]) => [k, `${v[0]}〜${v[1]} Hz`]), band, (b) => { band = b; draw(); });
 $("play").onclick = () => setPlaying(!playing);
 $("seek").oninput = () => { t = +$("seek").value; restartSound(); draw(); };
-$("sound").onchange = () => { restartSound(); draw(); };
-$("fast").onchange = restartSound;
-$("codes").onchange = draw;
-$("carry").onchange = draw;
+$("sound").onchange = () => { restartSound(); draw(); saveSettings(); };
+$("fast").onchange = () => { restartSound(); saveSettings(); };
+$("codes").onchange = () => { draw(); saveSettings(); };
+$("carry").onchange = () => { draw(); saveSettings(); };
 window.addEventListener("resize", draw);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
-pick(evs[0].no);
+// 最後に見た地震から始める
+const first = evs.find((e) => e.no === saved.event) || evs[0];
+pick(first.no); $("evsel").value = first.no; mark($("events"), first.no);
 </script>
 </body>
 </html>
