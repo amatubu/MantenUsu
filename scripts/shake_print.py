@@ -220,7 +220,8 @@ def amp_text(nm):
   return f"±{nm:.3g} nm/s"
 
 # 段を縦に並べた図。rows ... [(名前, v または None, {p, s, p2, s2}), ...]。sec0 ... 最初の点の時刻 [秒]
-def draw_rows(fig, box, rows, sec0, rate, common, title="", ref_line=None, focus=None):
+#   marks ... 目印の線 [[秒, 名前], ...](全部の段に点線。名前はいちばん上の段の上に)
+def draw_rows(fig, box, rows, sec0, rate, common, title="", ref_line=None, focus=None, marks=()):
   x0, y0, w, h = box
   n = len(rows)
   halves = []
@@ -253,6 +254,8 @@ def draw_rows(fig, box, rows, sec0, rate, common, title="", ref_line=None, focus
       ax.axvline(focus, color=REF, lw=0.9, ls=(0, (1, 2)))
     if ref_line is not None:
       ax.axvline(ref_line, color=REF, lw=0.8, ls="--")
+    for t, _name in marks:
+      ax.axvline(t, color=REF, lw=0.9, ls=(0, (1, 2)))
     for key, t in (phases or {}).items():
       if not ax.get_xlim()[0] <= t <= ax.get_xlim()[1]:
         continue
@@ -263,6 +266,10 @@ def draw_rows(fig, box, rows, sec0, rate, common, title="", ref_line=None, focus
     if k < n - 1:
       ax.tick_params(bottom=False, labelbottom=False)
   axes[-1].set_xlabel("秒", fontsize=7, color=MUTED, labelpad=1)
+  for t, name in marks:
+    if name:
+      axes[0].annotate(f"▼ {name}", (t, 1.0), xycoords=("data", "axes fraction"), xytext=(0, 2), textcoords="offset points",
+                       fontsize=7.5, color=REF, weight="bold", va="bottom", ha="center")
   if title:
     axes[0].set_title(title, fontsize=8.5, color=INK, loc="left", pad=3)
   if focus is not None:
@@ -477,7 +484,7 @@ def compare_pdf(path, themes, pages, base):
   import matplotlib.pyplot as plt
   PNG["count"], PNG["name"] = 0, Path(path).stem
   with PdfPages(path) as pdf:
-    for info, waves in themes:
+    for page, (info, waves) in enumerate(themes, start=1):
       fig = new_page()
       fig.text(0.07, 0.955, f"{info['no']}. {info['title']}", fontsize=16, weight="bold", color=INK, va="top")
       fig.text(0.07, 0.92, wrap(info["text"], 50), fontsize=8.5, color=INK, va="top", linespacing=1.45)
@@ -492,7 +499,7 @@ def compare_pdf(path, themes, pages, base):
           v = filtered(data[nm], key, info["rate"]) if nm in data else None
           rows.append((row["label"], v, row["phases"].get(nm)))
         draw_rows(fig, (0.07 + c * (width + 0.03), 0.30, width, 0.52), rows, info["t0"], info["rate"], info["common"] is True,
-                  title=FILTER_NAMES[key], ref_line=0.0)
+                  title=FILTER_NAMES[key], ref_line=0.0, marks=info.get("lines", []))
       where = "" if all(r["station"] for r in info["rows"]) else f"拠点は {station_names.full(info['first'])}。"
       if info.get("view") == "freq":
         w = info["spec_window"]
@@ -506,7 +513,7 @@ def compare_pdf(path, themes, pages, base):
       fig.text(0.07, 0.235, "ここを見てみよう", fontsize=10, weight="bold", color=P_COLOR, va="top")
       fig.text(0.07, 0.21, wrap(info["look"], 40), fontsize=8.5, color=INK, va="top", linespacing=1.5)
       draw_qr(fig, (0.75, 0.07, 0.17, 0.12), page_url(base, pages[info["no"]]), "音で聴き比べる")
-      footer(fig, f"揺れを比べてみよう  {info['no']} / {len(themes)}")
+      footer(fig, f"揺れを比べてみよう  {page} / {len(themes)}")
       save_page(pdf, fig)
       plt.close(fig)
 
