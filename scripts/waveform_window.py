@@ -83,8 +83,11 @@ def plot_trace(ax, tr, label):
 
   # どの拠点の軸かを覚えておく(音で聴くときに、その拠点の波形の上にだけ線を引く)
   ax.set_gid(tr.stats.station)
+  # 成分も覚えておく(波形をクリックしたら、下の拠点名と音で聴く成分を切り替える)
+  ax.wave_channel = tr.stats.channel
   # Y(振幅)軸のラベル(90度回転)。位置は Matplotlib に任せ、目盛りの数字の左側に置かせる
-  ax.set_ylabel(label, fontsize=8)
+  #   ラベルもクリックで選べるようにする(gid に「拠点|成分」を入れる)
+  ax.set_ylabel(label, fontsize=8, picker=True, gid=f"{tr.stats.station}|{tr.stats.channel}")
   # Y軸の目盛(数値)サイズ
   ax.tick_params(axis="y", labelsize=7)
   # グリッド線の表示(破線、不透明度 30%)
@@ -161,7 +164,7 @@ def draw_station_grid(fig, ordered_st, title_str):
       plot_trace(ax, tr, f"({tr.stats.channel})")
       axes.append(ax)
     # 拠点名を枠の上に表示し、縦軸のラベルの位置を揃える
-    axes[0].set_title(display_names.full(station), fontsize=11)
+    axes[0].set_title(display_names.full(station), fontsize=11, picker=True, gid=f"{station}|")
     fig.align_ylabels(axes)
     # 各拠点の一番下に時間の目盛を表示(ラベルは下の段だけ)
     show_time_axis(axes[-1], with_label=idx // 2 == 1)
@@ -387,6 +390,29 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
 
   btn_play.config(command=toggle_sound)
   shortcuts.bind(wave_win, "k", toggle_sound)
+
+  # 波形や左のラベル(2x2 では枠の上の拠点名)をクリックしたら、その拠点(と成分)を選ぶ(Web 版の波形のページと同じ操作)
+  #   虫めがね・移動(ツールバー)を使っている間は選ばない
+  def select_trace(station, channel=""):
+    name = display_names.full(station)
+    if name in station_combobox["values"]:
+      station_combobox.set(name)
+    comp = channel[-1:] if channel else ""
+    if comp in COMP_NAMES:
+      comp_combobox.current(list(COMP_NAMES).index(comp))
+  def on_press(event):
+    ax = event.inaxes
+    if toolbar.mode or event.button != 1 or ax is None or not ax.get_gid():
+      return
+    select_trace(ax.get_gid(), getattr(ax, "wave_channel", ""))
+  def on_pick(event):
+    gid = event.artist.get_gid() or ""
+    if toolbar.mode or "|" not in gid:
+      return
+    station, channel = gid.split("|", 1)
+    select_trace(station, channel)
+  canvas.mpl_connect("button_press_event", on_press)
+  canvas.mpl_connect("pick_event", on_pick)
 
   # 【追加】もともとあった虫めがねや保存などのツールバーをここに追加！
   toolbar_frame = ttk.Frame(wave_win)
