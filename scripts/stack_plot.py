@@ -61,6 +61,35 @@ def calc_global_max(minute_traces):
   global_max = np.max(np.abs(np.concatenate(arrays)))
   return global_max if global_max > 0 else 1.0
 
+# 縦の大きさ(TODO 52)
+#   最大で合わせる: その1時間の最大振幅の 1/MAX_DIVISOR を段の半分の高さにする(大きな揺れは上下の段にはみ出る)
+#   下限あり: 上の値と「その1時間のふだんの揺れ(|速度| の中央値)の FLOOR_GAIN 倍」の大きいほうを段の半分の高さにする
+#             (静かな1時間で雑音が段いっぱいに描かれないように。紙の1日の記録 shake_day.py と同じ 30 倍)
+MAX_DIVISOR = 5.0
+FLOOR_GAIN = 30.0
+SCALE_LABELS = {False: "縦: 最大で合わせる", True: "縦: 下限あり"}
+
+# その1時間のふだんの揺れ: |速度 - 中央値| の中央値(記録の直流のずれに左右されないように中央値を引く)
+def typical_level(minute_traces):
+  arrays = [np.asarray(tr.data, dtype=float) for tr in minute_traces if len(tr.data) > 0]
+  if not arrays:
+    return 0.0
+  x = np.concatenate(arrays)
+  x = x[np.isfinite(x)]
+  if x.size == 0:
+    return 0.0
+  return float(np.median(np.abs(x - np.median(x))))
+
+# 段の半分の高さにする振幅。戻り値 ... (段の半分の高さ, 最大振幅, 下限が効いたか)
+def scale_height(minute_traces, floor=False):
+  global_max = calc_global_max(minute_traces)
+  half = global_max / MAX_DIVISOR
+  if floor:
+    low = typical_level(minute_traces) * FLOOR_GAIN
+    if low > half:
+      return low, global_max, True
+  return half, global_max, False
+
 # スタック図に、1時間の開始からの秒 [start, end] の区間を色の帯で重ねる(分をまたぐ区間は段ごとに分けて塗る)
 #   text ... 区間の始まりに書く文字(None なら書かない。始まりがこの1時間より前なら書かない)
 #   戻り値 ... 追加した図形のリスト(重ね表示を消すときに使う)
@@ -94,7 +123,10 @@ class StackFigure:
       # 画面用: 上部に「前後1時間」ボタンを置くので余白を広く取り、その左に最大振幅を表示
       self.fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.90)
       self.max_amp_text = self.fig.text(0.75, 0.925, "", fontsize=9, va="center", ha="right", color="#333333")
+      # 縦の大きさの下限が効いているときの印(TODO 52)。最大振幅の下に出す
+      self.scale_text = self.fig.text(0.75, 0.905, "", fontsize=8, va="center", ha="right", color="#1565c0")
     else:
+      self.scale_text = None
       # 画像保存用: ボタンが無いので上の余白は小さく、最大振幅は右上に表示
       self.fig.subplots_adjust(left=0.07, right=0.97, bottom=0.05, top=0.94)
       self.max_amp_text = self.fig.text(0.95, 0.95, "", fontsize=9, va="center", ha="right", color="#333333")
@@ -135,15 +167,21 @@ class StackFigure:
   #   trace         ... 1時間分のトレース
   #   start_dt      ... 1時間の開始日時(datetime)
   #   station, comp ... 拠点名・成分(タイトル表示用)
-  def render(self, trace, start_dt, station, comp):
+  #   floor         ... True なら縦の大きさに下限を付ける(scale_height。TODO 52)
+  def render(self, trace, start_dt, station, comp, floor=False):
     # 1. 1時間データを1分ごとにスライス
     minute_traces = slice_into_minutes(trace, start_dt)
 
     # 2. 共通の最大振幅とスケール計算
     #    最大振幅の 1/5 が段の半分の高さ(0.5)になる。大きな揺れは上下の段にはみ出る
-    global_max = calc_global_max(minute_traces)
-    half_height = global_max / 5.0
-    self.max_amp_text.set_text(f"最大振幅: {global_max * NM_TO_CM:.3e} cm/s")
+    #    下限ありのときは、ふだんの揺れの 30 倍より小さくしない
+    half_height, global_max, floored = scale_height(minute_traces, floor)
+    note = f"下限: ふだんの揺れの {FLOOR_GAIN:g} 倍" if floored else ""
+    if self.scale_text is not None:
+      self.max_amp_text.set_text(f"最大振幅: {global_max * NM_TO_CM:.3e} cm/s")
+      self.scale_text.set_text(note)
+    else:
+      self.max_amp_text.set_text(f"最大振幅: {global_max * NM_TO_CM:.3e} cm/s" + (f"({note})" if note else ""))
 
     # 3. 60本の波形のデータを差し替える(0分〜59分)。色は成分(U/N/E)ごと
     #    縦軸は下向きが正なので、符号を反転して上向きを正にする
@@ -176,6 +214,8 @@ class StackFigure:
 class StackWindow:
   # 連続波形画像を開く観測点(external_stations.IMAGE_STATIONS の番号)。画面を閉じても次の画面で使う
   vnet_index = next(i for i, st in enumerate(external_stations.IMAGE_STATIONS) if st[0] == "V.KBBY")
+  # 縦の大きさに下限を付けるか(TODO 52)。画面を閉じても次の画面で使う
+  scale_floor = False
 
   def __init__(self, start_dt, station, comp, load_stream, channels,
                log=log_message, show_error=log_message, on_compare=None, overlays=()):
@@ -226,6 +266,12 @@ class StackWindow:
       self.stations, y=0.930, width=0.085, on_click=self.set_station, label=station_names.short)
     self.comp_buttons = self._make_button_row(
       self.comps, y=0.905, width=0.06, on_click=self.set_comp)
+    # 拠点ボタンの右に、縦の大きさの切り替えボタン(TODO 52)。押すたびに「最大で合わせる」と「下限あり」が入れ替わる
+    ax_scale = self.fig.add_axes([0.07 + len(self.stations) * 0.09 + 0.02, 0.930, 0.15, 0.02])
+    self.btn_scale = Button(ax_scale, SCALE_LABELS[StackWindow.scale_floor],
+                            color=BTN_COLORS["normal"][0], hovercolor=BTN_COLORS["normal"][1])
+    self.btn_scale.label.set_fontsize(8)
+    self.btn_scale.on_clicked(lambda _event: self.toggle_scale())
     # 成分ボタンの右に、重ね表示のトグルボタンと「凡例」ボタンを配置
     self.overlay_buttons = {}
     self._legend_lines = []
@@ -335,7 +381,7 @@ class StackWindow:
     # stack_overlays は stack_plot を使う train_day_plot を読み込むので、ここで読み込む
     from stack_overlays import draw_on_image
     stack = StackFigure(for_screen=False)
-    stack.render(trace, self.dt, self.station, self.comp)
+    stack.render(trace, self.dt, self.station, self.comp, floor=StackWindow.scale_floor)
     stack.ax.set_xlim(self.stack.ax.get_xlim())
     active = [ov for ov in self.overlays if ov.name in self._overlay_on]
     if active:
@@ -493,7 +539,7 @@ class StackWindow:
     self._stream_dt, self._stream = self.dt, stream
     self.available = {(tr.stats.station.lower(), tr.stats.channel[-1].upper()) for tr in stream}
 
-    self.stack.render(trace, self.dt, self.station, self.comp)
+    self.stack.render(trace, self.dt, self.station, self.comp, floor=StackWindow.scale_floor)
     self._apply_overlays()
     # ウィンドウのタイトル(既定の「Figure 1」の代わり。時間・拠点・成分の切り替えに追従)
     if self.fig.canvas.manager is not None:
@@ -517,6 +563,15 @@ class StackWindow:
       self.comp = comp
     if not self.update():
       self.dt, self.station, self.comp = old   # 表示は元のままなので、状態も戻す
+
+  # 縦の大きさを「最大で合わせる」と「下限あり」で切り替える(TODO 52)。横軸の拡大はそのまま
+  def toggle_scale(self):
+    StackWindow.scale_floor = not StackWindow.scale_floor
+    self.btn_scale.label.set_text(SCALE_LABELS[StackWindow.scale_floor])
+    xlim = self.stack.ax.get_xlim()
+    if self.update():
+      self.stack.ax.set_xlim(xlim)
+      self.fig.canvas.draw_idle()
 
   # 指定した時間数だけ前後に移動する
   def move_hour(self, hours):
