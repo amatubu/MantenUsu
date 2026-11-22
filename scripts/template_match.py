@@ -495,6 +495,85 @@ def write_candidates(path, rows, tinfo, groups):
                   "相関係数": d["cc"], "似ているひな形": d["template"], "グループ": group,
                   "M の目安": magnitude_text(d, m_of), "既知": d["known"]})
 
+# 確かめ用の一覧(xlsx)。震源の画面で開ける一覧と同じ列に、判定を書く列と、確認用の画像・気象庁の観測点の
+# 1時間の連続波形画像(防災科研のページ)へのリンクを足す。前の期間の一覧(detections_20250708_20260826.xlsx)と同じ形
+REVIEW_LINK_STATIONS = [("V.KBBY", "KBBY 北屏風山"), ("V.USSW", "USSW 昭和新山南麓"), ("V.USUA", "USUA 有珠南山麓")]
+REVIEW_FIELDS = CANDIDATE_FIELDS + ["判定", "その他", "画像"] + [label for _code, label in REVIEW_LINK_STATIONS]
+
+# 確認用の画像の名前。名前順が、一覧を相関係数・時刻で並べた順と同じになる
+def image_name(d):
+  return f"cc{d['cc']:.3f}_{datetime.fromisoformat(d['time']):%Y%m%d_%H%M%S}.png"
+
+# 判定を書き込んだ一覧(xlsx。1枚目のシートの1列目が時刻)の時刻
+def judged_times(path):
+  import openpyxl
+  wb = openpyxl.load_workbook(path, read_only=True)
+  times = []
+  for r in wb.worksheets[0].iter_rows(min_row=2, values_only=True):
+    t = r[0] if r else None
+    if isinstance(t, str):
+      try:
+        t = datetime.fromisoformat(t)
+      except ValueError:
+        t = None
+    if isinstance(t, datetime):
+      times.append(t)
+  wb.close()
+  return times
+
+# 確かめ用の一覧に入れる検出(有珠山リストにあるもの、判定済みの一覧に時刻が DEDUP_SECONDS 秒より近いものがあるものは除く)
+def review_rows(rows, judged=()):
+  judged = sorted(judged)
+  def is_judged(t):
+    return any(abs((j - t).total_seconds()) < DEDUP_SECONDS for j in judged)
+  return [d for d in rows if d["known"] != "有珠山リスト" and not is_judged(datetime.fromisoformat(d["time"]))]
+
+# 確かめ用の一覧を書く。すでにあるファイルは上書きしない(判定を書いているかもしれないので、_2 などの名前にする)
+#   img_dir ... 確認用の画像のフォルダ(一覧からの相対パスでリンクする)。戻り値 ... 書いたファイルのパス
+def write_review_xlsx(path, rows, tinfo, groups, img_dir):
+  import openpyxl
+  from openpyxl.styles import Font
+  from external_stations import image_url
+  path = Path(path)
+  base, n = path, 2
+  while path.exists():
+    path = base.with_name(f"{base.stem}_{n}{base.suffix}")
+    n += 1
+  m_of = {i["name"]: i["jma_m"] for i in tinfo}
+  link_font = Font(color="0563C1", underline="single")
+  wb = openpyxl.Workbook()
+  ws = wb.active
+  ws.title = path.stem[:31]
+  ws.append(REVIEW_FIELDS)
+  for d in rows:
+    first = datetime.fromisoformat(d["first"])
+    t = datetime.fromisoformat(d["time"])
+    group = groups.get(d["template"], "")
+    m = magnitude_text(d, m_of)
+    ws.append([(first - timedelta(seconds=CANDIDATE_BEFORE)).replace(microsecond=0),
+               (first + timedelta(seconds=CANDIDATE_AFTER)).replace(microsecond=0).time(),
+               f"似た波形: {d['template']}{'(' + group + ')' if group else ''} 相関 {d['cc']:.2f}",
+               d["cc"], d["template"], group or None, float(m) if m else None, d["known"] or None, None, None])
+    r = ws.max_row
+    img = Path(img_dir) / image_name(d)
+    if img.exists():
+      c = ws.cell(r, len(CANDIDATE_FIELDS) + 3, image_name(d))
+      c.hyperlink, c.font = f"{Path(img_dir).name}/{image_name(d)}", link_font
+    for k, (code, _label) in enumerate(REVIEW_LINK_STATIONS):
+      c = ws.cell(r, len(CANDIDATE_FIELDS) + 4 + k, f"{t:%m/%d %H時 %M分の段}")
+      c.hyperlink, c.font = image_url(code, t), link_font
+  ws.column_dimensions["A"].width = 20
+  ws.column_dimensions["C"].width = 36
+  ws.column_dimensions["E"].width = 17
+  for col in "KLMN":
+    ws.column_dimensions[col].width = 26 if col == "K" else 20
+  for row in ws.iter_rows(min_row=2, max_col=1):
+    row[0].number_format = "yyyy-mm-dd hh:mm:ss"
+  ws.freeze_panes = "B2"
+  ws.auto_filter.ref = ws.dimensions
+  wb.save(path)
+  return path
+
 # 新しく見つかったものの確認用の画像(上下動の波形と、似ているひな形を重ねる)
 def save_image(path, det, tdata, toffs, tinfo):
   from matplotlib.figure import Figure
@@ -546,9 +625,11 @@ def select_rows(rows):
 # アプリのメンテナンス画面の「似た波形の地震さがし」(TODO 37)。--set app と同じ
 #   start, end ... 期間(datetime の日) / jobs ... 並列で計算するプロセスの数 / images ... 新しく見つかったものの画像を作る
 #   log ... 経過を受け取る関数 / cancelled ... 中止するなら True を返す関数 / progress ... (済んだ数, 全体の数, 段階) を受け取る関数
-#   戻り値 ... {"rows", "detections_csv", "candidates_csv", "groups", "templates", "new"}、中止したら None
+#   review ... 確かめ用の一覧(review_<期間>_app.xlsx。画像と連続波形画像へのリンク付き)も作る。その分の画像は無ければ作る
+#   judged ... 判定を書き込んだ一覧(xlsx)。確かめ用の一覧から、そこにあるものを除く
+#   戻り値 ... {"rows", "detections_csv", "candidates_csv", "review_xlsx", "groups", "templates", "new"}、中止したら None
 #   判定を書き込んだ前の期間の一覧(detections_20250708_20260826.xlsx)には触らない(ファイル名の最後に _app を付ける)
-def run(start, end, jobs=3, images=False, log=print, cancelled=lambda: False, progress=None):
+def run(start, end, jobs=3, images=False, log=print, cancelled=lambda: False, progress=None, review=False, judged=None):
   os.environ[SET_ENV] = APP_SET   # 並列で動かす子のプロセスも同じ組を使う
   configure(APP_SET)
   progress = progress or (lambda *a: None)
@@ -602,19 +683,29 @@ def run(start, end, jobs=3, images=False, log=print, cancelled=lambda: False, pr
       f"地震の候補 {sum(d['known'] == '地震の候補' for d in rows)}・新しい {len(new)})")
   log(f"  一覧: {det_csv}")
   log(f"  地震の候補の震源の画面で開く一覧: {cand_csv}")
-  if images and new:
-    img_dir = OUT_DIR / f"images_{APP_SET}"
+  img_dir = OUT_DIR / f"images_{APP_SET}"
+  to_review = review_rows(rows, judged_times(judged) if judged else ()) if review else []
+  if review and judged:
+    log(f"  確かめ用の一覧: 判定済みの一覧({Path(judged).name})にあるものを除いて {len(to_review)} 件")
+  # 画像を作るもの: images なら新しいものすべて、review なら確かめ用の一覧のうち画像の無いもの
+  targets = new if images else [d for d in to_review if not (img_dir / image_name(d)).exists()]
+  stopped = False
+  if targets:
     img_dir.mkdir(exist_ok=True)
-    for i, d in enumerate(new, 1):
+    for i, d in enumerate(targets, 1):
       if cancelled():
         log("=== 画像を作る途中で中止しました ===")
+        stopped = True
         break
-      progress(i, len(new), "新しく見つかったものの画像を作っています(枚)")
-      t = datetime.fromisoformat(d["time"])
-      save_image(img_dir / f"cc{d['cc']:.3f}_{t:%Y%m%d_%H%M%S}.png", d, tdata, toffs, tinfo)
+      progress(i, len(targets), "新しく見つかったものの画像を作っています(枚)")
+      save_image(img_dir / image_name(d), d, tdata, toffs, tinfo)
     log(f"  画像: {img_dir}")
+  review_xlsx = None
+  if review and not stopped:
+    review_xlsx = write_review_xlsx(OUT_DIR / f"review_{tag}.xlsx", to_review, tinfo, groups, img_dir)
+    log(f"  確かめ用の一覧(画像と連続波形画像へのリンク付き): {review_xlsx}")
   log("=== 似た波形の地震さがしが終わりました ===")
-  return {"rows": rows, "detections_csv": det_csv, "candidates_csv": cand_csv, "groups": groups,
+  return {"rows": rows, "detections_csv": det_csv, "candidates_csv": cand_csv, "review_xlsx": review_xlsx, "groups": groups,
           "templates": len(tinfo), "new": len(new)}
 
 def main():
@@ -624,6 +715,9 @@ def main():
   ap.add_argument("-j", "--jobs", type=int, default=3)
   ap.add_argument("--rebuild-templates", action="store_true")
   ap.add_argument("--images", action="store_true", help="新しく見つかったものの画像を作る(images フォルダ)")
+  ap.add_argument("--review", action="store_true",
+                  help="--set app のとき、確かめ用の一覧(review_<期間>_app.xlsx。画像と気象庁の観測点の1時間の連続波形画像へのリンク付き)も作る")
+  ap.add_argument("--judged", help="--review の一覧から、この判定済みの一覧(xlsx)にあるものを除く")
   ap.add_argument("--set", default=DEFAULT_SET,
                   help="ひな形の組の名前(v1 以外は今の有珠山リストから作り、別のファイルに保存する。app はアプリと同じ処理)")
   args = ap.parse_args()
@@ -632,7 +726,8 @@ def main():
     matplotlib.use("Agg")
     import plot_common
     plot_common.setup_japanese_font()
-    run(datetime.strptime(args.start, "%Y%m%d"), datetime.strptime(args.end, "%Y%m%d"), jobs=args.jobs, images=args.images)
+    run(datetime.strptime(args.start, "%Y%m%d"), datetime.strptime(args.end, "%Y%m%d"), jobs=args.jobs, images=args.images,
+        review=args.review, judged=args.judged)
     return
   os.environ[SET_ENV] = args.set   # 並列で動かす子のプロセスも同じ組を使う
   configure(args.set)

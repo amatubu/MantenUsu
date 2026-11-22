@@ -128,3 +128,33 @@ def test_heavy_jobs_limit_is_half_of_cores():
   assert mw.heavy_jobs_limit(10) == 5
   assert mw.heavy_jobs_limit(16) == 8
   assert mw.heavy_jobs_limit(2) == 2
+
+
+def test_review_xlsx_has_links_and_skips_judged(tmp_path):
+  import openpyxl
+  _data, _offs, info = make_templates()
+  rows = [
+    {"time": "2026-11-02T21:46:09.891", "first": "2026-11-02T21:46:09.000", "template": info[0]["name"], "cc": 0.35,
+     "amp_ratio": 0.1, "known": "", "known_start": None},
+    {"time": "2026-11-02T22:00:00.000", "first": "2026-11-02T21:59:59.000", "template": info[1]["name"], "cc": 0.3,
+     "amp_ratio": 0.1, "known": "", "known_start": None},
+    {"time": "2026-11-03T03:17:42.000", "first": "2026-11-03T03:17:41.000", "template": info[1]["name"], "cc": 1.0,
+     "amp_ratio": 1.0, "known": "有珠山リスト", "known_start": "2026-11-03 03:17:40"},
+  ]
+  picked = tm.review_rows(rows, [datetime(2026, 11, 2, 22, 0, 1)])
+  assert [d["time"] for d in picked] == [rows[0]["time"]]   # 判定済み・有珠山リストのものは除く
+  img_dir = tmp_path / "images_app"
+  img_dir.mkdir()
+  (img_dir / tm.image_name(rows[0])).write_bytes(b"")
+  path = tm.write_review_xlsx(tmp_path / "review.xlsx", picked, info, {info[0]["name"]: "G1"}, img_dir)
+  ws = openpyxl.load_workbook(path).active
+  hdr = [c.value for c in ws[1]]
+  assert hdr == tm.REVIEW_FIELDS
+  r = {h: c for h, c in zip(hdr, ws[2])}
+  assert r["開始"].value == datetime(2026, 11, 2, 21, 46, 4)
+  assert r["画像"].hyperlink.target == f"images_app/{tm.image_name(rows[0])}"
+  assert r["KBBY 北屏風山"].value == "11/02 21時 46分の段"
+  assert "stcd=V.KBBY&tm=2026110221" in r["KBBY 北屏風山"].hyperlink.target
+  # すでにあるファイルは上書きしない
+  path2 = tm.write_review_xlsx(tmp_path / "review.xlsx", picked, info, {}, img_dir)
+  assert path2.name == "review_2.xlsx"
