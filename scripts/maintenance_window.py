@@ -2,6 +2,7 @@
 # メンテナンス画面(メイン画面の「メンテナンス」ボタンで開く)
 #   気象庁の震源リスト ... 取得の状況と、不足分の取得・期間を指定した取り直し(jma_hypocenter.py と同じ処理)
 #   地震の候補の検出   ... 揺れの大きさ(RMS)の保存の状況と、地震の候補を探す処理(--detect-quakes と同じ処理)
+#   似た波形の地震さがし ... 有珠山リストの地震をひな形にしたテンプレートマッチング(template_match.run。TODO 37)
 #   キャッシュ         ... output フォルダ(cache_dialog.py)と daily_zips フォルダの整理
 #   ほかの機関の観測点 ... v-net フォルダの ZIP の一覧と、変換済みの SAC(output/vnet)の変換・削除(external_stations.py)
 # 取得・変換は時間がかかるので別スレッドで行い、画面は0.1秒ごとに進み具合を表示する
@@ -25,6 +26,7 @@ import jma_hypocenter
 import world_quakes
 import quake_detect
 import station_names
+import template_match
 from cache_dialog import OutputCacheDialog
 from log_common import log_message, flush_pending, add_log_widget, remove_log_widget
 
@@ -56,6 +58,11 @@ def format_days(days):
     texts = texts[:MAX_MISSING_SHOWN] + [f"ほか {len(texts) - MAX_MISSING_SHOWN}か所"]
   return "、".join(texts)
 
+
+
+# 似た波形の地震さがしで、これより多い並列は実行前に確かめる(コア数の半分。8 並列では重かったため)
+def heavy_jobs_limit(cpus=None):
+  return max(2, (cpus or os.cpu_count() or 1) // 2)
 
 class MaintenanceWindow:
   # parent    ... 親ウィンドウ
@@ -173,6 +180,44 @@ class MaintenanceWindow:
               ).pack(anchor="w", pady=(8, 0))
     if app is None:
       for w in self.busy_widgets[-6:]:
+        w.config(state=tk.DISABLED)
+
+    # --- 似た波形の地震さがし(テンプレートマッチング。TODO 37) ---
+    tm = page("似た波形の地震さがし")
+    ttk.Label(tm, text="似た波形の地震さがし(テンプレートマッチング)", font=("sans-serif", 11, "bold")).pack(anchor="w", pady=(0, 6))
+    self.lbl_tm = ttk.Label(tm, text="", justify=tk.LEFT)
+    self.lbl_tm.pack(anchor="w")
+    row = ttk.Frame(tm)
+    row.pack(fill=tk.X, pady=(8, 0))
+    ttk.Label(row, text="期間(YYYYMMDD):").pack(side=tk.LEFT)
+    self.entry_tm_from = ttk.Entry(row, width=10)
+    self.entry_tm_from.pack(side=tk.LEFT)
+    ttk.Label(row, text="〜").pack(side=tk.LEFT)
+    self.entry_tm_to = ttk.Entry(row, width=10)
+    self.entry_tm_to.pack(side=tk.LEFT)
+    ttk.Label(row, text="　並列:").pack(side=tk.LEFT)
+    jobs = list(range(1, max(1, os.cpu_count() or 1) + 1))
+    self.combo_tm_jobs = ttk.Combobox(row, values=jobs, state="readonly", width=3)
+    self.combo_tm_jobs.set(min(3, jobs[-1]))
+    self.combo_tm_jobs.pack(side=tk.LEFT)
+    self.add_button(row, "探す", self.run_template_match).pack(side=tk.LEFT, padx=(8, 0))
+    self.add_button(row, "一覧を開く", self.open_template_candidates).pack(side=tk.LEFT, padx=(5, 0))
+    ttk.Button(row, text="結果のフォルダを開く",
+               command=lambda: self.open_folder(template_match.OUT_DIR)).pack(side=tk.LEFT, padx=(5, 0))
+    self.var_tm_images = tk.BooleanVar(value=False)
+    chk = ttk.Checkbutton(tm, text="新しく見つかったものの確認用の画像を作る", variable=self.var_tm_images)
+    chk.pack(anchor="w", pady=(6, 0))
+    self.busy_widgets.append(chk)
+    self.tm_last = None   # 最後に探した結果の、地震の候補の震源の画面で開く一覧
+    ttk.Label(tm, foreground="#666666", justify=tk.LEFT,
+              text="今の有珠山リストの地震(種別が地震のもの)をひな形にして、似た波形の揺れを探します。期間を空けると daily_zips の全期間です。\n"
+                   "結果は日ごと・ひな形ごとに保存し、次からは増えた(変わった)ひな形の分だけ計算します。よく似たひな形はグループ(G1 など)にまとめて一覧に書きます。\n"
+                   "「一覧を開く」で、見つかったもの(有珠山リストにあるものを除く)を地震の候補の震源の画面で開き、⌘U で有珠山リストに加えられます。\n"
+                   "一覧は batch_plots/quakes/template_match に、名前の最後に _app を付けて保存します(判定を書き込んだ一覧は上書きしません)。\n"
+                   "途中でやめるときは、下の「中止」を押します(計算の済んだ日の結果は残ります)。"
+              ).pack(anchor="w", pady=(8, 0))
+    if app is None:
+      for w in self.busy_widgets[-3:]:
         w.config(state=tk.DISABLED)
 
     # --- キャッシュ ---
@@ -340,6 +385,15 @@ class MaintenanceWindow:
     else:
       text += "\ndaily_zips の日はすべて計算済みです"
     self.lbl_detect.config(text=text)
+
+    t = template_match.app_summary()
+    if t["templates"] is None:
+      text = "まだ探していません(はじめはひな形を作るので、少し時間がかかります)"
+    else:
+      text = f"前回のひな形: {t['templates']} 件(よく似たもののグループ {t['groups']} 組)"
+    if t["days"]:
+      text += f"\n結果を保存済みの日: {len(t['days']):,}日({t['days'][0]:%Y-%m-%d}〜{t['days'][-1]:%Y-%m-%d})"
+    self.lbl_tm.config(text=text)
 
     config = external_stations.load_config()
     names = "・".join(f"{n}({st['code']})" for n, st in config.items()) or "なし"
@@ -544,6 +598,49 @@ class MaintenanceWindow:
       if candidates is not None and add_history:
         self.app.add_candidates_to_history(candidates)
     self.run_in_thread("地震の候補を探す処理", 0, work, on_done)
+
+  # --- 似た波形の地震さがし(TODO 37) ---
+  def run_template_match(self):
+    texts = [self.entry_tm_from.get().strip(), self.entry_tm_to.get().strip()]
+    try:
+      start, end = [datetime.strptime(t, "%Y%m%d") if t else None for t in texts]
+    except ValueError:
+      messagebox.showerror("入力エラー", "期間は YYYYMMDD の形で入力してください(例: 20261101)", parent=self.win)
+      return
+    days = jma_hypocenter.zip_days()
+    start, end = start or (days[0] if days else None), end or (days[-1] if days else None)
+    if not (start and end):
+      messagebox.showinfo("情報", "daily_zips に ZIP が無いため、期間を指定してください", parent=self.win)
+      return
+    if end < start:
+      messagebox.showerror("入力エラー", "期間の終わりが始めより前になっています", parent=self.win)
+      return
+    jobs, images = int(self.combo_tm_jobs.get()), self.var_tm_images.get()
+    if jobs > heavy_jobs_limit():
+      msg = (f"並列 {jobs} は、このパソコンのコア数({os.cpu_count()})の半分を超えます。\n"
+             "計算のあいだ、ほかの作業がかなり重くなります。このまま始めますか?")
+      if not messagebox.askyesno("確認", msg, parent=self.win):
+        return
+
+    def work(log, cancelled, progress):
+      return template_match.run(start, end, jobs=jobs, images=images, log=log, cancelled=cancelled, progress=progress)
+
+    def on_done(result):
+      if result:
+        self.tm_last = result["candidates_csv"]
+    self.run_in_thread("似た波形の地震さがし", 0, work, on_done)
+
+  # 最後に探した結果(無ければ、いちばん新しい一覧)を、地震の候補の震源の画面で開く
+  def open_template_candidates(self):
+    path = self.tm_last
+    if path is None:
+      found = sorted(template_match.OUT_DIR.glob(f"candidates_*_{template_match.APP_SET}.csv"), key=lambda p: p.stat().st_mtime)
+      path = found[-1] if found else None
+    if path is None or not Path(path).exists():
+      messagebox.showinfo("情報", "まだ一覧がありません。先に「探す」を押してください。", parent=self.win)
+      return
+    if self.app is not None:
+      self.app.open_quake_locations(Path(path), parent=self.win)
 
   # --- キャッシュ ---
   # output フォルダの整理(削除するファイルの種類を選ぶ画面を開く。履歴ファイルは残す)
