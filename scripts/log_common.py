@@ -50,10 +50,25 @@ def flush_pending():
   while _pending:
     _write(_pending.pop(0))
 
+def _alive(text):
+  """ログ欄がまだ画面にあるか(メイン画面を先に閉じると、ほかの画面の保存のメッセージが来ても書けない)"""
+  try:
+    return bool(text.winfo_exists())
+  except tk.TclError:
+    return False
+
 # 画面のログテキストボックスに追記
 def _write(message):
+  global _log_text
+  if _log_text is not None and not _alive(_log_text):
+    _log_text = None
+  for text in [t for t in _extra_texts if not _alive(t)]:
+    _extra_texts.remove(text)
   for text in ([_log_text] if _log_text is not None else []) + _extra_texts:
-    text.config(state=tk.NORMAL)   # 一時的に書き込み許可
-    text.insert(tk.END, message + "\n")
-    text.see(tk.END)               # 自動で一番下にスクロール
-    text.config(state=tk.DISABLED) # 再び書き込み禁止に戻す
+    try:
+      text.config(state=tk.NORMAL)   # 一時的に書き込み許可
+      text.insert(tk.END, message + "\n")
+      text.see(tk.END)               # 自動で一番下にスクロール
+      text.config(state=tk.DISABLED) # 再び書き込み禁止に戻す
+    except tk.TclError:
+      pass                           # 書いている途中で閉じられたログ欄は飛ばす
