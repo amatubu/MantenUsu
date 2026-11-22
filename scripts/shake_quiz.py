@@ -40,7 +40,7 @@ LONG_SECONDS = 150    # これより長い表示は 125 Hz に間引く(ファ�
 
 # フィルタ: (記号, 低, 高, 音のたとえ)。帯域は答えたあとに明かす
 FILTERS = [("A", 0.5, 2.0, "とても低い音"), ("B", 2.0, 10.0, "低い音"), ("C", 8.0, 25.0, "高い音"), ("D", 20.0, 40.0, "とても高い音")]
-# 答えのあとだけに出すフィルタ(海外の地震の答え)。とても長い周期の揺れ。近い揺れは、海の波が起こすゆっくりした揺れ(脈動)に埋もれて見えなくなる
+# 答えのあとだけに出すフィルタ(どの問題でも。海外の地震の問題だけに出すと、出たことで答えがわかってしまう)。とても長い周期の揺れ。近い揺れは、海の波が起こすゆっくりした揺れ(脈動)に埋もれて見えなくなる
 LOW_FILTER = ("L", 0.1, 0.5, "もっと低い音")
 ALL_FILTERS = FILTERS + [LOW_FILTER]
 
@@ -71,7 +71,7 @@ CHOICE_NOTE = ("「少し遠い地震」は震央までの距離が 200 km 未�
                "「海外の地震」は外国(数千 km 先)の地震です。")
 JMA_KINDS = ("少し遠い地震", "より遠い地震")
 WORLD_KIND = "さらに遠い地震(海外)"
-LOW_KINDS = (WORLD_KIND,)      # 答えのあとに L のフィルタを出す種類
+LOW_KINDS = (WORLD_KIND,)      # 答えのフィルタに L を選べ、答えのあとに「L で聴く」を出す種類
 
 # --- 音で聴く(TODO 44) ---
 #   答える前は全部 COMMON_SPEED 倍、答えたあとは種類ごとの倍率でも聴ける(実際に聴いて決めた値、2026-11-19)
@@ -993,13 +993,14 @@ function showResult() {
   $("hiddenWave").hidden = !waveHidden();
   $("amp").hidden = waveHidden();
   [...$("choices").children].forEach((b, i) => { b.disabled = (ev.disabled || []).includes(i); });
-  for (const b of $("filters").children) if (b.dataset.extra) b.hidden = !(done && ev.low);
+  // L は答えたあとだけ、どの問題でも出す(海外の地震の問題だけに出すと、出たことで答えがわかってしまうため)
+  for (const b of $("filters").children) if (b.dataset.extra) b.hidden = !done;
   $("ask").textContent = ev.focus ? "印を付けた「この揺れ」は何の揺れでしょう?" : "何の揺れでしょう?";
   $("heading").textContent = `問題 ${ev.no}` + (done ? `  ${META.choices[ev.kind].name}` : `(${MODES[S.mode]})`);
   if (!done) return;
   const ok = a.pick === ev.kind, c = META.choices[ev.kind];
   const best = ev.best, bestF = META.filters.find(f => f.key === best);
-  const rows = META.filters.filter(f => !f.extra || ev.low).map(f => `<tr class="${f.key === best ? "best" : ""}"><td>${f.key}</td><td>${f.low}〜${f.high} Hz</td>`
+  const rows = META.filters.map(f => `<tr class="${f.key === best ? "best" : ""}"><td>${f.key}</td><td>${f.low}〜${f.high} Hz</td>`
     + `<td>${f.sound}</td><td>${f.key === best ? "← この揺れが見やすい" : f.extra ? "← 答えのあとだけ使える" : ""}</td></tr>`).join("");
   $("result").innerHTML = `<h2 class="${ok ? "ok" : "ng"}">${ok ? "正解!" : "ざんねん"} 答えは「${c.name}」</h2>`
     + (ok ? "" : `<p>あなたの答え: ${META.choices[a.pick].name}</p>`)
