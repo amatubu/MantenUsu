@@ -60,7 +60,7 @@ IMAGE_DIR = DATA_DIR / "raw" / "image"
 SOURCE_ZIPS_DIR = DATA_DIR / "source_zips"
 CATALOG, CATALOG_LOG = cf_catalog.catalog_paths(DATA_DIR)   # カードの台帳(cf_catalog.py)
 LABEL_PREFIX = "満点10-"  # カードに貼ってあるラベルの、番号の前の決まった所(「次に差すカードのラベル」の欄の初め)
-TOOL_VERSION = "1.2.0"   # このツールのバージョン(UsuMantenViewer とは別)
+TOOL_VERSION = "1.3.0"   # このツールのバージョン(UsuMantenViewer とは別)
 POLL_MS = 100            # 別スレッドの結果と進み具合を見る間隔
 DISK_POLL_MS = 1500      # カードの抜き差しを見る間隔
 
