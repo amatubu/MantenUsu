@@ -527,16 +527,21 @@ function draw() {
     const yLine = Math.round(top + blockH) + 0.5;
     ctx.beginPath(); ctx.moveTo(0, yLine); ctx.lineTo(W, yLine); ctx.stroke();
   });
-  // 0 秒の線の名前(段の上に重ねて、いちばん上に書く)
-  const names = [[0, th.zero_label], ...(th.lines || [])].filter(l => l[1]);
+  // 名前の付いた線(0 秒の線・目印の線)には「▲※1」などの印だけを書き、名前は図の下の説明に書く(スマートフォンでも重ならないように)
+  const names = lineNames(th);
   ctx.font = `600 ${11 * d}px ${FONT}`;
-  names.forEach(([t, name], i) => {       // 名前は下から順に積む(となりの線の名前と重ならないように)
+  names.forEach(([t, _name, mark]) => {
     const x = Math.round(xOfTime(t)) + 0.5;
     if (x < 0 || x > W) return;
     const right = x > W * 0.6;
-    labelBox("▲ " + name, right ? x - 4 * d : x + 4 * d, plotH - (16 + 15 * i) * d, right ? "right" : "left", colors.ref);
+    labelBox("▲" + mark, right ? x - 4 * d : x + 4 * d, plotH - 16 * d, right ? "right" : "left", colors.ref);
   });
   ctx.font = `${11 * d}px ${FONT}`;
+}
+// 名前の付いた線: [[秒, 名前, 印], ...](印は 1 本なら「※」、2 本以上なら「※1」「※2」…)
+function lineNames(th) {
+  const names = [[0, th.zero_label], ...(th.lines || [])].filter(l => l[1]);
+  return names.map(([t, name], i) => [t, name, names.length > 1 ? `※${i + 1}` : "※"]);
 }
 // --- 周波数の図(段ごとの振幅スペクトルを重ねる。横は対数の周波数、縦はいちばん大きいところを 1) ---
 const PALETTE = ["#1565c0", "#d84e00", "#2e7d32", "#7b4fb5", "#6d4c41", "#00838f", "#c2185b"];
@@ -836,6 +841,7 @@ function showMore() {
     return;
   }
   $("more").textContent = `0 秒は「${th.ref}」です(紫の破線)。`
+    + lineNames(th).map(([t, name, mark]) => `${mark}(${t ? `${t} 秒の紫の点線` : "0 秒の線"})は「${name}」です。`).join("")
     + (th.rows.some(r => Object.keys(r.phases).length) ? "青の P・赤の S の破線は、震源から計算した到着の見込みです(実際とは 1〜2 秒ずれることがあります)。" : "")
     + (f ? `フィルタ ${f.key} は ${f.low}〜${f.high} Hz(${f.sound})の揺れだけを通します。` : "")
     + `×${S.speed} は ${S.speed} 倍の速さで、揺れの周波数も ${S.speed} 倍の音になります(5 Hz の揺れが ${5 * S.speed} Hz の音に)。`
