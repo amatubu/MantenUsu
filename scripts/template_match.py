@@ -574,6 +574,160 @@ def write_review_xlsx(path, rows, tinfo, groups, img_dir):
   wb.save(path)
   return path
 
+# 有珠山リスト(ひな形)と、判定を書き込んだ一覧(xlsx。いくつでも)を、1つの表にまとめる(1行が1つの揺れ)
+#   判定済みの一覧は、detections_*.xlsx の形(1列目が「時刻(推定の発生時刻)」)か、確かめ用の一覧の形(1列目が「開始」)
+#   「判定」「その他」「備考」と、画像・連続波形画像へのリンクはそのまま写す。判定は書き換えない(「-」だけ、既知のため判定なしと書く)
+#   有珠山リストの地震は、その時間に入る検出(そのものを拾った相関 1 のものなど)と1行にまとめる
+COMBINE_COLS = [("時刻(推定の発生時刻)", "time", 21), ("種類", "kind", 20), ("判定・種別", "judge", 14),
+                ("ひな形", "tpl_self", 22), ("グループ", "group", 8), ("似ているひな形", "tpl", 17), ("相関係数", "cc", 8),
+                ("MAD の倍数", "mad", 8), ("成分の数", "ch", 7), ("M の目安", "m", 7),
+                ("有珠山の地震らしさ", "likeness", 12), ("気象庁: 発震時刻", "jma_t", 20), ("緯度", "lat", 8),
+                ("経度", "lon", 9), ("深さ[km]", "dep", 7), ("M", "jma_m", 5), ("震央地名", "area", 12),
+                ("地震(印)", "flag", 7), ("その他", "other", 22), ("備考", "remark", 30), ("メモ", "memo", 30),
+                ("出どころ", "src", 30)]
+COMBINE_LINKS = ["画像"] + [label for _code, label in REVIEW_LINK_STATIONS]
+NOT_JUDGED = "-(既知のため判定なし)"
+
+# 判定済みの一覧(xlsx)を読む。rows ... 今回の検索の結果(確かめ用の一覧の形のとき、時刻などを補う)
+def read_judged(path, rows=()):
+  import openpyxl
+  by_start = {}
+  for d in rows:
+    st = (datetime.fromisoformat(d["first"]) - timedelta(seconds=CANDIDATE_BEFORE)).replace(microsecond=0)
+    by_start[st] = d
+  ws = openpyxl.load_workbook(path).worksheets[0]
+  hdr = [c.value for c in ws[1]]
+  def col(name):
+    return hdr.index(name) + 1 if name in hdr else None
+  out = []
+  for r in range(2, ws.max_row + 1):
+    v = {h: ws.cell(r, i + 1).value for i, h in enumerate(hdr) if h}
+    first = ws.cell(r, 1).value
+    if not isinstance(first, datetime):
+      continue
+    if hdr[0] == "開始":
+      d = by_start.get(first.replace(microsecond=0))
+      t = datetime.fromisoformat(d["time"]) if d else first + timedelta(seconds=CANDIDATE_BEFORE)
+      mad, ch = (d["mad_ratio"], d["channels"]) if d else (None, None)
+    else:
+      t, mad, ch = first, v.get("MAD の倍数"), v.get("成分の数")
+    links = {}
+    for nm in COMBINE_LINKS:
+      if col(nm):
+        c = ws.cell(r, col(nm))
+        links[nm] = (c.value, c.hyperlink.target if c.hyperlink else None)
+    judge = v.get("判定")
+    out.append({"time": t, "cc": v.get("相関係数"), "mad": mad, "ch": ch, "tpl": v.get("似ているひな形"),
+                "m": v.get("M の目安"), "known": v.get("既知"), "judge": NOT_JUDGED if judge == "-" else judge,
+                "flag": v.get("地震"), "other": v.get("その他"), "remark": v.get("備考"), "links": links,
+                "src": Path(path).stem})
+  return out
+
+# まとめた表の行を作る。usu ... 有珠山リスト(quake_locate.read_candidates の形) / judged ... read_judged の行(ファイルの順)
+def combine_rows(usu, judged, templates, groups):
+  def blank(x):
+    return None if x in ("", None) else x
+  events = []
+  for e in judged:   # 同じ揺れが2つの一覧にあれば、空いている欄だけ後のもので埋める
+    same = next((x for x in events if abs((x["time"] - e["time"]).total_seconds()) < DEDUP_SECONDS), None)
+    if same is None:
+      events.append(dict(e))
+      continue
+    for k, val in e.items():
+      if k == "src":
+        same["src"] += f"・{val}"
+      elif blank(same.get(k)) is None and k != "links":
+        same[k] = val
+  hits = {i: [] for i in range(len(usu))}
+  rest = []
+  for e in events:
+    i = next((i for i, c in enumerate(usu) if c["start"] - timedelta(seconds=3) <= e["time"] <= c["end"] + timedelta(seconds=3)), None)
+    (hits[i] if i is not None else rest).append(e)
+  out = []
+  for i, c in enumerate(usu):
+    row, name = c["row"], f"{c['start']:%Y%m%d_%H%M%S}"
+    hit = hits[i]
+    best = max(hit, key=lambda e: e["cc"] or 0) if hit else None
+    kind = c.get("type") or row.get("種別") or "地震"
+    if name in templates:
+      why = "ひな形"
+    elif kind != "地震":
+      why = f"ひな形にしない({kind})"
+    else:
+      why = "ひな形にしない(P波が2拠点)"
+    jma_t = blank(row.get("気象庁: 発震時刻"))
+    t = best["time"] if best else (datetime.fromisoformat(jma_t) if jma_t else c["start"])
+    num = lambda k: float(row[k]) if blank(row.get(k)) is not None else None
+    out.append({"time": t, "kind": "有珠山リスト", "judge": kind, "tpl_self": why,
+                "group": groups.get(name, "") if name in templates else "", "tpl": None, "cc": None, "mad": None,
+                "ch": None, "m": None, "likeness": blank(row.get("有珠山の地震らしさ")), "jma_t": jma_t,
+                "lat": num("緯度"), "lon": num("経度"), "dep": num("深さ[km]"), "jma_m": num("M"),
+                "area": blank(row.get("震央地名")), "flag": None,
+                "other": " / ".join(e["other"] for e in hit if e["other"]) or None,
+                "remark": " / ".join(e["remark"] for e in hit if e["remark"]) or None,
+                "memo": blank(row.get("メモ")), "links": best["links"] if best else {},
+                "src": "有珠山リスト" + "".join(f"・{e['src']}" for e in hit)})
+  for e in rest:
+    out.append({"time": e["time"], "kind": "似た波形で見つけたもの", "judge": e["judge"], "tpl_self": None,
+                "group": groups.get(e["tpl"] or "", ""), "tpl": e["tpl"], "cc": e["cc"], "mad": e["mad"], "ch": e["ch"],
+                "m": e["m"], "likeness": None, "jma_t": None, "lat": None, "lon": None, "dep": None, "jma_m": None,
+                "area": None, "flag": e["flag"], "other": e["other"], "remark": e["remark"], "memo": None,
+                "links": e["links"], "src": e["src"] + (f"(既知: {e['known']})" if e["known"] else "")})
+  return sorted(out, key=lambda x: x["time"])
+
+# まとめた表を書く。すでにあるファイルは上書きしない(_2 などの名前にする)。戻り値 ... 書いたファイルのパス
+def write_combined_xlsx(path, rows):
+  import openpyxl
+  from openpyxl.styles import Font, PatternFill
+  from openpyxl.utils import get_column_letter
+  from external_stations import image_url
+  path = Path(path)
+  base, n = path, 2
+  while path.exists():
+    path = base.with_name(f"{base.stem}_{n}{base.suffix}")
+    n += 1
+  link_font = Font(color="0563C1", underline="single")
+  usu_fill = PatternFill("solid", fgColor="FFF2CC")
+  wb = openpyxl.Workbook()
+  ws = wb.active
+  ws.title = "有珠山の地震"
+  ws.append([h for h, _k, _w in COMBINE_COLS] + COMBINE_LINKS)
+  for x in rows:
+    ws.append([x[k] for _h, k, _w in COMBINE_COLS])
+    r = ws.max_row
+    for j, nm in enumerate(COMBINE_LINKS):
+      val, target = x["links"].get(nm, (None, None))
+      if val is None and nm != "画像":   # リンクの無いもの(有珠山リストの地震など)は、時刻から作る
+        code = next(c for c, label in REVIEW_LINK_STATIONS if label == nm)
+        val, target = f"{x['time']:%m/%d %H時 %M分の段}", image_url(code, x["time"])
+      c = ws.cell(r, len(COMBINE_COLS) + 1 + j, val)
+      if target:
+        c.hyperlink, c.font = target, link_font
+    if x["kind"] == "有珠山リスト":
+      for c in ws[r][:len(COMBINE_COLS)]:
+        c.fill = usu_fill
+  for i, w in enumerate([w for _h, _k, w in COMBINE_COLS] + [20] * len(COMBINE_LINKS), 1):
+    ws.column_dimensions[get_column_letter(i)].width = w
+  for row in ws.iter_rows(min_row=2, max_col=1):
+    row[0].number_format = "yyyy-mm-dd hh:mm:ss.0"
+  ws.freeze_panes = "B2"
+  ws.auto_filter.ref = ws.dimensions
+  s = wb.create_sheet("集計")
+  s.append(["種類", "判定・種別", "件数"])
+  counts = {}
+  for x in rows:
+    key = (x["kind"], x["judge"] or "(なし)")
+    counts[key] = counts.get(key, 0) + 1
+  for (k, j), cnt in sorted(counts.items()):
+    s.append([k, j, cnt])
+  s.append([])
+  s.append(["合計", "", len(rows)])
+  s.append(["判定・種別が「地震」のもの", "", sum(1 for x in rows if x["judge"] == "地震")])
+  for col, w in zip("ABC", (30, 22, 8)):
+    s.column_dimensions[col].width = w
+  wb.save(path)
+  return path
+
 # 新しく見つかったものの確認用の画像(上下動の波形と、似ているひな形を重ねる)
 def save_image(path, det, tdata, toffs, tinfo):
   from matplotlib.figure import Figure
@@ -627,9 +781,10 @@ def select_rows(rows):
 #   log ... 経過を受け取る関数 / cancelled ... 中止するなら True を返す関数 / progress ... (済んだ数, 全体の数, 段階) を受け取る関数
 #   review ... 確かめ用の一覧(review_<期間>_app.xlsx。画像と連続波形画像へのリンク付き)も作る。その分の画像は無ければ作る
 #   judged ... 判定を書き込んだ一覧(xlsx)。確かめ用の一覧から、そこにあるものを除く
-#   戻り値 ... {"rows", "detections_csv", "candidates_csv", "review_xlsx", "groups", "templates", "new"}、中止したら None
+#   combine ... 判定を書き込んだ一覧(xlsx)のリスト。有珠山リストとまとめた表(usu_quakes_all_<期間>_app.xlsx)を作る
+#   戻り値 ... {"rows", "detections_csv", "candidates_csv", "review_xlsx", "combined_xlsx", "groups", "templates", "new"}、中止したら None
 #   判定を書き込んだ前の期間の一覧(detections_20250708_20260826.xlsx)には触らない(ファイル名の最後に _app を付ける)
-def run(start, end, jobs=3, images=False, log=print, cancelled=lambda: False, progress=None, review=False, judged=None):
+def run(start, end, jobs=3, images=False, log=print, cancelled=lambda: False, progress=None, review=False, judged=None, combine=None):
   os.environ[SET_ENV] = APP_SET   # 並列で動かす子のプロセスも同じ組を使う
   configure(APP_SET)
   progress = progress or (lambda *a: None)
@@ -704,8 +859,17 @@ def run(start, end, jobs=3, images=False, log=print, cancelled=lambda: False, pr
   if review and not stopped:
     review_xlsx = write_review_xlsx(OUT_DIR / f"review_{tag}.xlsx", to_review, tinfo, groups, img_dir)
     log(f"  確かめ用の一覧(画像と連続波形画像へのリンク付き): {review_xlsx}")
+  combined_xlsx = None
+  if combine:
+    import quake_locate
+    judged_rows = [e for path in combine for e in read_judged(path, rows)]
+    usu = quake_locate.read_candidates(TEMPLATE_SOURCE_CSV)
+    table = combine_rows(usu, judged_rows, {i["name"] for i in tinfo}, groups)
+    combined_xlsx = write_combined_xlsx(OUT_DIR / f"usu_quakes_all_{tag}.xlsx", table)
+    log(f"  まとめた表({len(table)} 行。有珠山リスト {len(usu)} 件と、{'・'.join(Path(p).name for p in combine)}): {combined_xlsx}")
   log("=== 似た波形の地震さがしが終わりました ===")
-  return {"rows": rows, "detections_csv": det_csv, "candidates_csv": cand_csv, "review_xlsx": review_xlsx, "groups": groups,
+  return {"rows": rows, "detections_csv": det_csv, "candidates_csv": cand_csv, "review_xlsx": review_xlsx,
+          "combined_xlsx": combined_xlsx, "groups": groups,
           "templates": len(tinfo), "new": len(new)}
 
 def main():
@@ -718,6 +882,8 @@ def main():
   ap.add_argument("--review", action="store_true",
                   help="--set app のとき、確かめ用の一覧(review_<期間>_app.xlsx。画像と気象庁の観測点の1時間の連続波形画像へのリンク付き)も作る")
   ap.add_argument("--judged", help="--review の一覧から、この判定済みの一覧(xlsx)にあるものを除く")
+  ap.add_argument("--combine", nargs="+", metavar="XLSX",
+                  help="--set app のとき、有珠山リストと、これらの判定済みの一覧(xlsx)を1つの表(usu_quakes_all_<期間>_app.xlsx)にまとめる")
   ap.add_argument("--set", default=DEFAULT_SET,
                   help="ひな形の組の名前(v1 以外は今の有珠山リストから作り、別のファイルに保存する。app はアプリと同じ処理)")
   args = ap.parse_args()
@@ -727,7 +893,7 @@ def main():
     import plot_common
     plot_common.setup_japanese_font()
     run(datetime.strptime(args.start, "%Y%m%d"), datetime.strptime(args.end, "%Y%m%d"), jobs=args.jobs, images=args.images,
-        review=args.review, judged=args.judged)
+        review=args.review, judged=args.judged, combine=args.combine)
     return
   os.environ[SET_ENV] = args.set   # 並列で動かす子のプロセスも同じ組を使う
   configure(args.set)

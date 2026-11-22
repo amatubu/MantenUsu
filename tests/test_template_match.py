@@ -158,3 +158,33 @@ def test_review_xlsx_has_links_and_skips_judged(tmp_path):
   # すでにあるファイルは上書きしない
   path2 = tm.write_review_xlsx(tmp_path / "review.xlsx", picked, info, {}, img_dir)
   assert path2.name == "review_2.xlsx"
+
+
+def test_combine_rows_merges_usu_list_and_judged_lists(tmp_path):
+  import openpyxl
+  usu = [{"start": datetime(2026, 1, 1, 0, 0, 0), "end": datetime(2026, 1, 1, 0, 0, 30), "type": "地震",
+          "row": {"種別": "地震", "メモ": "ひな形の地震", "気象庁: 発震時刻": "", "緯度": "", "経度": "", "深さ[km]": "",
+                  "M": "", "震央地名": "", "有珠山の地震らしさ": "高"}},
+         {"start": datetime(2026, 1, 5, 12, 0, 0), "end": datetime(2026, 1, 5, 12, 0, 30), "type": "発破", "row": {"種別": "発破"}}]
+  judged = [
+    {"time": datetime(2026, 1, 1, 0, 0, 5), "cc": 1.0, "mad": 40, "ch": 9, "tpl": "20260101_000000", "m": None,
+     "known": "有珠山リスト", "judge": None, "flag": None, "other": None, "remark": None,
+     "links": {"画像": ("a.png", "images/a.png")}, "src": "前回"},
+    {"time": datetime(2026, 1, 3, 1, 0, 0), "cc": 0.4, "mad": 15, "ch": 9, "tpl": "20260101_000000", "m": None,
+     "known": None, "judge": "地震", "flag": 1, "other": "昭和新山下か", "remark": None, "links": {}, "src": "前回"},
+    {"time": datetime(2026, 1, 3, 1, 0, 1), "cc": 0.4, "mad": 15, "ch": 9, "tpl": "20260101_000000", "m": None,
+     "known": None, "judge": "判別困難", "flag": None, "other": None, "remark": "今回のメモ", "links": {}, "src": "今回"},
+  ]
+  rows = tm.combine_rows(usu, judged, {"20260101_000000"}, {"20260101_000000": "G1"})
+  assert [r["kind"] for r in rows] == ["有珠山リスト", "似た波形で見つけたもの", "有珠山リスト"]
+  assert rows[0]["tpl_self"] == "ひな形" and rows[0]["group"] == "G1" and rows[0]["memo"] == "ひな形の地震"
+  assert rows[0]["links"]["画像"][1] == "images/a.png"   # そのものを拾った検出の画像を使う
+  assert rows[2]["tpl_self"] == "ひな形にしない(発破)"
+  # 2つの一覧にある同じ揺れは1行。判定は前の一覧のまま、空いている備考だけ埋める
+  assert rows[1]["judge"] == "地震" and rows[1]["remark"] == "今回のメモ" and rows[1]["src"] == "前回・今回"
+  path = tm.write_combined_xlsx(tmp_path / "all.xlsx", rows)
+  wb = openpyxl.load_workbook(path)
+  ws = wb["有珠山の地震"]
+  assert ws.max_row == 4
+  assert "stcd=V.KBBY" in ws.cell(4, len(tm.COMBINE_COLS) + 2).hyperlink.target   # リンクの無い行は時刻から作る
+  assert tm.write_combined_xlsx(tmp_path / "all.xlsx", rows).name == "all_2.xlsx"
