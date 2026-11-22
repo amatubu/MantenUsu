@@ -35,6 +35,7 @@ import pick_store
 import external_stations
 import magnitude
 import shortcuts
+import station_correction
 import station_names
 import velocity_model
 import world_quakes
@@ -420,6 +421,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # 速度の構造は、前回の設定ではなく既定(勾配)から始める(保存した到着時刻があれば、そのときの構造)
   #   地震の候補の震源(quake_locate)と同じ構造で求めるため。前回の設定から始めると、候補の画面と違う震源を指してしまう
   layered = LAYERED_DEFAULT
+  # 拠点ごとの補正(station_correction)も、既定(使う)から始める(保存した到着時刻があれば、そのときの設定)
+  corrected = station_correction.DEFAULT_ON
   # この範囲で保存した到着時刻(最初の P波が範囲内にあるもの)
   record_path, record = pick_store.find_record(t_ref, end_time)
   if record is not None:
@@ -429,12 +432,14 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
         initial[key] = min(max(float(val), limits[key][0]), limits[key][1])
     far_omori = read_far_omori(record.get("params"), far_omori)
     layered = read_layered(record.get("params"), layered)
+    corrected = station_correction.read_enabled(record.get("params"), corrected)
   sliders = {}
   top, step_y = 0.54, 0.026
   for i, (key, label, vmin, vmax, vstep) in enumerate(SLIDER_SPECS):
     # 大森係数 k のスライダーは短くし、右に距離の求め方の切り替えボタンを置く
     #   P波の速度のスライダーも短くし、右に速度の構造の切り替えボタンを置く
-    width = 0.12 if key in ("omori_k", "vp") else 0.20
+    #   vp/vs のスライダーも短くし、右に拠点ごとの補正の切り替えボタンを置く
+    width = 0.12 if key in ("omori_k", "vp", "vp_vs") else 0.20
     sax = fig.add_axes([0.73, top - i * step_y, width, 0.019])
     if key in LOG_SLIDERS:
       sliders[key] = LogSlider(sax, label, vmin, vmax, initial[key], vstep)
@@ -442,6 +447,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       sliders[key] = Slider(sax, label, vmin, vmax, valinit=initial[key], valstep=vstep)
   k_row_y = top - [spec[0] for spec in SLIDER_SPECS].index("omori_k") * step_y
   vp_row_y = top - [spec[0] for spec in SLIDER_SPECS].index("vp") * step_y
+  vpvs_row_y = top - [spec[0] for spec in SLIDER_SPECS].index("vp_vs") * step_y
 
   # --- 状態: 自動検出の結果、手で指定した時刻、計算から外した拠点 ---
   #   horizontal ... 水平動を表示している(クリックで S波を指定する)
@@ -450,7 +456,7 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   state = {"auto": {}, "pick_params": None, "result": None, "filtered": True, "layer": MAP_LAYERS[0],
            "p_thr": None, "jma": None, "horizontal": False, "auto_s": {}, "fixed": {}, "fixed_s": {},
            "record_path": record_path, "far_omori": far_omori,
-           "layered": layered}
+           "layered": layered, "corrected": corrected}
   manual = {}
   manual_s = {}
   excluded = set()
@@ -691,7 +697,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
       depth = f"深さ {depth_text(loc)}(海面下)"
       velocity = velocity_model.NAMES[velocity_model.GRADIENT if state["layered"] else velocity_model.UNIFORM]
       lines.append(f"◆震源(P波 {res['n_p']}・S波 {res['n_s']}): 北緯 {lat:.4f}° 東経 {lon:.4f}° {depth}")
-      lines.append(f"  発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒  速度: {velocity}")
+      lines.append(f"  発生時刻: {format_time(ref_time + loc['origin'])}  残差: {loc['rms']:.3f} 秒  速度: {velocity}"
+                   f"  {station_correction.label(state['corrected'])}")
       if loc["rms"] > MAX_LOCAL_RMS:
         lines.append("  ※残差が大きく、遠い地震か、到着時刻の検出がずれています")
         if res.get("far") is None:
@@ -854,7 +861,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
   # スライダーの値と、遠い地震の距離の求め方(far_omori)
   def current_params():
     return {**{k: sl.val for k, sl in sliders.items()}, "far_omori": 1.0 if state["far_omori"] else 0.0,
-            "velocity_layered": 1.0 if state["layered"] else 0.0}
+            "velocity_layered": 1.0 if state["layered"] else 0.0,
+            "station_correction": 1.0 if state["corrected"] else 0.0}
 
   def update(_=None):
     params = current_params()
@@ -928,7 +936,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     used_s = {nm: s_picks[nm] for nm in used if s_picks[nm] is not None and nm not in s_excluded}
     res = locate_event(xyz, used, used_s, proj, params["vp"], params["vp_vs"],
                        params["omori_k"] if state["far_omori"] else None,
-                       model=velocity_model.get(velocity_model.GRADIENT) if state["layered"] else None)
+                       model=velocity_model.get(velocity_model.GRADIENT) if state["layered"] else None,
+                       corrections=station_correction.load() if state["corrected"] else None)
     state["result"] = res
 
     message = result_message(picks, res)   # 気象庁の震源リストの地震(state["jma"])もここで選ぶ
@@ -1045,6 +1054,8 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     show_far_method()
     state["layered"] = LAYERED_DEFAULT
     show_velocity()
+    state["corrected"] = station_correction.DEFAULT_ON
+    show_correction()
     update()
   btn_reset.on_clicked(reset)
 
@@ -1218,6 +1229,20 @@ def plot_hypocenter(st, overrides=None, on_apply=None, external=True, return_to=
     update()
   btn_velocity.on_clicked(toggle_velocity)
   show_velocity()
+
+  # --- 拠点ごとの補正の切り替え(あり ⇔ なし)。読んだ到着時刻は変えず、震源を求めるときだけ補正値を差し引く ---
+  corr_ax = fig.add_axes([0.885, vpvs_row_y - 0.004, 0.095, 0.027])
+  def correction_label():
+    return "補正: あり" if state["corrected"] else "補正: なし"
+  btn_correction = Button(corr_ax, correction_label())
+  btn_correction.label.set_fontsize(9)
+  def show_correction():
+    btn_correction.label.set_text(correction_label())
+  def toggle_correction(_):
+    state["corrected"] = not state["corrected"]
+    show_correction()
+    update()
+  btn_correction.on_clicked(toggle_correction)
 
   # --- 閉じるとき: 保存していない到着時刻の変更があれば、保存するか確かめる ---
   #   はい = 保存して閉じる、いいえ = 保存せずに閉じる、キャンセル = 閉じない

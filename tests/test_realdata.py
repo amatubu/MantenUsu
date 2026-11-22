@@ -175,6 +175,11 @@ def located(request, tmp_path_factory):
   work = tmp_path_factory.mktemp("hours")
   with pytest.MonkeyPatch.context() as mp:
     mp.setattr(pick_store, "PICKS_DIR", PICKS_SNAPSHOT)
+    # 拠点ごとの補正は使わない(補正値は地震が増えるたびに求め直すので、基準に入れると作り直しが続くため。
+    #   補正の効き方は test_station_correction.py で確かめる)
+    import station_correction
+    mp.setattr(station_correction, "DEFAULT_ON", False)
+    mp.setattr(station_correction, "load", lambda file=None: {})
     items = quake_locate.locate_all(cands, make_hour_loader(work), stations, proj)
   shutil.rmtree(work, ignore_errors=True)
   return {f"{c['start']:%Y-%m-%d %H:%M:%S}": summary(r) for c, r in items}

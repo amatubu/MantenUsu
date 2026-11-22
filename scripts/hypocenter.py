@@ -370,12 +370,17 @@ LOCAL_KINDS = (KIND_LOCAL, KIND_LOCAL_POOR, KIND_LOCAL_FEW)
 #   model ... 深さで速度が変わる構造(velocity_model.Model)。None なら均質な構造(vp・vp_vs)
 #   近い地震として位置が決まらないとき(範囲外・残差が大きい)は、遠い地震として到来方向と S-P時間から震央を推定する
 #   (S-P時間が短いのに残差が大きいときは、遠い地震ではなく検出のずれとみなし、近い地震(残差大)とする)
+#   corrections ... 拠点ごとの補正 {(観測点, "P" か "S"): 秒}(station_correction.load())。あれば到着時刻から差し引いて求める
 #   confirmed ... 到着時刻を手で確かめたか(震源推定の画面で保存したもの)。False で到着時刻が CONFIRM_OBSERVATIONS より
 #                 少ないときは、残差が小さくても近い地震(到着時刻少)とする(残差が大きいときは近い地震(残差大)のまま)
 # 戻り値: dict(kind, loc(locate_grid_ps の結果 または None), far(estimate_far の結果 または None),
 #              azimuth, app_v, plane_rms, n_p, n_s, lat, lon,
 #              steep(P波がほぼ同時に届いた。STEEP_APP_V。S-P時間が短いか無いときは kind は決まらない))
-def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=None, confirmed=True, model=None):
+def locate_event(xyz, picks, s_picks, proj, vp=LOCAL_VP, vp_vs=LOCAL_VP_VS, k=None, confirmed=True, model=None,
+                 corrections=None):
+  if corrections:
+    picks = {nm: t - corrections.get((nm, "P"), 0.0) for nm, t in picks.items()}
+    s_picks = {nm: t - corrections.get((nm, "S"), 0.0) for nm, t in s_picks.items()}
   used = sorted(picks)
   used_s = [nm for nm in used if nm in s_picks]
   res = dict(kind=KIND_NONE, loc=None, far=None, azimuth=None, app_v=None, plane_rms=None,

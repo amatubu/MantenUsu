@@ -67,7 +67,7 @@ fi
 STAGE="build_res"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/etc"
-cp ../etc/*.ch ../etc/*.tbl ../etc/win.prm ../etc/external_stations.txt ../etc/station_names.txt ../etc/train_timetable_template.xlsx "$STAGE/etc/"
+cp ../etc/*.ch ../etc/*.tbl ../etc/win.prm ../etc/external_stations.txt ../etc/station_names.txt ../etc/station_corrections.txt ../etc/train_timetable_template.xlsx "$STAGE/etc/"
 OPTS+=(--add-data "$STAGE/etc:etc")
 for tool in win2sac_32 wchch_32; do
   if [ -f "../tools/$tool" ]; then

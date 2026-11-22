@@ -47,6 +47,7 @@ ITEMS = [
   ("user", "etc", "*.prm", "etc の上書き(win.prm)"),
   ("user", "etc", "external_stations.txt", "etc の上書き(ほかの機関の観測点)"),
   ("user", "etc", "station_names.txt", "etc の上書き(拠点名の読み替え)"),
+  ("user", "etc", "station_corrections.txt", "etc の上書き(拠点ごとの補正。station_correction.py --write で書いたもの)"),
   ("data", "output", "picks_*/**/*", "前の版の到着時刻のバックアップ(picks_ で始まるフォルダ)"),
   ("data", "output/quake_rms", "*.npz", "地震の候補の検出に使う揺れの大きさ(RMS)。作り直すと1日あたり数十秒〜数分"),
   ("data", "output/quake_features", "*.json", "地震の候補ごとの波形の解析結果"),
