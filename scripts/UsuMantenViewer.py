@@ -1603,6 +1603,7 @@ class MantenUsuSeismographApp:
     names = sorted(stations)
     rms = {nm: [] for nm in names}
     local_days = set(zip_days)
+    data_days = []   # 記録のあった日(震源リストは、この日の分だけ読む)
     computed_days, computed_seconds = 0, 0.0   # RMS を計算した日の数と、かかった時間(処理時間の表示用)
     for i, day in enumerate(days):
       if cancelled():
@@ -1626,6 +1627,8 @@ class MantenUsuSeismographApp:
         computed_days += 1
         computed_seconds += time.monotonic() - day_started
       present = [nm for nm in names if nm in values and np.isfinite(values[nm]).any()]
+      if present:
+        data_days.append(day)
       if values or cached:
         log_message(f"  {day:%Y-%m-%d}: データのある拠点 {len(present)}({' '.join(present) or 'なし'})"
                     + ("  [保存した RMS]" if cached else
@@ -1645,7 +1648,11 @@ class MantenUsuSeismographApp:
     # --- 3. 気象庁の震源リストとの照合 ---
     period_end = end_day + timedelta(days=1)
     catalog_progress = (lambda i, n: on_progress(i, n, "震源リストを読み、到達見込みを計算しています(日)")) if on_progress else None
-    catalog, missing = jma_match.load_catalog(start_day, period_end, jma_match.array_center(stations), catalog_progress)
+    # 記録の無い日の震源リストは読まない(走時の計算に時間がかかるため。ZIP が一部の日しか無いとき)
+    catalog, missing = jma_match.load_catalog(start_day, period_end, jma_match.array_center(stations), catalog_progress,
+                                              days=data_days)
+    if len(data_days) < len(days):
+      log_message(f"  記録の無い日 {len(days) - len(data_days)}日は、震源リストとの照合を飛ばします")
     if missing:
       log_message(f"  気象庁の震源リストが無い日: {len(missing)}日(scripts/jma_hypocenter.py で取得できます)")
     jma_match.match_candidates(candidates, catalog)

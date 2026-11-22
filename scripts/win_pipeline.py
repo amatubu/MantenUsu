@@ -118,6 +118,12 @@ def find_zips(zips_root, dates):
           if any(d in zip_path.stem for d in dates)
           and not zip_path.name.startswith(APPLEDOUBLE_PREFIX)]
 
+# days(datetime の日のリスト)のうち、その日の ZIP(find_zips と同じく、名前に年月日 yymmdd を含むもの)があるもの
+#   データの無い日を一つずつ調べずに飛ばすために使う
+def days_with_zips(zips_root, days):
+  stems = [p.stem for p in Path(zips_root).glob("**/*.zip") if not p.name.startswith(APPLEDOUBLE_PREFIX)]
+  return [d for d in days if any(d.strftime("%y%m%d") in s for s in stems)]
+
 # ZIP内のWINファイル名から日時を取り出す。WINファイルでない・形式が違うときは None
 #   例: 1070432002/260826/1070432002_2608260858.win
 #       拠点ID    /年月日/拠点ID    _年月日時分.win

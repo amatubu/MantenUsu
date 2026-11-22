@@ -118,18 +118,29 @@ def array_center(stations):
 #   start, end ... 期間(datetime)。遠い地震の走時を見込んで、前の日の分から読む
 #   center     ... 拠点の中心 (緯度, 経度)
 #   on_progress ... 進み具合 (何日目, 全体の日数) を受け取る関数(走時の計算に時間がかかるため。長い期間で数分)
+#   days       ... 読む日(datetime のリスト。省略すると期間のすべての日)。記録の無い日を飛ばすときに渡す
 #   戻り値 ... (地震のリスト, 震源リストの無かった日のリスト)
 #     地震 ... jma_hypocenter.load_day の項目に加え、
 #              "dist_km"(震央距離)、"azimuth"(拠点から見た震源の方位 [度])、"log_amp"(見込みの振幅)、
 #              "p_time"・"s_time"(到達見込みの時刻)
-def load_catalog(start, end, center, on_progress=None):
+def load_catalog(start, end, center, on_progress=None, days=None):
   quakes, missing = [], []
   first = (start - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
   total = (end - first).days + 1
+  # days を渡したときは、その日と前の日(日をまたいで届く地震のため)だけを読む
+  wanted = None
+  if days is not None:
+    wanted = set()
+    for d in days:
+      d0 = d.replace(hour=0, minute=0, second=0, microsecond=0)
+      wanted.update((d0, d0 - timedelta(days=1)))
   day = first
   while day <= end:
     if on_progress:
       on_progress((day - first).days + 1, total)
+    if wanted is not None and day not in wanted:
+      day += timedelta(days=1)
+      continue
     if not jma_hypocenter.csv_path(day).exists():
       if day >= start.replace(hour=0, minute=0, second=0, microsecond=0):
         missing.append(day)

@@ -328,7 +328,10 @@ def scan_day_cached(day):
   if missing:
     wave, t0 = load_filtered(day, day + timedelta(days=1))
     if not wave:
-      return {"day": f"{day:%Y-%m-%d}", "detections": [], "computed": 0, "no_data": True}
+      # ZIP が今は無い日: 保存した結果があれば、そのひな形の分だけ使う
+      dets = [d for k in keys if k in cache["templates"] for d in cache["templates"][k]["detections"]]
+      return {"day": f"{day:%Y-%m-%d}", "detections": merge_detections(dets), "computed": 0,
+              "no_data": not cache["templates"]}
     norms = day_norms(wave, tdata.shape[-1])
     for ti in missing:
       stats, found = template_peaks(wave, t0, norms, tdata, toffs, ti, tinfo[ti])
@@ -801,8 +804,13 @@ def run(start, end, jobs=3, images=False, log=print, cancelled=lambda: False, pr
   log(f"  ひな形 {len(tinfo)} 件(よく似たもののグループ {n_groups} 組)")
   for g in sorted({g for g in groups.values() if g}, key=lambda x: int(x[1:])):
     log(f"    {g}: {'・'.join(nm for nm, x in groups.items() if x == g)}")
-  days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-  log(f"  期間: {start:%Y-%m-%d}〜{end:%Y-%m-%d}({len(days)}日)、並列 {jobs}")
+  all_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
+  # ZIP も保存した結果も無い日は、子のプロセスに渡さずに飛ばす(ZIP が一部の日しか無いとき、一日ずつ調べると遅い)
+  with_zip = set(win_pipeline.days_with_zips(app_paths.ZIPS_DIR, all_days))
+  days = [d for d in all_days if d in with_zip or (DAYS_DIR / f"{d:%Y%m%d}.json").exists()]
+  log(f"  期間: {start:%Y-%m-%d}〜{end:%Y-%m-%d}({len(all_days)}日)、並列 {jobs}")
+  if len(days) < len(all_days):
+    log(f"  ZIP も保存した結果も無い {len(all_days) - len(days)}日は飛ばします")
   rows, done, computed, no_data = [], 0, 0, 0
   ex = ProcessPoolExecutor(max_workers=jobs)
   try:
@@ -823,7 +831,8 @@ def run(start, end, jobs=3, images=False, log=print, cancelled=lambda: False, pr
       progress(done, len(days), "日ごとに探しています(日)")
   finally:
     ex.shutdown(wait=True, cancel_futures=True)
-  log(f"  計算した日 {computed} 日・保存した結果を使った日 {len(days) - computed - no_data} 日・波形の無い日 {no_data} 日")
+  log(f"  計算した日 {computed} 日・保存した結果を使った日 {len(days) - computed - no_data} 日・"
+      f"波形の無い日 {no_data + len(all_days) - len(days)} 日")
   rows, excluded = select_rows(sorted(rows, key=lambda d: d["time"]))
   if excluded:
     log(f"  除くひな形に似ているので除いた検出: {len(excluded)} 件")

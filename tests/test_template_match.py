@@ -188,3 +188,26 @@ def test_combine_rows_merges_usu_list_and_judged_lists(tmp_path):
   assert ws.max_row == 4
   assert "stcd=V.KBBY" in ws.cell(4, len(tm.COMBINE_COLS) + 2).hyperlink.target   # リンクの無い行は時刻から作る
   assert tm.write_combined_xlsx(tmp_path / "all.xlsx", rows).name == "all_2.xlsx"
+
+
+def test_days_with_zips_keeps_only_days_that_have_a_zip(tmp_path):
+  import win_pipeline
+  (tmp_path / "sub").mkdir()
+  (tmp_path / "261101.zip").write_bytes(b"")
+  (tmp_path / "sub" / "261103.zip").write_bytes(b"")
+  (tmp_path / "._261102.zip").write_bytes(b"")   # Mac の付属ファイルは数えない
+  days = [datetime(2026, 11, d) for d in (1, 2, 3, 4)]
+  assert win_pipeline.days_with_zips(tmp_path, days) == [days[0], days[2]]
+
+
+def test_scan_day_cached_uses_saved_results_when_zip_is_gone(tmp_path, monkeypatch):
+  data, offs, info = make_templates()
+  keys = tm.template_keys(data[:2], offs[:2], info[:2])
+  det = {"time": "2026-11-02T01:00:00.000", "first": "2026-11-02T00:59:59.000", "cc": 0.5, "template": info[0]["name"]}
+  saved = {"day": "2026-11-02", "templates": {keys[0]: {"stats": {}, "detections": [det]}}}
+  (tmp_path / "20261102.json").write_text(json.dumps(saved), encoding="utf-8")
+  monkeypatch.setattr(tm, "load_filtered", lambda t0, t1: ({}, t0))
+  monkeypatch.setattr(tm, "DAYS_DIR", tmp_path)
+  monkeypatch.setattr(tm, "load_templates", lambda: (data[:2], offs[:2], info[:2]))
+  r = tm.scan_day_cached(DAY)
+  assert not r["no_data"] and len(r["detections"]) == 1
