@@ -358,12 +358,11 @@ warnings.filterwarnings(
 #     一覧に無い地震は見つからなかった。Mimatsu だけの短い揺れ(1 日 622 個、昼に多い)は人の活動による雑音とみられる
 #     2 日め・3 日めも作った: 2025-12-22(有珠山の地震 2 つと遠くの地震)、2026-08-23(洞爺湖町で震度 2 の浦河沖 M6.0、茨城県南部 M5.9、花火)
 #     やること: 画面で拡大して聴ける版を作る
-# 52. 1時間スタック波形の縦の大きさに、下限を付けられるようにする(切り替え)
-#     今は 1 時間の最大振幅の 1/5 を段の半分の高さにしている(最大の揺れが段の間隔の 2.5 倍)。静かな 1 時間では雑音が段いっぱいに描かれる。
-#     紙の 1 日の記録(shake_day.py --no-clip、51)のように、「その 1 時間のふだんの揺れの 30 倍」を段の間隔の半分の下限にする選び方を足し、
-#     「最大で合わせる」と切り替えられるようにする。小さな地震だけの夜の 1 時間では地震も小さめになるので、使ってみて既定を決める
-#     拠点ボタンの右に「縦: 最大で合わせる / 縦: 下限あり」の切り替えを入れた(stack_plot.scale_height)。画像の保存にも使う。バッチ処理は今のまま
-#     やること: 使ってみて、どちらを既定にするか決める(今の既定は「最大で合わせる」)
+# [完了]52. 1時間スタック波形の縦の大きさに、下限を付けられるようにする(切り替え)
+#     拠点ボタンの右の「縦: 最大で合わせる / 縦: 下限あり」で切り替える(stack_plot.scale_height)。最大で合わせるは、その1時間の最大振幅の
+#     1/5 を段の半分の高さにする。下限ありは、それと「その1時間のふだんの揺れ(|速度 - 中央値| の中央値)の 30 倍」(紙の1日の記録
+#     shake_day.py と同じ)の大きいほう。選んだほうは次に開く画面と「画像を保存」にも使い、既定は「最大で合わせる」のまま。
+#     バッチ処理の画像は --floor で下限ありにできる(ファイル名に _floor)
 # 53. 世界の地震が届く様子を、地球の断面のアニメーションと実際の波形で見る教材を作る(学習ツールのアイデア #13)
 #     地球の断面(有珠山を真上)に、震源から広がる波面と有珠山への通り道を描き、4拠点の波形を同じ時刻まで描いていく。中学生にもわかる言葉にする
 #     試作(shake_world.py → batch_plots/quiz/world.html、7 件。クイズの海外の地震とイタリア南部 M6.2 84°)。はね返る波・回り込む波はうすく、
@@ -1421,16 +1420,19 @@ class MantenUsuSeismographApp:
   #   quakes ... 地震(震源リストの到達見込み・地震の候補)を重ねる
   #   trains ... 列車(時刻表と対応した揺れ・貨物列車の候補)を重ねる(Bamba だけ)
   #   重ねた画像は、ファイル名の最後に _quakes・_trains を付けて、重ねない画像と別に保存する
-  def run_batch_processing(self, channel, start_date=None, end_date=None, overwrite=False, quakes=False, trains=False):
+  #   floor  ... 縦の大きさに下限を付ける(画面の「縦: 下限あり」と同じ。TODO 52)。ファイル名の最後に _floor を付ける
+  def run_batch_processing(self, channel, start_date=None, end_date=None, overwrite=False, quakes=False, trains=False,
+                           floor=False):
     log_message(f"=== 1時間スタック波形バッチ処理を開始します ===")
     log_message(f"  - チャンネル: {channel}")
     log_message(f"  - 開始日: {start_date or '指定なし (全対象)'}")
     log_message(f"  - 終了日: {end_date or '指定なし (全対象)'}")
     overlay_names = [n for n, on in ((QuakeOverlay.name, quakes), (TrainOverlay.name, trains)) if on]
     overlays = self.make_overlays(overlay_names)
-    suffix = ("_quakes" if quakes else "") + ("_trains" if trains else "")
+    suffix = ("_quakes" if quakes else "") + ("_trains" if trains else "") + ("_floor" if floor else "")
     if overlays:
       log_message(f"  - 重ね表示: {'・'.join(overlay_names)}")
+    log_message(f"  - 縦の大きさ: {'下限あり(ふだんの揺れの 30 倍)' if floor else '最大で合わせる'}")
 
     if "." in channel:
       station_name, comp_name = channel.split(".", 1)
@@ -1514,7 +1516,7 @@ class MantenUsuSeismographApp:
 
           # 波形の描画
           stack = StackFigure(for_screen=False)
-          stack.render(target_trace, start_dt, station_name, comp_name)
+          stack.render(target_trace, start_dt, station_name, comp_name, floor=floor)
           if overlays:
             draw_on_image(stack, overlays, start_dt, station_name)
           fig = stack.fig
@@ -1981,6 +1983,8 @@ def main():
                       help="--batch の画像に、地震(震源リストの到達見込み・地震の候補)を重ねる")
   parser.add_argument("--trains", action="store_true",
                       help="--batch の画像に、列車(時刻表と対応した揺れ・貨物列車の候補)を重ねる(Bamba だけ)")
+  parser.add_argument("--floor", action="store_true",
+                      help="--batch の画像の縦の大きさに下限を付ける(ふだんの揺れの 30 倍。ファイル名に _floor を付ける)")
   parser.add_argument("--overwrite", action="store_true",
                       help="既存の画像を上書きする (デフォルトはスキップ)")
   parser.add_argument("--verbose", "-v", action="store_true", help="画面のログをコンソールにも表示する (バッチ処理モードでは常に表示)")
@@ -2022,7 +2026,8 @@ def main():
       end_date=args.end_date,
       overwrite=args.overwrite,
       quakes=args.quakes,
-      trains=args.trains
+      trains=args.trains,
+      floor=args.floor
     )
     root.destroy()
   else:

@@ -428,7 +428,7 @@ STA/LTA 法で P波・S波の到着時刻を検出し、S-P時間と大森公式
 | `python3 scripts/UsuMantenViewer.py --download-zips -s 20260901 -e 20260930` | 手元に無い日の ZIP を Googleドライブからまとめてダウンロード（`--dry-run` で件数と大きさだけ表示） |
 | `python3 scripts/UsuMantenViewer.py --detect-quakes -s 20260801 -e 20260831 --images` | 地震の候補を探して震源リストと照合（メンテナンス画面と同じ） |
 | `python3 scripts/UsuMantenViewer.py --locate-quakes <候補の一覧.csv> --images` | 候補の一覧から震源を求め、一覧と図を保存 |
-| `python3 scripts/UsuMantenViewer.py --batch -c Hokudai.U -s 20260801 -e 20260831` | 1時間スタック波形の画像をまとめて保存（`--quakes`・`--trains` で重ね表示） |
+| `python3 scripts/UsuMantenViewer.py --batch -c Hokudai.U -s 20260801 -e 20260831` | 1時間スタック波形の画像をまとめて保存（`--quakes`・`--trains` で重ね表示、`--floor` で縦の大きさに下限） |
 
 ### 10.2 ファイルの置き場所
 
