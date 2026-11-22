@@ -31,6 +31,7 @@ GAIN = 30.0              # 段の間隔の半分 = その 1 時間のふだん�
 CLIP = 0.6               # 段の間隔の 0.6 倍(上下それぞれ)をこえる揺れは切る
 MAX_ROWS = 3.0           # 切らない版(--no-clip): その 1 時間の最大の揺れが、段の間隔の MAX_ROWS 倍になるようにする
                          # (ふだんの揺れの倍で決めると、大きな地震がページの外まではみ出すため)
+HOUR_YLIM = (59.8, -0.8)  # 1 時間の図の縦の範囲(上が 0 分の段)
 INK, MUTED, LINE = "#1c2126", "#68727d", "#c9ced4"
 WAVE = "#1f5f99"
 
@@ -149,11 +150,41 @@ def mark_events(ax, h, events):
                 bbox=dict(facecolor="white", edgecolor=color, lw=0.5, alpha=0.92, pad=1.2, boxstyle="round,pad=0.25"))
         first = False
 
+# 1 時間(x は RATE で 3600 秒分)を、1 段 = 1 分の 60 段で ax に描く。縦は上から 0〜59 分(段 r の中心が y = r)、横は 0〜60 秒
+#   戻り値 ... (その 1 時間のふだんの揺れ, 段の間隔 1 にあたる大きさ)
+def draw_hour(ax, x, h, clip=CLIP, label_size=5.5, lw=0.35):
+  per_row = 60 * RATE
+  t = np.arange(per_row) / RATE
+  level = hour_level(x)
+  scale = level * GAIN / 0.5 if level > 0 else 1.0      # 段の間隔 1 にあたる大きさ
+  if not clip:                                          # 切らない版は、その 1 時間の最大を基準にする
+    top = float(np.nanmax(np.abs(x))) if np.isfinite(x).any() else 0.0
+    scale = max(scale, top / MAX_ROWS) if top > 0 else scale
+  for r in range(60):
+    y = x[r * per_row:(r + 1) * per_row] / scale
+    if clip:
+      y = np.clip(y, -clip, clip)
+    ax.plot(t, r - y, color=WAVE, lw=lw, rasterized=True)
+    miss = np.isnan(x[r * per_row:(r + 1) * per_row])
+    if miss.any():
+      ax.fill_between(t, r - 0.5, r + 0.5, where=miss, color="#e4e7eb", lw=0)
+  ax.set_ylim(*HOUR_YLIM)
+  ax.set_yticks(range(60))
+  ax.set_yticklabels([f"{h:02d}:{m:02d}" for m in range(60)], fontsize=label_size)
+  ax.set_xlim(0, 60)
+  ax.set_xticks(range(0, 61, 10))
+  ax.set_xticks(range(0, 61, 2), minor=True)
+  ax.grid(axis="x", which="major", color=LINE, lw=0.6)
+  ax.grid(axis="x", which="minor", color="#eef0f2", lw=0.4)
+  ax.tick_params(labelsize=7, colors=MUTED)
+  ax.tick_params(axis="y", length=0)
+  for side in ("top", "right"):
+    ax.spines[side].set_visible(False)
+  return level, scale
+
 def day_pdf(path, day, nm, wave, band, hours=range(24), png_dir=None, clip=CLIP, events=None):
   import matplotlib.pyplot as plt
   from matplotlib.backends.backend_pdf import PdfPages
-  per_row = 60 * RATE
-  t = np.arange(per_row) / RATE
   if events is not None:
     hours = [h for h in hours if any(e["start"] < (h + 1) * 3600 and e["end"] > h * 3600 for e in events)]
   with PdfPages(path) as pdf:
@@ -166,36 +197,12 @@ def day_pdf(path, day, nm, wave, band, hours=range(24), png_dir=None, clip=CLIP,
       plt.close(fig)
     for h in hours:
       x = wave[h * 3600 * RATE:(h + 1) * 3600 * RATE]
-      level = hour_level(x)
-      scale = level * GAIN / 0.5 if level > 0 else 1.0      # 段の間隔 1 にあたる大きさ
-      if not clip:                                          # 切らない版は、その 1 時間の最大を基準にする
-        top = float(np.nanmax(np.abs(x))) if np.isfinite(x).any() else 0.0
-        scale = max(scale, top / MAX_ROWS) if top > 0 else scale
       fig = plt.figure(figsize=(8.27, 11.69))
       ax = fig.add_axes([0.08, 0.05, 0.88, 0.87])
-      for r in range(60):
-        y = x[r * per_row:(r + 1) * per_row] / scale
-        if clip:
-          y = np.clip(y, -clip, clip)
-        ax.plot(t, r - y, color=WAVE, lw=0.35, rasterized=True)
-        miss = np.isnan(x[r * per_row:(r + 1) * per_row])
-        if miss.any():
-          ax.fill_between(t, r - 0.5, r + 0.5, where=miss, color="#e4e7eb", lw=0)
+      level, scale = draw_hour(ax, x, h, clip)
       if events is not None:
         mark_events(ax, h, events)
-      ax.set_ylim(59.8, -0.8)
-      ax.set_yticks(range(60))
-      ax.set_yticklabels([f"{h:02d}:{m:02d}" for m in range(60)], fontsize=5.5)
-      ax.set_xlim(0, 60)
-      ax.set_xticks(range(0, 61, 10))
-      ax.set_xticks(range(0, 61, 2), minor=True)
       ax.set_xlabel("秒(その段の分の始まりから)", fontsize=8, color=MUTED)
-      ax.grid(axis="x", which="major", color=LINE, lw=0.6)
-      ax.grid(axis="x", which="minor", color="#eef0f2", lw=0.4)
-      ax.tick_params(labelsize=7, colors=MUTED)
-      ax.tick_params(axis="y", length=0)
-      for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
       fig.text(0.08, 0.975, f"{day:%Y年%m月%d日}({'月火水木金土日'[day.weekday()]})  {h:02d}:00〜{h + 1:02d}:00  "
                f"{station_names.full(nm)} の上下動", fontsize=12, weight="bold", color=INK, va="top")
       fig.text(0.08, 0.955, f"{band[0]:g}〜{band[1]:g} Hz の揺れ。1 段が 1 分で、左から右へ時間が進みます。"
