@@ -1,9 +1,12 @@
 # waveform_window.py
 # 指定期間の波形表示(全拠点・全成分を縦に並べる)と、震度推定・P波・S波検出への入口
+#   表示のフィルタと、波形を音で聴く(TODO 48。waveform_sound.py)
 from datetime import timedelta
+import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+import numpy as np
 from obspy import Stream, UTCDateTime
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk, FigureCanvasTkAgg
@@ -14,6 +17,13 @@ from ps_picker import plot_ps_arrival_time
 from hypocenter_window import plot_hypocenter
 import shortcuts
 import station_names as display_names   # 拠点名の読み替え(この中の関数 station_names と別の名前にする)
+import waveform_sound
+
+# 成分の名前(音で聴く成分の選択に出す)
+COMP_NAMES = {"U": "上下", "N": "南北", "E": "東西"}
+# 再生中に波形の上を動く線の色と、動かす間隔 [ミリ秒]
+CURSOR_COLOR = "#1b7f3b"
+CURSOR_INTERVAL_MS = 40
 
 # 成分の並び順: U(上下)、N(南北)、E(東西)
 COMP_ORDER = ["U", "N", "E"]
@@ -71,6 +81,8 @@ def plot_trace(ax, tr, label):
     linewidth = 0.4                          # 線の太さ(単位はpt)
   )
 
+  # どの拠点の軸かを覚えておく(音で聴くときに、その拠点の波形の上にだけ線を引く)
+  ax.set_gid(tr.stats.station)
   # Y(振幅)軸のラベル(90度回転)。位置は Matplotlib に任せ、目盛りの数字の左側に置かせる
   ax.set_ylabel(label, fontsize=8)
   # Y軸の目盛(数値)サイズ
@@ -169,7 +181,15 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
   # 4拠点のときは拠点ごとに2x2、それ以外は縦に1列に並べる
   can_grid = len(station_names(ordered_st)) == GRID_STATIONS
   layout = {"grid": can_grid}
-  (draw_station_grid if can_grid else draw_vertical)(fig, ordered_st, title_str)
+  # 表示のフィルタ(TODO 48。音にも同じフィルタをかける)。震度推定などには元の波形を使う
+  filt = {"band": None, "name": "なし"}
+  # 表示している波形(view["st"])に表示のフィルタをかけて描く
+  def draw(target_st):
+    shown = waveform_sound.filtered_stream(target_st, filt["band"])
+    (draw_station_grid if layout["grid"] else draw_vertical)(fig, shown, title_str)
+    if filt["band"] is not None:
+      fig.text(0.99, 0.94, f"フィルタ: {filt['name']}", fontsize=9, color="#333333", ha="right")
+  draw(ordered_st)
 
   # --- 描画用ウィンドウの作成 ---
   wave_win = tk.Toplevel(parent)
@@ -183,6 +203,7 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
 
   # 【重要】ウィンドウが閉じられたときにMatplotlibのリソースを解放して確実に閉じる
   def on_close():
+    stop_sound(redraw=False)   # 音を止めて、一時ファイルを消す
     plt.close(fig)      # Matplotlibのグラフをメモリから破棄する
     wave_win.destroy()  # ウィンドウを破棄する
 
@@ -213,6 +234,160 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
   control_frame = ttk.Frame(wave_win, padding=10)
   control_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
+  # --- 上の段: 拠点名、表示のフィルタ、波形を音で聴く(TODO 48) ---
+  #   拠点名は、震度推定・P波・S波検出(下の段)と音で聴く拠点で共通
+  #   聴く範囲は、いま見えている時間の範囲(虫めがねで拡大していれば、その範囲)。再生中は選んだ拠点の波形の上を緑の線が動く
+  #   キー: 聴く・止める ⌘K(Windows は Ctrl+K)
+  sound_frame = ttk.Frame(wave_win, padding=(10, 6, 10, 0))
+  sound_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+  # 読み込まれたデータから重複のない拠点名リストを作成
+  stations = sorted(list(set(tr.stats.station for tr in ordered_st)))
+  # 拠点名のドロップダウン（コンボボックス）。表示は読み替えた名前(station_names)で、選んだら内部名に戻す
+  ttk.Label(sound_frame, text="拠点名:").pack(side=tk.LEFT, padx=(0, 5))
+  station_combobox = ttk.Combobox(sound_frame, values=[display_names.full(s) for s in stations],
+                                  state="readonly", width=15)
+  if stations:
+    station_combobox.current(0)  # 初期選択
+  station_combobox.pack(side=tk.LEFT, padx=(0, 10))
+  ttk.Separator(sound_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=(6, 12))
+
+  ttk.Label(sound_frame, text="フィルタ:").pack(side=tk.LEFT, padx=(0, 5))
+  filter_combobox = ttk.Combobox(sound_frame, values=[name for name, _band in waveform_sound.FILTER_CHOICES],
+                                 state="readonly", width=14)
+  filter_combobox.current(0)
+  filter_combobox.pack(side=tk.LEFT, padx=(0, 10))
+
+  def on_filter(_event=None):
+    filt["name"] = filter_combobox.get()
+    filt["band"] = dict(waveform_sound.FILTER_CHOICES)[filt["name"]]
+    stop_sound(redraw=False)
+    draw(view["st"])
+    canvas.draw()
+    toolbar.update()
+  filter_combobox.bind("<<ComboboxSelected>>", on_filter)
+
+  ttk.Separator(sound_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=(6, 12))
+  ttk.Label(sound_frame, text="音で聴く 成分:").pack(side=tk.LEFT, padx=(0, 5))
+  comp_combobox = ttk.Combobox(sound_frame, values=[f"{name}({c})" for c, name in COMP_NAMES.items()],
+                               state="readonly", width=8)
+  comp_combobox.current(0)
+  comp_combobox.pack(side=tk.LEFT, padx=(0, 8))
+  ttk.Label(sound_frame, text="速さ:").pack(side=tk.LEFT, padx=(0, 5))
+  speed_combobox = ttk.Combobox(sound_frame, values=[f"×{v}" for v in waveform_sound.SPEEDS],
+                                state="readonly", width=5)
+  speed_combobox.current(waveform_sound.SPEEDS.index(waveform_sound.DEFAULT_SPEED))
+  speed_combobox.pack(side=tk.LEFT, padx=(0, 10))
+  play_label = shortcuts.with_label("▶ 聴く", "k")
+  stop_label = shortcuts.with_label("■ 止める", "k")
+  btn_play = ttk.Button(sound_frame, text=play_label, width=12)
+  btn_play.pack(side=tk.LEFT)
+  sound_info = ttk.Label(sound_frame, text="", foreground="#555555")
+  sound_info.pack(side=tk.LEFT, padx=(10, 0))
+
+  player = waveform_sound.SoundPlayer()
+  # 再生の状態: 動く線、背景の絵(線を描き直すときに使う)、始めた時刻、範囲の始め [秒]、速さ、長さ [秒]
+  sound = {"lines": [], "bg": None, "t0": 0.0, "x0": 0.0, "speed": 1, "dur": 0.0, "job": None, "cid": None}
+
+  def stop_sound(redraw=True):
+    player.stop()
+    if sound["job"] is not None:
+      wave_win.after_cancel(sound["job"])
+      sound["job"] = None
+    if sound["cid"] is not None:
+      canvas.mpl_disconnect(sound["cid"])
+      sound["cid"] = None
+    for line in sound["lines"]:
+      try:
+        line.remove()
+      except (ValueError, NotImplementedError):
+        pass   # 図を描き直したあとで、線はもう無い
+    had_lines = bool(sound["lines"])
+    sound["lines"] = []
+    try:
+      btn_play.config(text=play_label)
+      sound_info.config(text="")
+      if redraw and had_lines:
+        canvas.draw_idle()
+    except tk.TclError:
+      pass   # 画面を閉じたあと
+
+  # 図が描き直されたら(拡大・ウィンドウの大きさを変えたとき)、線を描く前の絵を取り直す
+  def on_draw(_event):
+    sound["bg"] = canvas.copy_from_bbox(fig.bbox)
+
+  def tick():
+    sound["job"] = None
+    elapsed = time.monotonic() - sound["t0"]
+    proc = player.proc
+    if elapsed >= sound["dur"] or (proc is not None and proc.poll() is not None):
+      stop_sound()
+      return
+    x = sound["x0"] + elapsed * sound["speed"]
+    if sound["bg"] is not None:
+      canvas.restore_region(sound["bg"])
+    for line in sound["lines"]:
+      line.set_xdata([x, x])
+      line.axes.draw_artist(line)
+    canvas.blit(fig.bbox)
+    sound["job"] = wave_win.after(CURSOR_INTERVAL_MS, tick)
+
+  def toggle_sound():
+    if sound["lines"] or player.path is not None:
+      stop_sound()
+      return
+    station = display_names.internal(station_combobox.get())
+    comp = list(COMP_NAMES)[comp_combobox.current()]
+    traces = [tr for tr in view["st"] if tr.stats.station == station and tr.stats.channel.endswith(comp)]
+    if not traces:
+      messagebox.showinfo("音で聴く", f"{station_combobox.get()} の{COMP_NAMES[comp]}動の波形がありません。",
+                          parent=wave_win)
+      return
+    tr = traces[0]
+    fs = tr.stats.sampling_rate
+    speed = waveform_sound.SPEEDS[speed_combobox.current()]
+    # いま見えている時間の範囲(横軸は各波形の始まりからの秒)
+    x_lo, x_hi = fig.axes[0].get_xlim()
+    i0 = max(0, int(x_lo * fs))
+    i1 = min(tr.stats.npts, int(np.ceil(x_hi * fs)))
+    if i1 - i0 < fs * 0.5:
+      messagebox.showinfo("音で聴く", "聴く範囲が短すぎます。", parent=wave_win)
+      return
+    dur = (i1 - i0) / fs / speed
+    if dur > waveform_sound.MAX_SOUND_SECONDS:
+      messagebox.showinfo("音で聴く", f"音が {dur / 60:.0f} 分になります。速さを上げるか、"
+                          f"虫めがねで範囲をしぼってください({waveform_sound.MAX_SOUND_SECONDS // 60} 分まで)。",
+                          parent=wave_win)
+      return
+    if waveform_sound.player_kind() is None:
+      messagebox.showerror("音で聴く", "この OS では音を鳴らす方法が見つかりません。", parent=wave_win)
+      return
+    wave_win.config(cursor="watch")
+    wave_win.update_idletasks()
+    try:
+      y, rate = waveform_sound.sound_samples(tr.data, fs, i0, i1, filt["band"], speed)
+    finally:
+      wave_win.config(cursor="")
+    if len(y) == 0:
+      return
+    sound["x0"], sound["speed"], sound["dur"] = i0 / fs, speed, len(y) / rate
+    # 線は、聴いている拠点の波形(3成分)の上にだけ引く
+    sound["lines"] = [ax.axvline(sound["x0"], color=CURSOR_COLOR, linewidth=1.2, animated=True)
+                      for ax in fig.axes if ax.get_gid() == station]
+    sound["cid"] = canvas.mpl_connect("draw_event", on_draw)
+    canvas.draw()   # 線を除いた絵を取る(on_draw)
+    if not player.play(y, rate):
+      stop_sound()
+      messagebox.showerror("音で聴く", "音を鳴らせませんでした。", parent=wave_win)
+      return
+    sound["t0"] = time.monotonic()
+    btn_play.config(text=stop_label)
+    sound_info.config(text=f"{sound['dur']:.0f} 秒")
+    tick()
+
+  btn_play.config(command=toggle_sound)
+  shortcuts.bind(wave_win, "k", toggle_sound)
+
   # 【追加】もともとあった虫めがねや保存などのツールバーをここに追加！
   toolbar_frame = ttk.Frame(wave_win)
   toolbar_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -225,18 +400,7 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
   # 表示している波形(view["st"])と、読み込み済みの波形(view["loaded"])。範囲を縮めたときは読み込み済みから切り出す
   view = {"st": ordered_st, "loaded": ordered_st}
 
-  # 読み込まれたデータから重複のない拠点名リストを作成
-  stations = sorted(list(set(tr.stats.station for tr in ordered_st)))
-
-  # 拠点名のドロップダウン（コンボボックス）。表示は読み替えた名前(station_names)で、選んだら内部名に戻す
-  ttk.Label(control_frame, text="拠点名:").pack(side=tk.LEFT, padx=(0, 5))
-  station_combobox = ttk.Combobox(control_frame, values=[display_names.full(s) for s in stations],
-                                  state="readonly", width=15)
-  if stations:
-    station_combobox.current(0)  # 初期選択
-  station_combobox.pack(side=tk.LEFT, padx=(0, 10))
-
-  # 選択中の拠点の波形データで analyze を呼ぶ(震度推定・P波・S波検出で共通)
+  # 選択中の拠点(拠点名のドロップダウンは上の段)の波形データで analyze を呼ぶ(震度推定・P波・S波検出で共通)
   def run_for_station(analyze):
     selected_station = display_names.internal(station_combobox.get())
     if not selected_station:
@@ -314,7 +478,8 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
       return
     rng["start"], rng["end"] = start, end
     view["st"] = sort_stream(st_view)
-    (draw_station_grid if layout["grid"] else draw_vertical)(fig, view["st"], title_str)
+    stop_sound(redraw=False)
+    draw(view["st"])
     canvas.draw()
     toolbar.update()
     range_label.config(text=range_text())
@@ -348,7 +513,8 @@ def open_waveform_window(parent, st, title_str, return_to=None, load_range=None)
       return "縦に並べる" if layout["grid"] else "拠点ごとに2x2"
     def toggle_layout():
       layout["grid"] = not layout["grid"]
-      (draw_station_grid if layout["grid"] else draw_vertical)(fig, view["st"], title_str)
+      stop_sound(redraw=False)
+      draw(view["st"])
       canvas.draw()
       toolbar.update()   # ツールバーの「戻る・ホーム」の履歴を新しい表示に合わせる
       btn_layout.config(text=layout_label())
