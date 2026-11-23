@@ -23,6 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
+import page_common
 import shake_day as sd
 import shake_quiz as sq
 import station_names
@@ -97,7 +98,7 @@ def write_day(out, day, image_wf, data_wf, stations, hours, events, page_only=Fa
   }
   page = (PAGE.replace("__TITLE__", html.escape(meta["title"]))
           .replace("__IMAGE_NOTE__", f"{IMAGE_BAND[0]:g}〜{IMAGE_BAND[1]:g} Hz の揺れ。大きな揺れは、となりの段まではみ出しています")
-          .replace("__COMMON_JS__", sq.COMMON_JS)
+          .replace("__COMMON_JS__", page_common.PAGE_JS)
           .replace("__META__", script_json(meta)))
   (out / "index.html").write_text(page, encoding="utf-8")
   return out / "index.html"
@@ -666,7 +667,7 @@ function resize() {
   canvas.width = Math.max(1, Math.round(r.width * S.dpr)); canvas.height = Math.max(1, Math.round(r.height * S.dpr));
   requestDraw();
 }
-function tickStep(seconds, most) {      // 目盛りの間隔(目盛りが most 個以下になるもの)
+function clockStep(seconds, most) {     // 時刻の目盛りの間隔(目盛りが most 個以下で、きりのよい時刻になるもの)
   for (const s of [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800]) if (seconds / s <= most) return s;
   return 3600;
 }
@@ -678,7 +679,7 @@ function draw() {
   if (!ids.length) return;
   const axisH = 22 * d, rowH = (H - axisH) / ids.length;
   // 時刻の目盛り
-  const t0 = (S.base + S.v0) / RATE, t1 = t0 + S.span / RATE, step = tickStep(t1 - t0, Math.max(2, Math.floor(W / (72 * d))));   // 時刻の文字が重ならないように
+  const t0 = (S.base + S.v0) / RATE, t1 = t0 + S.span / RATE, step = clockStep(t1 - t0, Math.max(2, Math.floor(W / (72 * d))));   // 時刻の文字が重ならないように
   ctx.font = `${11 * d}px -apple-system, sans-serif`;
   ctx.fillStyle = colors.muted; ctx.strokeStyle = colors.line; ctx.lineWidth = 1;
   ctx.textAlign = "center"; ctx.textBaseline = "top";
@@ -728,19 +729,12 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H - axisH); ctx.stroke();
   }
 }
-function formatAmp(nm) {
-  const um = nm / 1000;
-  if (um >= 100) return `${Math.round(um).toLocaleString()} µm/s`;
-  return um >= 1 ? `${um.toPrecision(3)} µm/s` : `${nm.toPrecision(3)} nm/s`;
-}
 
 // --- 音 ---
 const AUD = { el: new Audio(), url: "", from: 0, speed: 0, raf: 0 };
 AUD.el.addEventListener("ended", stopAudio);
 function stopAudio() {
-  AUD.el.pause(); cancelAnimationFrame(AUD.raf);
-  if (AUD.url) URL.revokeObjectURL(AUD.url);
-  AUD.url = "";
+  audioStop(AUD);
   $("play").textContent = "▶ 聴く";
   requestDraw();
 }
@@ -759,84 +753,33 @@ $("play").onclick = async () => {
   if (f) zeroPhase(x, f.sections);
   const s = resampleForSound(x, RATE * S.speed);
   let peak = 0; for (const v of s.y) if (Math.abs(v) > peak) peak = Math.abs(v);
-  AUD.url = URL.createObjectURL(wavBlob(finishSound(s.y, s.rate, peak > 0 ? 0.9 / peak : 0), s.rate));
-  AUD.el.src = AUD.url; AUD.from = a; AUD.speed = S.speed;
+  AUD.from = a; AUD.speed = S.speed;
+  const play = audioPlay(AUD, wavBlob(finishSound(s.y, s.rate, peak > 0 ? 0.9 / peak : 0), s.rate), requestDraw);
   $("play").textContent = "■ 止める";
-  try { await AUD.el.play(); } catch (err) { stopAudio(); $("status").textContent = "音を鳴らせませんでした: " + err.message; return; }
-  const tick = () => { requestDraw(); if (!AUD.el.paused) AUD.raf = requestAnimationFrame(tick); };
-  tick();
+  try { await play; } catch (err) { stopAudio(); $("status").textContent = "音を鳴らせませんでした: " + err.message; }
 };
 
-// --- 拡大・移動(ピンチ・ホイール・ドラッグ・ダブルタップ) ---
-const pointers = new Map();
-let gesture = null, lastTap = 0;
-function localX(e) { return (e.clientX - canvas.getBoundingClientRect().left) * S.dpr; }
-function startGesture() {
-  const ps = [...pointers.values()];
-  if (ps.length === 1) gesture = { type: "pan", x: ps[0].x, v0: S.v0, moved: false };
-  else if (ps.length >= 2) {
-    const a = ps[0].x, b = ps[1].x;
-    // 指の開きが 1 割以上変わるまでは、拡大縮小せずに左右に動かすだけにする
-    gesture = { type: "pinch", mid: (a + b) / 2, dist: Math.max(10, Math.abs(a - b)), v0: S.v0, span: S.span, zooming: false };
-  }
-}
-canvas.addEventListener("pointerdown", e => {
-  if (e.isPrimary) pointers.clear();     // 新しいタッチの始まり: 終わりの知らせが来なかった古い指を消す
-  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-  pointers.set(e.pointerId, { x: localX(e) });
-  startGesture();
-});
-canvas.addEventListener("pointermove", e => {
-  if (!pointers.has(e.pointerId)) return;
-  pointers.get(e.pointerId).x = localX(e);
-  const W = canvas.width, ps = [...pointers.values()];
-  if (gesture && gesture.type === "pan" && ps.length === 1) {
-    const dx = ps[0].x - gesture.x;
-    if (Math.abs(dx) > 4 * S.dpr) gesture.moved = true;
-    S.v0 = gesture.v0 - dx / W * S.span; clampView(); requestDraw();
-  } else if (gesture && gesture.type === "pinch" && ps.length >= 2) {
-    const a = ps[0].x, b = ps[1].x, dist = Math.max(10, Math.abs(a - b)), mid = (a + b) / 2;
-    const at = gesture.v0 + gesture.mid / W * gesture.span;
-    if (!gesture.zooming && Math.abs(dist / gesture.dist - 1) > 0.1) gesture.zooming = true;
-    S.span = gesture.zooming ? gesture.span * gesture.dist / dist : gesture.span; clampView();
-    S.v0 = at - mid / W * S.span; clampView(); requestDraw();
-  }
-});
-function endPointer(e) {
-  if (!pointers.has(e.pointerId)) return;
-  const wasPan = gesture && gesture.type === "pan", moved = gesture && gesture.moved;
-  pointers.delete(e.pointerId);
-  if (pointers.size) { startGesture(); return; }
-  gesture = null;
-  if (wasPan && moved) { recenter(); return; }
-  if (wasPan && !moved && S.zoomMark) {       // 印: タップした時刻に付ける(近くの印は消す)
-    const r = canvas.getBoundingClientRect(), x = (e.clientX - r.left) / r.width;
-    const sec = (S.base + S.v0 + x * S.span) / RATE, tol = 20 / r.width * S.span / RATE;
-    toggleMark(sec, tol); requestDraw();
-    return;
-  }
-  if (wasPan && !moved) {
-    const now = Date.now();
-    if (now - lastTap < 350) { [S.v0, S.span] = S.home; clampView(); requestDraw(); lastTap = 0; return; }
-    lastTap = now;
+// --- 拡大・移動(ピンチ・ホイール・ドラッグ・ダブルタップ。page_common の attachGestures) ---
+attachGestures(canvas, {
+  view: () => [S.v0, S.span],
+  setView: (v0, span) => { S.v0 = v0; S.span = span; clampView(); requestDraw(); },
+  spanLimits: () => [2 * RATE, Math.max(2 * RATE, S.n)],
+  onTap: (x, y) => {
+    const W = canvas.clientWidth;
+    if (S.zoomMark) {                       // 印: タップした時刻に付ける(近くの印は消す)
+      const sec = (S.base + S.v0 + x / W * S.span) / RATE, tol = 20 / W * S.span / RATE;
+      toggleMark(sec, tol); requestDraw();
+      return;
+    }
     const ids = Object.keys(S.traces);      // 4 拠点のときは、タップした段の拠点の音にする
     if (ids.length > 1) {
-      const r = canvas.getBoundingClientRect(), y = e.clientY - r.top, rowH = (r.height - 22) / ids.length;
-      const id = ids[Math.min(ids.length - 1, Math.floor(y / rowH))];
+      const rowH = (canvas.clientHeight - 22) / ids.length, id = ids[Math.min(ids.length - 1, Math.floor(y / rowH))];
       if (id && id !== S.st) { S.st = id; stopAudio(); buildStations(); requestDraw(); }
     }
-  }
-}
-canvas.addEventListener("pointerup", endPointer);
-canvas.addEventListener("pointercancel", endPointer);
-canvas.addEventListener("lostpointercapture", endPointer);
-canvas.addEventListener("wheel", e => {
-  e.preventDefault();
-  const W = canvas.width, x = localX(e), at = S.v0 + x / W * S.span;
-  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) S.v0 += e.deltaX / W * S.span;
-  else { S.span *= Math.exp(e.deltaY * 0.002); clampView(); S.v0 = at - x / W * S.span; }
-  clampView(); requestDraw();
-}, { passive: false });
+  },
+  onDoubleTap: () => { if (!S.zoomMark) { [S.v0, S.span] = S.home; clampView(); requestDraw(); } },
+  onPanEnd: recenter,
+});
 
 // --- 場所を URL に残す(#拠点/時 または #拠点/z/秒) ---
 function setHash() {

@@ -12,7 +12,8 @@
 #     「ヒント」(その揺れが見やすいフィルタにする)がある
 #   - 音: 波形を速く再生した音(答える前は全部 ×40、答えたあとは種類ごとの倍率と ×40)。再生中は波形の上を緑の線が動く。
 #     音は「♪」の拠点の記録で、波形をタップすると拠点を変えられる(答える前はどの問題も Kawaminami から)
-#   - 海外の地震は、答えたあとだけ L(0.1〜0.5 Hz、もっと低い音)のフィルタも使える(近い揺れは海の波のゆっくりした揺れに埋もれるので、答える前には出さない)
+#   - 答えたあとは L(0.1〜0.5 Hz、もっと低い音)のフィルタも使える(どの問題でも。海外の地震だけに出すと答えがわかってしまう。
+#     近い揺れは海の波のゆっくりした揺れに埋もれ、海外の地震だけがはっきり見えるので、答える前には出さない)
 #   - 答えると、正解・説明・A〜D の帯域(とても低い音〜とても高い音)、基準の時刻の線、P波・S波の到着の見込みの線(気象庁の震源リストと
 #     USGS の地震)を出し、その揺れが見やすいフィルタに切り替える
 #   波形の読み込み・符号化・描画は quake_wave_view.py と同じ。入れるのは満点の拠点の波形だけ(再配布できない外部の観測点の波形は入れない)
@@ -30,6 +31,7 @@ import numpy as np
 
 import app_paths
 import station_names
+from page_common import COMMON_JS, PAGE_JS   # COMMON_JS はほかのスクリプトのために残す
 from quake_wave_view import count_steps, filter_sections, load_stream, script_json, trace_samples
 
 QUIZ_FILE = "shake_quiz.csv"
@@ -285,7 +287,7 @@ def write_page(path, events):
   blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}">{script_json(waves)}</script>' for info, waves in events)
   page = (PAGE.replace("__FIRST__", html.escape(station_names.full(FIRST_SOUND[0])))
           .replace("__TITLE__", html.escape(TITLE))
-          .replace("__COMMON_JS__", COMMON_JS)
+          .replace("__COMMON_JS__", PAGE_JS)
           .replace("__META__", script_json(meta))
           .replace("__WAVES__", blocks))
   path.parent.mkdir(parents=True, exist_ok=True)
@@ -301,173 +303,6 @@ def write_answers(path, events):
       w.writerow([info["no"], KINDS[CHOICES[info["kind"]]][0], info["time"], info["label"], info["best"],
                   station_names.full(info["audio"]["station"]), f"×{info['audio']['speed']}"])
 
-
-# クイズと、揺れを並べて比べるページ(shake_compare.py)で同じ JS(波形を戻す・フィルタ・1本の波形を描く・音にする)
-COMMON_JS = r"""
-// --- 波形を戻す(quake_wave_view と同じ) ---
-async function gunzipBase64(text) {
-  const bin = atob(text), bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-function decodeSamples(b) {
-  const n = b.length / 4, out = new Int32Array(n);
-  let sum = 0;
-  for (let i = 0; i < n; i++) {
-    sum = (sum + (b[i] | b[n + i] << 8 | b[2 * n + i] << 16 | b[3 * n + i] << 24)) | 0;
-    out[i] = sum;
-  }
-  return out;
-}
-function buildLevels(v) {
-  const levels = [];
-  let mins = v, maxs = v, size = 1;
-  while (mins.length > 16) {
-    const n = Math.floor(mins.length / 4), lo = new Int32Array(n), hi = new Int32Array(n);
-    for (let i = 0; i < n; i++) {
-      let a = mins[4 * i], b = maxs[4 * i];
-      for (let j = 1; j < 4; j++) {
-        if (mins[4 * i + j] < a) a = mins[4 * i + j];
-        if (maxs[4 * i + j] > b) b = maxs[4 * i + j];
-      }
-      lo[i] = a; hi[i] = b;
-    }
-    size *= 4;
-    levels.push({ size, lo, hi });
-    mins = lo; maxs = hi;
-  }
-  return levels;
-}
-function rangeOf(tr, a, b, out) {
-  const v = tr.v, levels = tr.levels;
-  let lo = Infinity, hi = -Infinity, i = a;
-  while (i < b) {
-    let done = false;
-    for (let k = levels.length - 1; k >= 0; k--) {
-      const L = levels[k], s = L.size;
-      if (i % s === 0 && i + s <= b && i / s < L.lo.length) {
-        const j = i / s;
-        if (L.lo[j] < lo) lo = L.lo[j];
-        if (L.hi[j] > hi) hi = L.hi[j];
-        i += s; done = true;
-        break;
-      }
-    }
-    if (!done) {
-      if (v[i] < lo) lo = v[i];
-      if (v[i] > hi) hi = v[i];
-      i++;
-    }
-  }
-  out.lo = lo; out.hi = hi;
-}
-// 往復でかける帯域通過フィルタ(時間のずれがない)。カウントに 16 倍の余裕を持たせて整数に丸める
-const FINE = 16;
-function applySections(x, sections) {
-  const n = x.length;
-  for (const [b0, b1, b2, a1, a2] of sections) {
-    let z1 = 0, z2 = 0;
-    for (let i = 0; i < n; i++) {
-      const input = x[i], output = b0 * input + z1;
-      z1 = b1 * input - a1 * output + z2;
-      z2 = b2 * input - a2 * output;
-      x[i] = output;
-    }
-  }
-}
-function filterSamples(v, sections) {
-  const x = new Float64Array(v), out = new Int32Array(v.length);
-  applySections(x, sections); x.reverse(); applySections(x, sections); x.reverse();
-  for (let i = 0; i < x.length; i++) out[i] = Math.round(x[i] * FINE);
-  return out;
-}
-
-// --- 1本の波形を描く(全体の S.v0・S.span・S.dpr と ctx・canvas・colors を使う) ---
-function drawTrace(tr, top, h, center, half, n) {
-  const W = canvas.width, d = S.dpr, v = tr.v, spp = S.span / W;
-  const mid = top + h / 2, gain = half > 0 ? (h / 2 - 2 * d) / (half / tr.step) : 0, c = center / tr.step;
-  const yOf = value => mid - (value - c) * gain;
-  ctx.save();
-  ctx.beginPath(); ctx.rect(0, top, W, h); ctx.clip();
-  ctx.fillStyle = colors.gap;
-  for (const [a, b] of tr.gaps) {
-    const x0 = (a - S.v0) / spp, x1 = (b - S.v0) / spp;
-    if (x1 > 0 && x0 < W) ctx.fillRect(x0, top, x1 - x0, h);
-  }
-  ctx.strokeStyle = colors.wave;
-  ctx.beginPath();
-  if (spp < 2) {
-    const a = Math.max(0, Math.floor(S.v0) - 1), b = Math.min(n - 1, Math.ceil(S.v0 + S.span) + 1);
-    for (let i = a; i <= b; i++) {
-      const x = (i - S.v0) / spp, y = yOf(v[i]);
-      if (i === a) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    }
-    ctx.lineWidth = Math.max(1, d * 0.8);
-    ctx.lineJoin = "round";
-    ctx.stroke();
-  } else {
-    const out = { lo: 0, hi: 0 };
-    let prevTop = null, prevBottom = null;
-    for (let px = 0; px < W; px++) {
-      const a = Math.max(0, Math.floor(S.v0 + px * spp)), b = Math.min(n, Math.floor(S.v0 + (px + 1) * spp));
-      if (b <= a) continue;
-      rangeOf(tr, a, b, out);
-      let y0 = yOf(out.hi), y1 = yOf(out.lo);
-      const t0 = y0, t1 = y1;
-      if (prevBottom !== null) {
-        if (y0 > prevBottom) y0 = prevBottom;
-        if (y1 < prevTop) y1 = prevTop;
-      }
-      if (y1 - y0 < 1) y1 = y0 + 1;
-      ctx.moveTo(px + 0.5, y0); ctx.lineTo(px + 0.5, y1);
-      prevTop = t0; prevBottom = t1;
-    }
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
-  ctx.restore();
-}
-
-// --- 音(WAV) ---
-function zeroPhase(x, sections) { applySections(x, sections); x.reverse(); applySections(x, sections); x.reverse(); }
-function wavBlob(y, rate) {
-  const n = y.length, buf = new ArrayBuffer(44 + 2 * n), v = new DataView(buf);
-  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
-  w(0, "RIFF"); v.setUint32(4, 36 + 2 * n, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
-  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, 2 * n, true);
-  for (let i = 0; i < n; i++) v.setInt16(44 + 2 * i, Math.round(Math.max(-1, Math.min(1, y[i])) * 32767), true);
-  return new Blob([buf], { type: "audio/wav" });
-}
-// 帯域を制限した補間(sinc)で、fin [Hz] で再生する波形 x を音のサンプリングに直す。戻り値 ... {y, rate}
-function resampleForSound(x, fin) {
-  const n = x.length, rate = fin <= 16000 ? 16000 : 32000, stepIn = fin / rate, HALF = 8;
-  const m = Math.floor(n / stepIn), y = new Float32Array(m);
-  for (let i = 0; i < m; i++) {
-    const u = i * stepIn, k = Math.floor(u);
-    let sum = 0;
-    for (let j = k - HALF + 1; j <= k + HALF; j++) {
-      if (j < 0 || j >= n) continue;
-      const dd = u - j, win = 0.5 + 0.5 * Math.cos(Math.PI * dd / HALF);
-      sum += x[j] * (dd === 0 ? 1 : Math.sin(Math.PI * dd) / (Math.PI * dd)) * win;
-    }
-    y[i] = sum;
-  }
-  return { y, rate };
-}
-// 音の大きさを g 倍にし、始めと終わりを 30 ms で絞る
-function finishSound(y, rate, g) {
-  const m = y.length, fade = Math.floor(0.03 * rate);
-  for (let i = 0; i < m; i++) {
-    let s = y[i] * g;
-    if (i < fade) s *= i / fade;
-    if (m - 1 - i < fade) s *= (m - 1 - i) / fade;
-    y[i] = s;
-  }
-  return y;
-}
-"""
 
 PAGE = r"""<!DOCTYPE html>
 <html lang="ja">
@@ -676,22 +511,6 @@ function resize() {
   canvas.height = Math.round(r.height * S.dpr);
   draw();
 }
-function formatAmp(nm) {
-  if (nm >= 1e6) return (nm / 1e6).toPrecision(3) + " mm/s";
-  if (nm >= 1e3) return (nm / 1e3).toPrecision(3) + " µm/s";
-  return nm.toPrecision(3) + " nm/s";
-}
-function tickStep(seconds) {
-  for (const m of [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100]) if (m >= seconds) return m;
-  return 200;
-}
-function labelBox(text, x, y, align, color) {
-  const d = S.dpr, w = ctx.measureText(text).width, left = align === "right" ? x - w : x;
-  ctx.fillStyle = colors.bg; ctx.globalAlpha = 0.78;
-  ctx.fillRect(left - 2 * d, y - 1 * d, w + 4 * d, 14 * d);
-  ctx.globalAlpha = 1; ctx.fillStyle = color; ctx.textAlign = "left"; ctx.textBaseline = "top";
-  ctx.fillText(text, left, y);
-}
 function answered() { const ev = META.events[S.idx]; return ev && answers[ev.no] !== undefined; }
 function draw() {
   const W = canvas.width, H = canvas.height, d = S.dpr;
@@ -833,18 +652,14 @@ async function playAudio(speed, key) {
   if (same || !S.data) return;           // 鳴っている同じボタンをもう一度押したら止める
   const ev = META.events[S.idx], blob = makeSound(ev, speed);
   if (!blob) return;
-  AUD.url = URL.createObjectURL(blob); AUD.el.src = AUD.url; AUD.ev = S.idx; AUD.speed = speed; AUD.key = S.filter;
-  const play = AUD.el.play();
+  AUD.ev = S.idx; AUD.speed = speed; AUD.key = S.filter;
+  const play = audioPlay(AUD, blob, requestDraw);     // 再生は押したその場で始める(iPhone で鳴らすため)
   updateListenButtons();
-  try { await play; } catch (err) { stopAudio(); $("status").textContent = "音を鳴らせませんでした: " + err.message; return; }
-  const tick = () => { requestDraw(); if (!AUD.el.paused) AUD.raf = requestAnimationFrame(tick); };
-  tick();
+  try { await play; } catch (err) { stopAudio(); $("status").textContent = "音を鳴らせませんでした: " + err.message; }
 }
 function stopAudio() {
-  AUD.el.pause();
-  cancelAnimationFrame(AUD.raf);
-  if (AUD.url) URL.revokeObjectURL(AUD.url);
-  AUD.url = ""; AUD.ev = -1; AUD.speed = 0; AUD.key = null;
+  audioStop(AUD);
+  AUD.ev = -1; AUD.speed = 0; AUD.key = null;
   updateListenButtons();
   requestDraw();
 }
@@ -874,41 +689,12 @@ function setView(v0, span) {
   requestDraw();
 }
 function resetView() { const ev = META.events[S.idx]; if (ev) setView(0, ev.n); }
-const pointers = new Map();
-let gesture = null, lastTap = null;
-function localX(e) { return e.clientX - canvas.getBoundingClientRect().left; }
-function startGesture() {
-  const p = [...pointers.values()], w = canvas.clientWidth;
-  if (p.length === 1) gesture = { kind: "pan", x: p[0].x, v0: S.v0, span: S.span, w };
-  else if (p.length >= 2) {
-    const mid = (p[0].x + p[1].x) / 2;
-    // 2 本指: 指の横の開き(縦の開きは使わない)が 1 割以上変わるまでは、拡大縮小せずに左右に動かすだけにする
-    gesture = { kind: "pinch", dist: Math.max(20, Math.abs(p[0].x - p[1].x)), zooming: false,
-                anchor: S.v0 + mid / w * S.span, span: S.span, w };
-  } else gesture = null;
-}
-canvas.addEventListener("pointerdown", e => {
-  e.preventDefault();
-  if (e.isPrimary) pointers.clear();     // 新しいタッチの始まり: 終わりの知らせが来なかった古い指を消す(残ると 1 本指の移動が拡大縮小になる)
-  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-  pointers.set(e.pointerId, { x: localX(e), y: e.clientY, x0: localX(e), y0: e.clientY, t0: e.timeStamp, moved: false });
-  if (pointers.size > 1) for (const p of pointers.values()) p.moved = true;
-  startGesture();
-});
-canvas.addEventListener("pointermove", e => {
-  const me = pointers.get(e.pointerId);
-  if (!me) return;
-  e.preventDefault();
-  me.x = localX(e); me.y = e.clientY;
-  if (Math.hypot(me.x - me.x0, me.y - me.y0) > 10) me.moved = true;
-  const p = [...pointers.values()], ev = META.events[S.idx];
-  if (gesture && gesture.kind === "pan") setView(gesture.v0 - (me.x - gesture.x) / gesture.w * gesture.span, gesture.span);
-  else if (gesture && gesture.kind === "pinch" && p.length >= 2) {
-    const dist = Math.max(20, Math.abs(p[0].x - p[1].x)), mid = (p[0].x + p[1].x) / 2;
-    if (!gesture.zooming && Math.abs(dist / gesture.dist - 1) > 0.1) gesture.zooming = true;
-    const span = gesture.zooming ? Math.min(ev.n, Math.max(MIN_SPAN_SECONDS * ev.rate, gesture.span * gesture.dist / dist)) : gesture.span;
-    setView(gesture.anchor - mid / gesture.w * span, span);
-  }
+attachGestures(canvas, {
+  view: () => [S.v0, S.span],
+  setView,
+  spanLimits: () => { const ev = META.events[S.idx]; return ev ? [MIN_SPAN_SECONDS * ev.rate, ev.n] : [1, 1]; },
+  onTap: (x, y) => selectSoundStation(y),
+  onDoubleTap: resetView,
 });
 // 答える前の音の拠点: どの問題も同じ順(拠点の選び方が答えのヒントにならないように)
 const FIRST_SOUND = META.audio.first;
@@ -922,31 +708,6 @@ function selectSoundStation(y) {
   S.audioStation = st.id;
   requestDraw();
 }
-function endPointer(e) {
-  const me = pointers.get(e.pointerId);
-  if (!me) return;
-  pointers.delete(e.pointerId);
-  if (e.type === "pointerup" && !me.moved && pointers.size === 0 && e.timeStamp - me.t0 < 300) {
-    selectSoundStation(e.clientY - canvas.getBoundingClientRect().top);
-    if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(me.x - lastTap.x, me.y - lastTap.y) < 30) {
-      resetView(); lastTap = null;
-    } else lastTap = { t: e.timeStamp, x: me.x, y: me.y };
-  }
-  startGesture();
-}
-canvas.addEventListener("pointerup", endPointer);
-canvas.addEventListener("pointercancel", endPointer);
-canvas.addEventListener("lostpointercapture", endPointer);
-canvas.addEventListener("wheel", e => {
-  e.preventDefault();
-  const x = localX(e), w = canvas.clientWidth, ev = META.events[S.idx];
-  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return setView(S.v0 + e.deltaX / w * S.span, S.span);
-  const anchor = S.v0 + x / w * S.span, span = S.span * Math.exp(e.deltaY * 0.002);
-  const next = Math.min(ev.n, Math.max(MIN_SPAN_SECONDS * ev.rate, span));
-  setView(anchor - x / w * next, next);
-}, { passive: false });
-canvas.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
-for (const type of ["gesturestart", "gesturechange"]) canvas.addEventListener(type, e => e.preventDefault(), { passive: false });
 
 // --- クイズ ---
 function buildFilterButtons() {

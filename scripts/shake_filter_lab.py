@@ -13,7 +13,7 @@
 #   - 「どの高さの揺れが入っているか」の帯(振幅スペクトル。Python で前もって計算)に、通している範囲を色で示す
 #   - 音: 元の音・フィルタの音・交互に(元 → フィルタ)。速さを選べる。人の耳に聞こえる高さ(20 Hz 以上)になるかも出す
 #   フィルタはブラウザで作る(Butterworth の高域通過と低域通過を 4 次ずつ。往復でかけて時間のずれを無くす。両端は絞ってからかける)
-#   波形の読み込み・符号化・描画・音の部品は shake_quiz.py と同じ(COMMON_JS)。入れるのは満点の拠点の波形だけ
+#   波形の読み込み・符号化・描画・音・拡大や移動の操作の部品は、ほかの教材のページと同じ(page_common.py)。入れるのは満点の拠点の波形だけ
 #
 #     python3 scripts/shake_filter_lab.py [-o 出力の HTML] [--items 一覧の CSV]
 #   省略すると batch_plots/quiz/filter_lab.html に書き出す
@@ -27,6 +27,7 @@ import numpy as np
 
 import app_paths
 import station_names
+import page_common
 import shake_quiz as sq
 from quake_wave_view import count_steps, load_stream, script_json, trace_samples
 
@@ -133,7 +134,7 @@ def write_page(path, items):
   blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}">{script_json(wave)}</script>'
                      for info, wave in items if wave is not None)
   page = (PAGE.replace("__TITLE__", html.escape(TITLE))
-          .replace("__COMMON_JS__", sq.COMMON_JS)
+          .replace("__COMMON_JS__", page_common.PAGE_JS)
           .replace("__META__", script_json(meta))
           .replace("__WAVES__", blocks))
   path.parent.mkdir(parents=True, exist_ok=True)
@@ -350,22 +351,6 @@ function resize() {
   }
   draw(); drawSpec();
 }
-function formatAmp(nm) {
-  if (nm >= 1e6) return (nm / 1e6).toPrecision(3) + " mm/s";
-  if (nm >= 1e3) return (nm / 1e3).toPrecision(3) + " µm/s";
-  return nm.toPrecision(3) + " nm/s";
-}
-function tickStep(seconds) {
-  for (const m of [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200]) if (m >= seconds) return m;
-  return 500;
-}
-function labelBox(text, x, y, align, color, c = ctx) {
-  const d = S.dpr, w = c.measureText(text).width, left = align === "right" ? x - w : x;
-  c.fillStyle = colors.bg; c.globalAlpha = 0.78;
-  c.fillRect(left - 2 * d, y - 1 * d, w + 4 * d, 14 * d);
-  c.globalAlpha = 1; c.fillStyle = color; c.textAlign = "left"; c.textBaseline = "top";
-  c.fillText(text, left, y);
-}
 const FONT = `-apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif`;
 function rowsOf() { return [[S.raw, "元の波形(フィルタなし)", colors.raw], [S.filt, "フィルタをかけた波形", colors.wave]]; }
 function draw() {
@@ -470,14 +455,10 @@ function soundBlob(row) {
 }
 async function startSound(row) {
   if (!S.raw) return;
-  if (AUD.url) URL.revokeObjectURL(AUD.url);
-  AUD.url = URL.createObjectURL(soundBlob(row)); AUD.el.src = AUD.url; AUD.row = row; AUD.speed = S.speed;
-  const play = AUD.el.play();
+  AUD.row = row; AUD.speed = S.speed;
+  const play = audioPlay(AUD, soundBlob(row), requestDraw);     // 再生は押したその場で始める(iPhone で鳴らすため)
   updateButtons();
-  try { await play; } catch (err) { stopAudio(); $("status").textContent = "音を鳴らせませんでした: " + err.message; return; }
-  cancelAnimationFrame(AUD.raf);
-  const tick = () => { requestDraw(); if (!AUD.el.paused) AUD.raf = requestAnimationFrame(tick); };
-  tick();
+  try { await play; } catch (err) { stopAudio(); $("status").textContent = "音を鳴らせませんでした: " + err.message; }
 }
 function play(mode) {
   const same = AUD.mode === mode && (!AUD.el.paused || AUD.queue.length);
@@ -488,10 +469,8 @@ function play(mode) {
   startSound(mode === "raw" || mode === "both" ? 0 : 1);
 }
 function stopAudio() {
-  AUD.el.pause();
-  cancelAnimationFrame(AUD.raf);
-  if (AUD.url) URL.revokeObjectURL(AUD.url);
-  AUD.url = ""; AUD.row = -1; AUD.speed = 0; AUD.mode = ""; AUD.queue = [];
+  audioStop(AUD);
+  AUD.row = -1; AUD.speed = 0; AUD.mode = ""; AUD.queue = [];
   updateButtons();
   requestDraw();
 }
@@ -587,63 +566,12 @@ function setView(v0, span) {
   requestDraw();
 }
 function resetView() { const it = item(); if (it) setView(0, it.n); }
-const pointers = new Map();
-let gesture = null, lastTap = null;
-function localX(e) { return e.clientX - canvas.getBoundingClientRect().left; }
-function startGesture() {
-  const p = [...pointers.values()], w = canvas.clientWidth;
-  if (p.length === 1) gesture = { kind: "pan", x: p[0].x, v0: S.v0, span: S.span, w };
-  else if (p.length >= 2) {
-    const mid = (p[0].x + p[1].x) / 2;
-    // 2 本指: 指の横の開き(縦の開きは使わない)が 1 割以上変わるまでは、拡大縮小せずに左右に動かすだけにする
-    gesture = { kind: "pinch", dist: Math.max(20, Math.abs(p[0].x - p[1].x)), zooming: false, anchor: S.v0 + mid / w * S.span, span: S.span, w };
-  } else gesture = null;
-}
-canvas.addEventListener("pointerdown", e => {
-  e.preventDefault();
-  if (e.isPrimary) pointers.clear();     // 新しいタッチの始まり: 終わりの知らせが来なかった古い指を消す(残ると 1 本指の移動が拡大縮小になる)
-  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-  pointers.set(e.pointerId, { x: localX(e), y: e.clientY, x0: localX(e), y0: e.clientY, t0: e.timeStamp, moved: false });
-  if (pointers.size > 1) for (const p of pointers.values()) p.moved = true;
-  startGesture();
+attachGestures(canvas, {
+  view: () => [S.v0, S.span],
+  setView,
+  spanLimits: () => { const it = item(); return it ? [MIN_SPAN_SECONDS * it.rate, it.n] : [1, 1]; },
+  onDoubleTap: resetView,
 });
-canvas.addEventListener("pointermove", e => {
-  const me = pointers.get(e.pointerId);
-  if (!me) return;
-  e.preventDefault();
-  me.x = localX(e); me.y = e.clientY;
-  if (Math.hypot(me.x - me.x0, me.y - me.y0) > 10) me.moved = true;
-  const p = [...pointers.values()], it = item();
-  if (gesture && gesture.kind === "pan") setView(gesture.v0 - (me.x - gesture.x) / gesture.w * gesture.span, gesture.span);
-  else if (gesture && gesture.kind === "pinch" && p.length >= 2) {
-    const dist = Math.max(20, Math.abs(p[0].x - p[1].x)), mid = (p[0].x + p[1].x) / 2;
-    if (!gesture.zooming && Math.abs(dist / gesture.dist - 1) > 0.1) gesture.zooming = true;
-    const span = gesture.zooming ? Math.min(it.n, Math.max(MIN_SPAN_SECONDS * it.rate, gesture.span * gesture.dist / dist)) : gesture.span;
-    setView(gesture.anchor - mid / gesture.w * span, span);
-  }
-});
-function endPointer(e) {
-  const me = pointers.get(e.pointerId);
-  if (!me) return;
-  pointers.delete(e.pointerId);
-  if (e.type === "pointerup" && !me.moved && pointers.size === 0 && e.timeStamp - me.t0 < 300) {
-    if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(me.x - lastTap.x, me.y - lastTap.y) < 30) { resetView(); lastTap = null; }
-    else lastTap = { t: e.timeStamp, x: me.x, y: me.y };
-  }
-  startGesture();
-}
-canvas.addEventListener("pointerup", endPointer);
-canvas.addEventListener("pointercancel", endPointer);
-canvas.addEventListener("lostpointercapture", endPointer);
-canvas.addEventListener("wheel", e => {
-  e.preventDefault();
-  const x = localX(e), w = canvas.clientWidth, it = item();
-  if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return setView(S.v0 + e.deltaX / w * S.span, S.span);
-  const anchor = S.v0 + x / w * S.span, next = Math.min(it.n, Math.max(MIN_SPAN_SECONDS * it.rate, S.span * Math.exp(e.deltaY * 0.002)));
-  setView(anchor - x / w * next, next);
-}, { passive: false });
-canvas.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
-for (const type of ["gesturestart", "gesturechange"]) canvas.addEventListener(type, e => e.preventDefault(), { passive: false });
 
 // --- 画面の切り替え ---
 async function openItem(idx) {
