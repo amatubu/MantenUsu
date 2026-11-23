@@ -27,6 +27,7 @@ jma_hypocenter/*
 world_quakes/*
 notes/*
 reports/*
+gis/*
 etc/train_timetable.csv
 # 時刻表のバックアップ(手で書き換える前の写し)
 etc/train_timetable*.bak_*
