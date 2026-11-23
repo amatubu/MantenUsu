@@ -595,11 +595,13 @@ function startGesture() {
   if (p.length === 1) gesture = { kind: "pan", x: p[0].x, v0: S.v0, span: S.span, w };
   else if (p.length >= 2) {
     const mid = (p[0].x + p[1].x) / 2;
-    gesture = { kind: "pinch", dist: Math.max(20, Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y)), anchor: S.v0 + mid / w * S.span, span: S.span, w };
+    // 2 本指: 指の横の開き(縦の開きは使わない)が 1 割以上変わるまでは、拡大縮小せずに左右に動かすだけにする
+    gesture = { kind: "pinch", dist: Math.max(20, Math.abs(p[0].x - p[1].x)), zooming: false, anchor: S.v0 + mid / w * S.span, span: S.span, w };
   } else gesture = null;
 }
 canvas.addEventListener("pointerdown", e => {
   e.preventDefault();
+  if (e.isPrimary) pointers.clear();     // 新しいタッチの始まり: 終わりの知らせが来なかった古い指を消す(残ると 1 本指の移動が拡大縮小になる)
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
   pointers.set(e.pointerId, { x: localX(e), y: e.clientY, x0: localX(e), y0: e.clientY, t0: e.timeStamp, moved: false });
   if (pointers.size > 1) for (const p of pointers.values()) p.moved = true;
@@ -614,8 +616,9 @@ canvas.addEventListener("pointermove", e => {
   const p = [...pointers.values()], it = item();
   if (gesture && gesture.kind === "pan") setView(gesture.v0 - (me.x - gesture.x) / gesture.w * gesture.span, gesture.span);
   else if (gesture && gesture.kind === "pinch" && p.length >= 2) {
-    const dist = Math.max(20, Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y)), mid = (p[0].x + p[1].x) / 2;
-    const span = Math.min(it.n, Math.max(MIN_SPAN_SECONDS * it.rate, gesture.span * gesture.dist / dist));
+    const dist = Math.max(20, Math.abs(p[0].x - p[1].x)), mid = (p[0].x + p[1].x) / 2;
+    if (!gesture.zooming && Math.abs(dist / gesture.dist - 1) > 0.1) gesture.zooming = true;
+    const span = gesture.zooming ? Math.min(it.n, Math.max(MIN_SPAN_SECONDS * it.rate, gesture.span * gesture.dist / dist)) : gesture.span;
     setView(gesture.anchor - mid / gesture.w * span, span);
   }
 });
@@ -631,6 +634,7 @@ function endPointer(e) {
 }
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
+canvas.addEventListener("lostpointercapture", endPointer);
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
   const x = localX(e), w = canvas.clientWidth, it = item();

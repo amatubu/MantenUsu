@@ -776,10 +776,12 @@ function startGesture() {
   if (ps.length === 1) gesture = { type: "pan", x: ps[0].x, v0: S.v0, moved: false };
   else if (ps.length >= 2) {
     const a = ps[0].x, b = ps[1].x;
-    gesture = { type: "pinch", mid: (a + b) / 2, dist: Math.max(10, Math.abs(a - b)), v0: S.v0, span: S.span };
+    // 指の開きが 1 割以上変わるまでは、拡大縮小せずに左右に動かすだけにする
+    gesture = { type: "pinch", mid: (a + b) / 2, dist: Math.max(10, Math.abs(a - b)), v0: S.v0, span: S.span, zooming: false };
   }
 }
 canvas.addEventListener("pointerdown", e => {
+  if (e.isPrimary) pointers.clear();     // 新しいタッチの始まり: 終わりの知らせが来なかった古い指を消す
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
   pointers.set(e.pointerId, { x: localX(e) });
   startGesture();
@@ -795,7 +797,8 @@ canvas.addEventListener("pointermove", e => {
   } else if (gesture && gesture.type === "pinch" && ps.length >= 2) {
     const a = ps[0].x, b = ps[1].x, dist = Math.max(10, Math.abs(a - b)), mid = (a + b) / 2;
     const at = gesture.v0 + gesture.mid / W * gesture.span;
-    S.span = gesture.span * gesture.dist / dist; clampView();
+    if (!gesture.zooming && Math.abs(dist / gesture.dist - 1) > 0.1) gesture.zooming = true;
+    S.span = gesture.zooming ? gesture.span * gesture.dist / dist : gesture.span; clampView();
     S.v0 = at - mid / W * S.span; clampView(); requestDraw();
   }
 });
@@ -826,6 +829,7 @@ function endPointer(e) {
 }
 canvas.addEventListener("pointerup", endPointer);
 canvas.addEventListener("pointercancel", endPointer);
+canvas.addEventListener("lostpointercapture", endPointer);
 canvas.addEventListener("wheel", e => {
   e.preventDefault();
   const W = canvas.width, x = localX(e), at = S.v0 + x / W * S.span;
