@@ -40,6 +40,32 @@ INK, MUTED, LINE = "#1c2126", "#68727d", "#c9ced4"
 REF, P_COLOR, S_COLOR, FOCUS_BG = "#7b4fb5", "#1565c0", "#d84e00", "#f3eefa"
 FILTER_NAMES = {key: f"フィルタ {key}({lo:g}〜{hi:g} Hz、{sound})" for key, lo, hi, sound in sq.ALL_FILTERS}
 FILTER_NAMES[""] = "フィルタなし"
+LOW_SOUND_KEYS = ("A", "L")     # 目では見やすいが、音にすると低すぎて聞こえにくいフィルタ
+
+# 音にしたとき、いちばん高いところでも 40 Hz 以下になる低いフィルタ(スマートフォンでは聞こえない)
+def too_low(key, speed):
+  bands = {k: hi for k, _lo, hi, _ in sq.ALL_FILTERS}
+  return key in LOW_SOUND_KEYS and bands[key] * speed <= 40
+
+# 聴くページの説明に足す文: 音にするフィルタに A・L があれば、音にしたときの高さと、スマートフォンでは聞こえにくいことを書く(なければ空)
+def low_sound_note(keys, speeds, extra=None):
+  # extra ... {フィルタ: 速さ}(そのフィルタの音を、聞こえる高さにする速さでも入れたとき)
+  bands = {key: (lo, hi) for key, lo, hi, _ in sq.ALL_FILTERS}
+  hz = lambda key, sp: f"×{sp} で {bands[key][0] * sp:g}〜{bands[key][1] * sp:g} Hz"
+  extra = extra or {}
+  out = []
+  for key in dict.fromkeys(keys):
+    if key not in LOW_SOUND_KEYS:
+      continue
+    lead = f"フィルタ {key}({'、'.join(hz(key, sp) for sp in speeds)})は、" + ("目で見るとゆっくりした揺れがよくわかりますが、" if not out else "")
+    if any(bands[key][1] * sp > 20 for sp in speeds):          # 人の耳に聞こえるのは、だいたい 20 Hz より高い音
+      text = lead + "音にするととても低い音になり、スマートフォンのスピーカーではほとんど聞こえません。"
+    else:
+      text = lead + "音にすると人の耳に聞こえる高さ(約 20 Hz より上)に届かないので、ほとんど聞こえません。"
+    text += (f"そこで、×{extra[key]} にした音({hz(key, extra[key]).split(' で ')[1]})も入れました。" if key in extra
+             else "イヤホンかヘッドホンで聴いてみましょう。")
+    out.append(text)
+  return "".join(out) + ("目で見やすいフィルタと、耳で聴きやすいフィルタは同じとは限りません。" if out else "")
 
 
 # --- 設定 ---
@@ -165,14 +191,41 @@ def write_listen_page(path, title, lead, items):
 
 
 # 聴くページの一覧(listen/index.html。フォルダにある聴くページを全部並べる)
+# 聴くページの一覧(listen/index.html)。先生が中身を確かめるための表: クイズは 1 問 1 行(答え・時刻・内容と、問題と答えの聴くページ)、
+#   比べるページはテーマごとに 1 行。フォルダにある聴くページから作る(一部だけ作り直したときも全部が並ぶ)
 def write_index(folder):
+  def page_info(path):
+    text = path.read_text(encoding="utf-8")
+    title = re.search(r"<h1>(.*?)</h1>", text).group(1)                                   # エスケープ済み
+    lead = re.search(r"<p>(.*?)</p>", text)
+    return title, (lead.group(1) if lead else "")
   parts = []
-  for heading, prefix in (("クイズの問題", "q"), ("クイズの答え", "a"), ("揺れを比べてみよう", "t")):
-    pages = sorted(folder.glob(f"{prefix}[0-9]*.html"), key=lambda p: int(p.stem[1:]))
-    if pages:
-      titles = [re.search(r"<h1>(.*?)</h1>", p.read_text(encoding="utf-8")).group(1) for p in pages]   # エスケープ済み
-      parts.append(f"<h2>{heading}</h2><ul>" + "".join(f'<li><a href="{p.name}">{t}</a></li>' for p, t in zip(pages, titles)) + "</ul>")
-  (folder / "index.html").write_text(LISTEN_PAGE.format(title="揺れを音で聴く", body="\n".join(parts)), encoding="utf-8")
+  questions = sorted(folder.glob("q[0-9]*.html"), key=lambda p: int(p.stem[1:]))
+  if questions:
+    rows = []
+    for q in questions:
+      no = int(q.stem[1:])
+      a = folder / f"a{no}.html"
+      answer, when, what = "", "", ""
+      if a.exists():
+        title, lead = page_info(a)
+        answer = title.split(": ", 1)[-1]
+        m = re.match(r"(\S+ \S+)  (.*?)。[^。]* の上下動の音です", lead)
+        if m:
+          when, what = m.group(1), m.group(2)
+      links = f'<a href="{q.name}">問題</a>' + (f' ・ <a href="{a.name}">答え</a>' if a.exists() else "")
+      rows.append(f"<tr><td>{no}</td><td>{answer}</td><td class=\"t\">{when}</td><td>{what}</td><td class=\"t\">{links}</td></tr>")
+    parts.append("<h2>「この揺れは何?」クイズ</h2><table><tr><th>問題</th><th>答え</th><th>時刻</th><th>内容</th><th>聴く</th></tr>"
+                 + "".join(rows) + "</table>")
+  themes = sorted(folder.glob("t[0-9]*.html"), key=lambda p: int(p.stem[1:]))
+  if themes:
+    rows = [f'<tr><td><a href="{t.name}">{page_info(t)[0]}</a></td></tr>' for t in themes]
+    parts.append("<h2>揺れを比べてみよう</h2><table>" + "".join(rows) + "</table>")
+  style = ("<style>table { border-collapse: collapse; width: 100%; font-size: 14px; } th, td { border-bottom: 1px solid var(--panel); padding: 5px 6px; "
+           "text-align: left; vertical-align: top; } th { color: var(--muted); font-weight: 600; white-space: nowrap; } td.t { white-space: nowrap; } "
+           "main { max-width: 1000px; }</style>")
+  body = (style + '<p class="note">紙の教材の QR コードから開く、聴くページの一覧です(先生用。答えが書いてあります)。</p>' + "\n".join(parts))
+  (folder / "index.html").write_text(LISTEN_PAGE.format(title="揺れを音で聴く(一覧)", body=body), encoding="utf-8")
 
 
 # --- 図 ---
@@ -340,15 +393,23 @@ def quiz_listen(folder, events):
     sounds, items = [], []
     for sp in dict.fromkeys([speed, sq.COMMON_SPEED]):
       keys = ["", best] + ([sq.LOW_FILTER[0]] if info["low"] and best != sq.LOW_FILTER[0] else [])
-      names = [(f"a{no}_x{sp}_{key or 'raw'}.wav", key) for key in keys]
+      # 音にして 40 Hz より低いだけの A・L の音(発破の A の ×20、海外の地震の L の ×40)は聞こえないので入れない
+      names = [(f"a{no}_x{sp}_{key or 'raw'}.wav", key) for key in keys if not too_low(key, sp)]
       sounds += [(name, waves[ans], rate, sp, far, key) for name, key in names]
       items.append((f"×{sp}" + ("(答える前と同じ速さ)" if sp == sq.COMMON_SPEED and sp != speed else ""),
                     [(FILTER_NAMES[key], name) for name, key in names]))
+    # A・L は、聞こえる高さにする速さ(×80・×320)の音も入れる
+    extra = {key: sq.LOW_FILTER_SPEEDS[key] for key in keys if key in sq.LOW_FILTER_SPEEDS}
+    for key, sp in extra.items():
+      name = f"a{no}_x{sp}_{key}.wav"
+      sounds.append((name, waves[ans], rate, sp, far, key))
+      items.append((f"×{sp}(フィルタ {key} を聞こえる高さにした音)", [(FILTER_NAMES[key], name)]))
     write_sounds(folder, sounds)
     kind = sq.KINDS[sq.CHOICES[info["kind"]]][0]
     write_listen_page(folder / f"a{no}.html", f"問題 {no} の答え: {kind}",
                       f"{info['time']}  {info['label']}。{station_names.full(ans)} の上下動の音です。"
-                      f"フィルタなしの音と、この揺れが見やすいフィルタ {best} の音を聴き比べてみましょう。", items)
+                      f"フィルタなしの音と、この揺れが見やすいフィルタ {best} の音を聴き比べてみましょう。"
+                      + low_sound_note(keys, list(dict.fromkeys([speed, sq.COMMON_SPEED])), extra), items)
     pages[no] = (f"q{no}.html", f"a{no}.html")
   return pages
 
@@ -432,6 +493,8 @@ def compare_listen(folder, themes):
     items = []
     for key in info["paper"]:
       for sp in info["speeds"]:
+        if too_low(key, sp):            # 聞こえない低さの音(A の ×20 など)は入れない
+          continue
         sounds, entries = [], []
         for k, (row, data) in enumerate(zip(info["rows"], waves)):
           nm = row_station(info, row)
@@ -441,7 +504,8 @@ def compare_listen(folder, themes):
             entries.append((f"{k + 1}. {row['label']}" + ("" if row["station"] else f"({station_names.full(nm)})"), name))
         write_sounds(folder, sounds, real=info["common"] is True)
         items.append((f"{FILTER_NAMES[key]}・×{sp}", entries))
-    lead = info["text"] + (" 音の大きさは、本当の揺れの大きさの比のままです。" if info["common"] is True else " 音の大きさは、それぞれ最大でそろえています。")
+    lead = (info["text"] + (" 音の大きさは、本当の揺れの大きさの比のままです。" if info["common"] is True else " 音の大きさは、それぞれ最大でそろえています。")
+            + (" " + low_sound_note(info["paper"], info["speeds"]) if low_sound_note(info["paper"], info["speeds"]) else ""))
     write_listen_page(folder / f"t{no}.html", f"{no}. {info['title']}", lead, items)
     pages[no] = f"t{no}.html"
   return pages

@@ -51,7 +51,9 @@ KINDS = {
   "有珠山の地震": ("有珠山の地震", "B", "有珠山の下、深さ 2〜4 km で起きた小さな地震。P波と S波の間が 1〜2 秒と短く、揺れは数秒で終わる。"
              "B(低い音)でよく見える。"),
   "発破": ("発破(爆破)", "A", "採石場の発破(岩を切り出すための爆破)。始まりは地震に似ているが、A(とても低い音)にすると、10〜20 秒遅れてゆっくりした揺れが届く。"
-         "地表の近くで起きたので、地表を伝わる波(表面波)が強く出る。有珠山の地震ではこの揺れは出ない。"),
+         "地表の近くで起きたので、地表を伝わる波(表面波)が強く出る。有珠山の地震ではこの揺れは出ない。"
+         "ただし A の揺れは、音にすると低すぎて、スマートフォンのスピーカーではほとんど聞こえない"
+         "(目で見るときと耳で聴くときで、わかりやすいフィルタが違う)。"),
   "花火": ("花火", "D", "洞爺湖の花火大会の最後の 1 発の音。音は空気を伝わる(秒速約 340 m)ので、湖に近い拠点から順に、数秒ずつ遅れて届く。"
          "D(とても高い音)でくっきり見え、A ではまったく見えない。"),
   "鉄道": ("列車", "C", "{b}(JR の線路のそば)の横を通る列車。{b} だけが大きく揺れ、ほかの拠点はほとんど揺れない。C(高い音)でよく見える。"
@@ -78,6 +80,10 @@ LOW_KINDS = (WORLD_KIND,)      # 答えのフィルタに L を選べ、答え�
 # --- 音で聴く(TODO 44) ---
 #   答える前は全部 COMMON_SPEED 倍、答えたあとは種類ごとの倍率でも聴ける(実際に聴いて決めた値、2026-11-19)
 COMMON_SPEED = 40
+# 答えのあとに選べる速さ(書いていない種類は、種類ごとの速さと COMMON_SPEED)。A・L のとても低い揺れは、速くしないと聞こえる高さにならない
+ANSWER_SPEEDS = {"発破": [20, 40, 80], "さらに遠い地震(海外)": [40, 80, 320]}
+# 低いフィルタを聞こえる高さにする速さ(紙の答えの聴くページで、そのフィルタの音をこの速さでも入れる)
+LOW_FILTER_SPEEDS = {"A": 80, "L": 320}
 SPEEDS = {"有珠山の地震": 20, "発破": 20, "花火": 5, "鉄道": 10, "少し遠い地震": 40, "より遠い地震": 40, "さらに遠い地震(海外)": 40}
 # 音にする前の処理: 0.2 Hz の高域通過、電気の雑音(北海道の交流 50 Hz と 100 Hz)のノッチ。遠くの地震はさらに低域通過
 #   (記録には 23・40・55 Hz などの細い雑音の線もあり、速めると「ピー」という音になる。花火は 40 Hz が帯域内なので低域通過しない)
@@ -266,8 +272,21 @@ def event_data(q, st, steps, stations):
           "time": f"{q['t']:%Y-%m-%d %H:%M:%S}", "ref": display_names(q["ref"]), "label": display_names(q["label"]),
           "best": q.get("answer_filter") or KINDS[q["kind"]][1], "low": q["kind"] in LOW_KINDS, "phases": phase_lines(q, stations), "phases2": second_phases(q, stations),
           "focus": bool(q["focus"]), "note": display_names(q["note"]), "disabled": [], "have": list(waves),
-          "audio": {"station": audio_station(q, st), "speed": SPEEDS[q["kind"]], "far": q["kind"] in FAR_KINDS}}
+          "audio": {"station": audio_station(q, st), "speed": SPEEDS[q["kind"]], "far": q["kind"] in FAR_KINDS,
+                    "speeds": ANSWER_SPEEDS.get(q["kind"]) or list(dict.fromkeys([SPEEDS[q["kind"]], COMMON_SPEED])),
+                    "lowNote": low_speed_note(ANSWER_SPEEDS.get(q["kind"], []))}}
   return info, waves
+
+# 答えの画面の説明: A・L を聞こえる高さにする速さ(×80・×320)を選べることと、そのときの音の高さ(無ければ空)
+def low_speed_note(speeds):
+  bands = {key: (lo, hi) for key, lo, hi, _ in ALL_FILTERS}
+  pairs = [(key, sp) for key, sp in LOW_FILTER_SPEEDS.items() if sp in speeds]
+  if not pairs:
+    return ""
+  names = "・".join(key for key, _ in pairs)
+  return (f"フィルタ {names} のとても低い揺れは、目では見やすくても、音にすると低すぎて聞こえにくいので、"
+          + "・".join(f"×{sp}" for _, sp in pairs) + " も選べるようにしました("
+          + "、".join(f"{key} は ×{sp} で {bands[key][0] * sp:g}〜{bands[key][1] * sp:g} Hz" for key, sp in pairs) + " の音)。")
 
 def write_page(path, events):
   path = Path(path)
@@ -773,12 +792,12 @@ function showResult() {
     + `<div class="listenRow"><button class="listen" id="listenRaw" type="button"></button>`
     + `<button class="listen alt" id="listenBest" type="button"></button>`
     + (ev.low && best !== LOW_KEY ? `<button class="listen alt" id="listenLow" type="button"></button>` : "")
-    + (ev.audio.speed !== META.audio.common
-       ? `<div class="seg" id="speedSeg" role="group" aria-label="速さ"><button type="button" data-speed="${ev.audio.speed}">×${ev.audio.speed}</button>`
-         + `<button type="button" data-speed="${META.audio.common}">×${META.audio.common}</button></div>` : "")
+    + (ev.audio.speeds.length > 1
+       ? `<div class="seg" id="speedSeg" role="group" aria-label="速さ">` + ev.audio.speeds.map(sp => `<button type="button" data-speed="${sp}">×${sp}</button>`).join("") + `</div>` : "")
     + `</div><p class="note">フィルタなしの音と、この揺れが見やすいフィルタ ${best}(${escapeHtml(bestF.sound)})の音を聴き比べられます。`
     + `×${ev.audio.speed} は ${ev.audio.speed} 倍の速さで、揺れの周波数も ${ev.audio.speed} 倍になります`
     + `(たとえば 5 Hz の揺れが ${5 * ev.audio.speed} Hz の音に)。${ev.audio.speed !== META.audio.common ? `×${META.audio.common} は答える前と同じ速さです。` : ""}`
+    + escapeHtml(ev.audio.lowNote || "")
     + `音は「♪」の付いた拠点の上下動です(波形をタップすると、その拠点の音に変えられます)。大きさは最大でそろえています。</p>`
     + `<p>${escapeHtml(c.text)}</p>`
     + (ev.note ? `<p><b>この問題の注意:</b> ${escapeHtml(ev.note)}</p>` : "")

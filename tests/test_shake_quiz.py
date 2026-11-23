@@ -121,7 +121,7 @@ def test_event_data_and_written_page(tmp_path, stations):
   assert list(waves) == ["Hokudai"] and info["have"] == ["Hokudai"]
   assert info["rate"] == 250 and info["n"] == 60 * 250 and info["t0"] == -10.0
   assert info["kind"] == sq.CHOICES.index("発破") and info["best"] == "A" and info["focus"] is True
-  assert info["phases"] == {} and info["low"] is False and info["audio"] == {"station": "Hokudai", "speed": 20, "far": False}
+  assert info["phases"] == {} and info["low"] is False and info["audio"] == {"station": "Hokudai", "speed": 20, "far": False, "speeds": [20, 40, 80], "lowNote": sq.low_speed_note([20, 40, 80])}
 
   path = tmp_path / "quiz.html"
   size = sq.write_page(path, [(info, waves)])
@@ -147,3 +147,12 @@ def test_long_windows_are_thinned(stations, monkeypatch):
   st = obspy.Stream([make_trace(np.arange(700 * 250) % 9, "Hokudai", T0 - timedelta(seconds=60))])
   info, _ = sq.event_data(quiz_item("さらに遠い地震(海外)", show=(-60.0, 600.0)), st, {}, stations)
   assert info["rate"] == 125 and info["n"] == 660 * 125
+
+
+def test_low_speed_note():
+  import shake_quiz as sq
+  assert sq.low_speed_note([20, 40]) == ""
+  blast = sq.low_speed_note(sq.ANSWER_SPEEDS["発破"])
+  assert "×80" in blast and "L" not in blast
+  world = sq.low_speed_note(sq.ANSWER_SPEEDS["さらに遠い地震(海外)"])
+  assert "×80" in world and "×320 で 32〜160 Hz" in world

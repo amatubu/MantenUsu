@@ -92,7 +92,8 @@ def test_quiz_pages(tmp_path, stations):
   listen = tmp_path / "listen"
   pages = sp.quiz_listen(listen, events)
   assert pages == {3: ("q3.html", "a3.html")}
-  assert {p.name for p in listen.glob("*.wav")} == {"q3.wav", "a3_x20_raw.wav", "a3_x20_A.wav", "a3_x40_raw.wav", "a3_x40_A.wav"}
+  assert {p.name for p in listen.glob("*.wav")} == {"q3.wav", "a3_x20_raw.wav", "a3_x40_raw.wav", "a3_x40_A.wav",
+                                                        "a3_x80_A.wav"}   # A の ×20(10〜40 Hz)は聞こえないので入れず、聞こえる高さにする ×80 を入れる
   assert "答え" not in (listen / "q3.html").read_text(encoding="utf-8")       # 問題の聴くページに答えを出さない
   assert "発破" in (listen / "a3.html").read_text(encoding="utf-8")
   sp.write_index(listen)
@@ -121,3 +122,12 @@ def test_compare_pages(tmp_path, stations):
   assert "本当の揺れの大きさの比" in (listen / "t4.html").read_text(encoding="utf-8")
   sp.compare_pdf(tmp_path / "compare.pdf", themes, pages, "https://example.jp/listen")
   assert (tmp_path / "compare.pdf").read_bytes()[:4] == b"%PDF"
+
+
+def test_low_sound_note():
+  import shake_print as sp
+  assert sp.low_sound_note(["", "B"], [20]) == ""
+  a = sp.low_sound_note(["", "A"], [20, 40])
+  assert "×20 で 10〜40 Hz" in a and "×40 で 20〜80 Hz" in a and "スピーカー" in a
+  l = sp.low_sound_note(["", "L"], [40])                                    # 4〜20 Hz は人の耳に聞こえない
+  assert "人の耳に聞こえる高さ" in l and "スピーカー" not in l
