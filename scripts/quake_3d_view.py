@@ -1,6 +1,7 @@
 # quake_3d_view.py
 # 震源・山体・観測点・地下構造・波の通り道を、ブラウザで回して見る3Dの図(HTML)に書き出す(模式的な表示の試作)
-#   地形: 地理院の標高タイル(gsi_tiles.elevations)。湖は水面の高さで、湖底の形は入っていない
+#   地形: 地理院の標高タイル(gsi_tiles.elevations)。洞爺湖は、湖底の形の GeoTIFF(LAKE_DEM_FILE)があれば湖底の高さにし、
+#         湖面を半透明の面で重ねる(無ければ湖は水面の高さの平らな面)
 #   地下構造: 震源を求めるのに使う、深さで速度が変わる構造(velocity_model)を、ブロックの側面の色で示す
 #   波の通り道: 同じ構造での最短経路(velocity_model.ray_path)。P波を読んだ拠点ごとに、震源から拠点まで
 #   図の表示は plotly.js(インターネットから読む。登録や鍵は要らない)。データは HTML に書き込むので、ファイル1つで開ける
@@ -8,7 +9,7 @@
 #
 #   単体で実行すると、有珠山付近の地震の一覧(地震リストの usu)の震源を描く。あわせて、満点の拠点だけの波形の画像を
 #   batch_plots/quakes/locate/waveforms_manten に作る(地震を選んだときに出す画像。アプリの「ブラウザで3D」もこれがあれば使う)
-#     python3 scripts/quake_3d_view.py [-o 出力のHTML] [--no-images]
+#     python3 scripts/quake_3d_view.py [-o 出力のHTML] [--no-images] [--lake-dem 湖底のGeoTIFF]
 #   震源を求めた結果は、地震の候補の震源の画面と同じ保存先(quake_locate.LOCATE_CACHE_FILE)を使い、無ければ計算して保存する
 import argparse
 import html
@@ -61,6 +62,13 @@ ACKNOWLEDGEMENT_SHORT = ("到着時刻の読み取りに、防災科研の V-net
 # 地形の色(低い所は緑、高い所は茶色。模式的に落ち着いた色)
 TERRAIN_COLORS = [[0.0, "#5b8c5a"], [0.25, "#8fae6b"], [0.5, "#c8b77a"], [0.75, "#a98763"], [1.0, "#8a7462"]]
 SEA_LEVEL_COLOR = "#6fa8dc"
+LAKE_DEEP_COLOR = "#1f4e79"     # 湖底のいちばん深い所の色(浅い所は SEA_LEVEL_COLOR)
+LAKE_SURFACE_COLOR = "#9fc5e8"  # 湖面の色
+LAKE_SURFACE_OPACITY = 0.35     # 湖面の不透明度(湖底が透けて見えるように)
+# 洞爺湖の湖底の形(平面直角座標系 XI 系、10 m メッシュの GeoTIFF。地理院のベクトルタイルの湖の等深線から作り、
+#   陸の基盤地図情報の数値標高モデルと合わせたもの。3Dプリントの模型用に、湖底は少し深めにしてある)。無ければ使わない
+LAKE_DEM_NAME = "toyako_merged_v2_sea0m.tif"
+LAKE_NOTE = "湖底は地理院ベクトルタイルの等深線から作った形(模型用に少し深め)"
 VP_COLORS = "YlGnBu"
 P_RAY_COLOR = "#1f6fb2"
 P_WAVE_COLOR = "#1565c0"   # 波の動きの P波の点
@@ -92,6 +100,31 @@ def terrain(box, proj, step=GRID_STEP_KM):
   h = np.where(water, 0.0, h)
   return x, y, h, water | lake_mask(h, water)
 
+# 湖底の形の GeoTIFF の場所(プロジェクトの notes の下。アプリにまとめたときなど、無ければ None)
+def default_lake_dem():
+  import app_paths
+  path = Path(app_paths.PROJECT_DIR) / "notes" / LAKE_DEM_NAME
+  return path if path.exists() else None
+
+# 湖(水面の高さの平らな所)を、湖底の高さに置き換える
+#   dem ... plane_dem.PlaneDem(None なら置き換えない)
+#   戻り値 ... (標高 [km] の配列, 湖の所, 湖面の高さ [km], 湖面からの深さ [km] の配列(湖底の無い所は 0))
+def lake_floor(x, y, h, water, proj, dem):
+  lake = water & (h > 1e-6)          # 海(データなし)は 0 m、湖は水面の高さ
+  depth = np.zeros_like(h)
+  if dem is None or not lake.any():
+    return h, lake, None, depth
+  level = float(np.median(h[lake]))
+  gx, gy = np.meshgrid(x, y)
+  lat, lon = proj.to_latlon(gx[lake], gy[lake])
+  bed = dem.elevations(lat, lon) / 1000.0
+  ok = np.isfinite(bed) & (bed < level)
+  floor = h.copy()
+  idx = np.flatnonzero(lake)[ok]
+  floor.flat[idx] = bed[ok]
+  depth.flat[idx] = level - bed[ok]
+  return floor, lake, level, depth
+
 # 湖(洞爺湖)の水面: 標高タイルでは湖が同じ高さの平らな面なので、いちばん多い同じ値が広くつながった所を湖とみなす
 LAKE_MIN_FRACTION = 0.02   # この割合より広い同じ高さの面だけを湖とする(平らな畑などを湖にしないため)
 #   sea ... 海など(データなし)の所。湖を探すときは除く(海の 0 m がいちばん多くならないように)
@@ -121,11 +154,14 @@ def r3(values):
   return [round(float(v), 3) for v in values]
 
 # 色は標高(水面は WATER_VALUE にして、色の並びのいちばん下の青にする)
+#   湖底は、湖面からの深さ(depth)で色を濃くする(深い所ほど WATER_VALUE に近い値)
 WATER_VALUE = -0.05
-def terrain_trace(x, y, h, water):
+def terrain_trace(x, y, h, water, depth=None):
   top = max(float(np.max(h)), 0.1)
-  color = np.where(water, WATER_VALUE, h)
-  scale = [[0.0, SEA_LEVEL_COLOR], [0.999 * -WATER_VALUE / (top - WATER_VALUE), SEA_LEVEL_COLOR]]
+  deep = float(np.max(depth)) if depth is not None and np.max(depth) > 0 else 1.0
+  shade = depth / deep if depth is not None else np.zeros_like(h)
+  color = np.where(water, WATER_VALUE * np.maximum(shade, 0.001), h)
+  scale = [[0.0, LAKE_DEEP_COLOR], [0.999 * -WATER_VALUE / (top - WATER_VALUE), SEA_LEVEL_COLOR]]
   scale += [[(-WATER_VALUE + f * top) / (top - WATER_VALUE), c] for f, c in TERRAIN_COLORS]
   scale[2][0] = max(scale[2][0], scale[1][0] + 1e-6)
   return {"type": "surface", "name": "地形", "x": r3(x), "y": r3(y), "z": [r3(row) for row in h],
@@ -136,6 +172,14 @@ def terrain_trace(x, y, h, water):
           "contours": {"z": {"show": True, "start": 0, "end": 1, "size": 0.1, "color": "rgba(60,50,40,0.25)",
                              "width": 1}},
           "hoverinfo": "skip"}   # 地表の後ろの震源を押せるように、地表は押せないようにする
+
+# 湖面(湖の所だけ、湖面の高さの半透明の面)
+def lake_surface_trace(x, y, lake, level):
+  z = [[level if v else None for v in row] for row in lake]
+  return {"type": "surface", "name": "湖面", "showlegend": True, "x": r3(x), "y": r3(y), "z": z,
+          "surfacecolor": [[0.0] * len(x)] * len(y), "cmin": 0, "cmax": 1,
+          "colorscale": [[0, LAKE_SURFACE_COLOR], [1, LAKE_SURFACE_COLOR]], "showscale": False,
+          "opacity": LAKE_SURFACE_OPACITY, "lighting": {"ambient": 0.9, "diffuse": 0.2}, "hoverinfo": "skip"}
 
 # ブロックの4つの側面(地表の縁から底まで)。色は P波の速度(深さで決まる)
 def side_traces(x, y, h, bottom, model):
@@ -404,7 +448,8 @@ def velocity_note(model):
 
 #   html_dir ... HTML を書き出すフォルダ(波形の画像への相対パスのため)
 #   戻り値 ... (plotly.js の図 {data, layout}, 画面の切り替えに使う情報, 描いた震源の数)
-def figure(items, stations, title, model=None, html_dir=None, keep=None):
+#   lake_dem ... 湖底の形(plane_dem.PlaneDem。None なら湖は水面の高さの平らな面)
+def figure(items, stations, title, model=None, html_dir=None, keep=None, lake_dem=None):
   model = model or velocity_model.MODELS[velocity_model.DEFAULT]
   proj = LocalProjection(list(stations.values()))
   external = {}
@@ -415,10 +460,15 @@ def figure(items, stations, title, model=None, html_dir=None, keep=None):
   pts += [(q["x"], q["y"]) for q, _rays in quakes]
   box = bounds(pts, proj)
   x, y, h, water = terrain(box, proj)
+  h, lake, lake_level, depth = lake_floor(x, y, h, water, proj, lake_dem)
   bottom = bottom_depth(quakes)
 
   sides = side_traces(x, y, h, bottom, model)
-  traces = [terrain_trace(x, y, h, water)] + sides + [sea_level_trace(box)]
+  traces = [terrain_trace(x, y, h, water, depth)] + sides + [sea_level_trace(box)]
+  lake_index = None
+  if lake_level is not None:
+    lake_index = len(traces)
+    traces.append(lake_surface_trace(x, y, lake, lake_level))
   traces += station_traces(stations, external, proj, box) + [summit_trace(proj)]
   quake_index = None
   if quakes:
@@ -452,13 +502,15 @@ def figure(items, stations, title, model=None, html_dir=None, keep=None):
               "camera": {"eye": {"x": -0.9, "y": -1.5, "z": 0.8}}},
     "annotations": [{"text": f"{gsi_tiles.DEM_ATTRIBUTION}。地下構造と波の通り道は、震源を求めるのに使う深さで速度が変わる構造(模式的なもの)。"
                              f"<br>{velocity_note(model)}"
-                             "<br>震源の縦の線は深さの範囲、白抜きは残差が大きいもの。湖・海は青(湖底の形は無い)"
+                             "<br>震源の縦の線は深さの範囲、白抜きは残差が大きいもの。"
+                             + (LAKE_NOTE if lake_level is not None else "湖・海は青(湖底の形は無い)")
+                             + 
                              f"<br>{ACKNOWLEDGEMENT}",
                      "xref": "paper", "yref": "paper", "x": 0.01, "y": 0.0, "xanchor": "left", "yanchor": "bottom", "align": "left",
                      "showarrow": False, "font": {"size": 11, "color": "#555"}}],
   }
   # 画面の切り替え(地表・側面・縦の倍率・地震を選ぶ)に使う trace の番号など
-  meta = {"terrain": 0, "sides": list(range(1, 1 + len(sides))), "opacity": DEFAULT_OPACITY,
+  meta = {"terrain": 0, "sides": list(range(1, 1 + len(sides))), "lake": lake_index, "opacity": DEFAULT_OPACITY,
           "side_half": SIDE_HALF_OPACITY, "aspect": aspect, "span": span, "top": float(np.max(h)), "bottom": bottom,
           "slowdowns": list(WAVE_SLOWDOWNS),
           "exaggerations": [{"label": f"{ex:g} 倍", "ex": ex, "above": 1} for ex in EXAGGERATIONS]
@@ -495,9 +547,16 @@ def html_file_name(title):
 #   有珠山付近の地震の一覧で、同じフォルダに拡大できる波形のページ(WAVE_PAGE_FILE)があれば、そこへのリンクを出す
 #   戻り値 ... 描いた震源の数
 #   keep ... 描く地震を選ぶ関数(quake_items と同じ。番号は選ぶ前の一覧の番号のまま)
-def write_3d_view(path, items, stations, title, model=None, keep=None):
+#   lake_dem ... 湖底の形の GeoTIFF のパス。"default" なら default_lake_dem()、None なら使わない
+def write_3d_view(path, items, stations, title, model=None, keep=None, lake_dem="default"):
   path = Path(path)
-  fig, meta, count = figure(items, stations, title, model, html_dir=path.parent.resolve(), keep=keep)
+  if lake_dem == "default":
+    lake_dem = default_lake_dem()
+  dem = None
+  if lake_dem is not None:
+    import plane_dem
+    dem = plane_dem.PlaneDem(lake_dem)
+  fig, meta, count = figure(items, stations, title, model, html_dir=path.parent.resolve(), keep=keep, lake_dem=dem)
   has_page = USU_LIST_TITLE in title and (path.parent / WAVE_PAGE_FILE).exists()
   meta.update(wave_page=WAVE_PAGE_FILE if has_page else "", wave_window=WAVE_PAGE_WINDOW)
   path.parent.mkdir(parents=True, exist_ok=True)
@@ -606,6 +665,7 @@ $("surface").onchange = (e) => {{
   const v = e.target.value;
   Plotly.restyle(gd, v === "hide" ? {{visible: false}} : {{visible: true, opacity: v === "half" ? meta.opacity : 1}},
                  [meta.terrain]);
+  if (meta.lake !== null) Plotly.restyle(gd, {{visible: v !== "hide"}}, [meta.lake]);   // 湖面も地表と一緒に隠す
 }};
 $("sides").onchange = (e) => {{
   const v = e.target.value;
@@ -711,7 +771,7 @@ $("waveclose").onclick = () => {{ waveOpen = false; $("wave").style.display = "n
 function surfacesNoPick() {{
   const sc = gd._fullLayout.scene && gd._fullLayout.scene._scene;
   if (!sc) return;
-  [meta.terrain].concat(meta.sides).forEach((i) => {{
+  [meta.terrain].concat(meta.sides, meta.lake !== null ? [meta.lake] : []).forEach((i) => {{
     const fd = gd._fullData[i], t = fd && sc.traces[fd.uid];
     if (t && t.surface) {{ t.surface.drawPick = null; t.surface.pick = () => null; }}
   }});
@@ -1120,6 +1180,9 @@ def main():
                       help="P波の到着時刻を読んだ観測点(ほかの機関も含む)が N 以上の地震だけ描く")
   parser.add_argument("--min-manten", type=int, default=0, metavar="N",
                       help="P波の到着時刻を読んだ満点の拠点が N 以上の地震だけ描く")
+  parser.add_argument("--lake-dem", metavar="GeoTIFF",
+                      help=f"洞爺湖の湖底の形(平面直角座標系の GeoTIFF。省略すると notes/{LAKE_DEM_NAME} があれば使う)")
+  parser.add_argument("--no-lake", action="store_true", help="湖底の形を使わない(湖は水面の高さの平らな面)")
   parser.add_argument("--only", metavar="1,5,13",
                       help="一覧の番号をカンマで区切って並べ、その地震だけ描く(番号は一覧のまま)")
   args = parser.parse_args()
@@ -1145,7 +1208,8 @@ def main():
   keep, title, suffix = pick_filter(stations, args.min_picks, args.min_manten, only)
   default = html_file_name(USU_LIST_TITLE).replace("_3d.html", f"_3d{suffix}.html")
   out = Path(args.output) if args.output else quake_locate.OUTPUT_DIR / default
-  n = write_3d_view(out, items, stations, title, keep=keep)
+  lake_dem = None if args.no_lake else (args.lake_dem or "default")
+  n = write_3d_view(out, items, stations, title, keep=keep, lake_dem=lake_dem)
   print(f"3Dの図を書き出しました(震源 {n}件): {out}")
 
 if __name__ == "__main__":

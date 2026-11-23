@@ -4,6 +4,7 @@ import json
 import re
 
 import numpy as np
+import pytest
 
 import gsi_tiles
 import quake_3d_view
@@ -163,3 +164,21 @@ def test_bottom_depth_follows_deepest_point():
   deep = dict(q, waves={"S": [[[0, 0, -2.45, 0.0]]]})
   assert quake_3d_view.bottom_depth([(deep, [])]) == 3.0                     # 通り道が深ければ、その下まで
   assert quake_3d_view.bottom_depth([]) == quake_3d_view.BOTTOM_MIN_KM
+
+
+def test_lake_floor_uses_bed_only_inside_the_lake():
+  class FakeDem:   # どこでも標高 -50 m
+    def elevations(self, lat, lon):
+      return np.full(np.shape(lat), -50.0)
+  stations = {"Mimatsu": (42.54075, 140.85705, 189.8), "Bamba": (42.53533, 140.78266, 17.1)}
+  proj = quake_3d_view.LocalProjection(list(stations.values()))
+  x, y = np.arange(3.0), np.arange(2.0)
+  h = np.array([[0.0, 0.084, 0.3], [0.0, 0.084, 0.084]])
+  water = np.array([[True, True, False], [True, True, True]])      # 左の列は海(0 m)、0.084 km は湖
+  floor, lake, level, depth = quake_3d_view.lake_floor(x, y, h, water, proj, FakeDem())
+  assert level == pytest.approx(0.084) and lake.tolist() == [[False, True, False], [False, True, True]]
+  assert floor[0, 1] == pytest.approx(-0.05) and floor[0, 0] == 0.0 and floor[0, 2] == 0.3
+  assert depth[1, 2] == pytest.approx(0.134) and depth[0, 0] == 0.0
+  # 湖底の形が無ければ、そのまま
+  same, _lake, level, depth = quake_3d_view.lake_floor(x, y, h, water, proj, None)
+  assert level is None and np.array_equal(same, h) and not depth.any()
