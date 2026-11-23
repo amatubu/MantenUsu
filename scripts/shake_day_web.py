@@ -3,6 +3,7 @@
 #   1) 1 時間の図: 紙と同じ形(1 段 = 1 分の 60 段)の画像。拠点と時を切り替え、図をタップするとその時刻の拡大へ
 #   2) 部分の拡大: タップした時刻の前後(はじめは 30 秒前〜90 秒後)の波形。ピンチ・ホイールで拡大縮小、ドラッグで移動、
 #      フィルタ(元・A・B・C・L)、拠点の切り替え(4 拠点を並べることもできる)、見えている範囲を速くして聴く
+#   横長の広い画面(幅 900 px 以上)では 1) と 2) を左右に並べ、図をタップすると右の拡大がその時刻に替わる(拡大している範囲を図に枠で示す)
 #   流れ: 地震だと思う所に印を付ける(1 時間の図で「印付け」にしてタップ、または拡大で「印付け」。ブラウザに日ごとに覚える)→「答え合わせ」
 #   答え合わせ: 答え(etc/shake_day_<日>.csv)の揺れを 1 時間の図と拡大に色の帯と番号で重ね、地震のうち印が付いた数と、揺れごとの結果、
 #   答えの一覧に無い所の印を出す(答えの揺れの始まりの 10 秒前〜終わりの 10 秒後の印を、その揺れの印とみる)
@@ -217,6 +218,25 @@ button.link { border: 0; background: none; color: var(--accent); font: inherit; 
 .tapDot { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border: 2px solid var(--cursor); border-radius: 50%; }
 #zoom canvas { display: block; width: 100%; height: clamp(220px, calc(100svh - 300px), 480px); background: var(--panel); border-radius: 8px; touch-action: none; margin-top: 8px; }
 #status { color: var(--muted); font-size: 13px; min-height: 1.4em; }
+.viewBand { position: absolute; border: 2px solid var(--accent); background: rgba(21, 101, 192, 0.10); box-sizing: border-box; }
+.useNote { display: none; }
+/* 横長の広い画面(パソコン・iPad の横向き): 左に 1 時間の図(高さいっぱい)、右に拡大の操作と波形 */
+body.wide header { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+body.wide header h1 { margin: 0; font-size: 14px; color: var(--ink); }
+body.wide header .bar { margin: 0; }
+body.wide #markBar { flex-basis: 100%; }
+body.wide main { max-width: none; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: start; padding: 8px 16px 16px; }
+body.wide #hour { position: sticky; top: calc(var(--hdr, 80px) + 8px); }
+body.wide #hour > details { display: none; }
+body.wide #hourWrap { margin-top: 0; height: calc(100svh - var(--hdr, 80px) - 24px); aspect-ratio: 1008 / 1512; }
+body.wide #hourWrap img { width: 100%; height: 100%; }
+body.wide #zoomBar { margin: 0 0 4px; }
+body.wide #zoom canvas { height: calc(100svh - var(--hdr, 80px) - 150px); min-height: 260px; margin-top: 4px; }
+body.wide .useNote { display: block; }
+body.wide #answers { grid-column: 1 / -1; max-width: 1400px; }
+body.wide .ansBlock { display: grid; grid-template-columns: minmax(280px, 400px) minmax(0, 1fr); gap: 4px 20px; align-items: start; }
+body.wide .ansBlock h3 { grid-column: 1 / -1; }
+body.wide .ansBlock ul { margin-top: 8px; }
 [hidden] { display: none !important; }
 </style>
 </head>
@@ -262,17 +282,19 @@ button.link { border: 0; background: none; color: var(--accent); font: inherit; 
 </header>
 <main>
   <section id="hour">
-    <details class="note"><summary>使い方</summary>
+    <details class="note" id="use"><summary>使い方</summary>
       1 段が 1 分で、左から右へ時間が進みます(__IMAGE_NOTE__)。上の ◀ ▶ で時間を、名前のボタンで拠点を切り替えます。
       「拡大」のときに図をタップすると、その時刻の前後を拡大して、音も聴けます。
       地震だと思う揺れには、「印付け」にしてタップして印を付けましょう(拡大の画面でも「印付け」で付けられます)。
       印を消すには、上の印の一覧の ✕ を押すか、「印付け」のまま印をもう一度タップします。
       印はこのブラウザに覚えておきます。24 時間ぜんぶを見終わったら「答え合わせ」。
+      広い画面では、左の図をタップすると右に拡大が出ます(キーボードの ← → で 1 分ずつ動かし、スペースで聴けます)。
     </details>
-    <div class="figWrap" id="hourWrap"><img id="hourImg" alt="1 時間の記録"><div class="overlay" id="marks"></div>
+    <div class="figWrap" id="hourWrap"><img id="hourImg" alt="1 時間の記録"><div class="overlay" id="marks"></div><div class="overlay" id="viewBand"></div>
       <div class="loading" id="loading" hidden>読み込み中…</div></div>
   </section>
   <section id="zoom" hidden>
+    <details class="note useNote"><summary>使い方</summary><span id="useCopy"></span></details>
     <canvas id="wave"></canvas>
     <div id="status"></div>
     <p class="note" id="zoomNote"></p>
@@ -288,8 +310,8 @@ const RATE = META.rate, HOUR_N = 3600 * RATE;
 const $ = id => document.getElementById(id);
 const canvas = $("wave"), ctx = canvas.getContext("2d");
 let colors = {};
-const S = { st: META.stations[0].id, hour: 0, tapMode: "zoom", zoomMark: false, marks: [], checked: false, view: "hour", center: 0, v0: 0, span: 1, dpr: 1,
-            filter: "B", speed: 40, all4: false, base: 0, n: 0, traces: {}, home: [0, 1], token: 0 };
+const S = { wide: false, from: "hour", st: META.stations[0].id, hour: 0, tapMode: "zoom", zoomMark: true, marks: [], checked: false, view: "hour", center: 0, v0: 0, span: 1, dpr: 1,
+            filter: "B", speed: 40, all4: true, base: 0, n: 0, traces: {}, home: [0, 1], token: 0 };
 const files = new Map();     // "拠点_時" → Promise<{v, q, gaps}>
 const MATCH_SECONDS = 10;    // 答えの揺れの始まりの 10 秒前〜終わりの 10 秒後の印を、その揺れを見つけた印とみる
 
@@ -304,7 +326,7 @@ function saveMarks() { try { localStorage.setItem(STORE, JSON.stringify({ marks:
 function toggleMark(sec, tol) {
   const i = S.marks.findIndex(m => Math.abs(m - sec) <= tol);
   if (i >= 0) S.marks.splice(i, 1); else { S.marks.push(Math.round(sec * 10) / 10); S.marks.sort((a, b) => a - b); }
-  saveMarks(); updateMarkBar();
+  saveMarks(); updateMarkBar(); updateHeaderHeight();
 }
 function markNo(m) { return S.marks.indexOf(m) + 1; }
 function isQuake(e) { return e.kind.includes("地震") && !e.kind.includes("ではない"); }
@@ -327,8 +349,8 @@ function updateMarkBar() {
   }
 }
 function redrawMarks() {
-  if (S.view === "hour") drawOverlay($("marks"), S.hour, S.checked);
-  else if (S.view === "zoom") requestDraw();
+  if (!$("hour").hidden) drawOverlay($("marks"), S.hour, S.checked);
+  if (!$("zoom").hidden) requestDraw();
 }
 function setTapMode(m) {
   S.tapMode = m;
@@ -343,12 +365,39 @@ function clock(sec) { sec = Math.max(0, sec); const h = Math.floor(sec / 3600), 
 function imageSrc(h) { const st = station(S.st); return st.hours.includes(h) ? `img/${st.label}_${pad(h)}.png` : ""; }
 
 // 画面(hour・zoom・answers)を切り替える。上のボタンの段も、その画面のものだけを出す
+//   広い画面(S.wide)では、hour と zoom をいっしょに出す(左に 1 時間の図、右に拡大)
 function setView(v) {
+  const prev = S.view;
   S.view = v;
-  for (const id of ["hour", "zoom", "answers"]) { $(id).hidden = id !== v; $(id + "Bar") && ($(id + "Bar").hidden = id !== v); }
-  $("answerBar").hidden = v !== "answers";
+  const work = S.wide && v !== "answers";
+  $("hour").hidden = !(v === "hour" || work); $("hourBar").hidden = $("hour").hidden;
+  $("zoom").hidden = !(v === "zoom" || work); $("zoomBar").hidden = $("zoom").hidden;
+  $("answers").hidden = v !== "answers"; $("answerBar").hidden = v !== "answers";
   $("markBar").hidden = v === "answers";
-  if (v !== "zoom") stopAudio();
+  // 戻るボタン: 狭い画面の拡大と、答えの画面から来た拡大だけ
+  const fromAnswers = S.from === "answers" && S.checked;
+  $("back").hidden = S.wide && !fromAnswers;
+  $("back").textContent = fromAnswers ? "← 答えに戻る" : "← 戻る";
+  if (v === "answers" || (!S.wide && v !== "zoom") || (prev === "answers" && v !== "zoom")) stopAudio();
+  if (work && !Object.keys(S.traces).length) $("status").textContent = "左の図をタップすると、ここにその時刻の拡大が出ます。";
+  if (!$("zoom").hidden) resize();
+}
+// 広い画面かどうか(横長で幅 900 px 以上)。切り替わったら、拡大の操作の段を右の欄(広い)か上の段(狭い)に移す
+const WIDE = window.matchMedia("(min-width: 900px) and (min-aspect-ratio: 1/1)");
+function applyWide() {
+  S.wide = WIDE.matches;
+  document.body.classList.toggle("wide", S.wide);
+  if (S.wide) $("zoom").prepend($("zoomBar"));
+  else document.querySelector("header").insertBefore($("zoomBar"), $("markBar"));
+  $("useCopy").innerHTML = $("use").innerHTML.replace(/<summary>.*?<\/summary>/, "");
+  if (Object.keys(S.traces).length) S.hour = Math.min(23, Math.floor(viewMid() / 3600));   // 拡大を見ていたら、その時間の図にする
+  setView(S.view === "zoom" && S.wide ? "hour" : S.view);
+  if (S.view === "hour") showHour();
+  updateHeaderHeight();
+}
+// 上の段の高さ(広い画面で、図と拡大の高さを画面に合わせるのに使う)
+function updateHeaderHeight() {
+  document.documentElement.style.setProperty("--hdr", document.querySelector("header").offsetHeight + "px");
 }
 
 // --- 答え合わせ ---
@@ -380,7 +429,7 @@ function showAnswers() {
   for (const m of S.marks) hours.add(Math.floor(m / 3600));
   for (const h of [...hours].sort((a, b) => a - b)) {
     const sec = document.createElement("div");
-    sec.id = `ans-${h}`;
+    sec.id = `ans-${h}`; sec.className = "ansBlock";
     sec.innerHTML = `<h3>${pad(h)}:00〜${pad(h + 1)}:00</h3>`;
     const wrap = Object.assign(document.createElement("div"), { className: "figWrap" });
     const img = Object.assign(document.createElement("img"), { loading: "lazy", alt: `${pad(h)}時の記録`, src: imageSrc(h) });
@@ -427,9 +476,14 @@ function buildStations() {
     b.textContent = st.label; b.className = st.id === S.st ? "on" : "";
     b.onclick = () => {
       S.st = st.id; buildStations();
-      if (S.view === "hour") showHour();
-      else if (S.view === "zoom") openZoom(viewMid(), true);
-      else { const y = window.scrollY; showAnswers(); window.scrollTo(0, y); }
+      if (S.view === "answers") { const y = window.scrollY; showAnswers(); window.scrollTo(0, y); }
+      else if (S.wide) {                      // 左の図を替え、右に拡大が出ていれば(左と同じ時間)、その拠点の拡大にする
+        const had = Object.keys(S.traces).length > 0;
+        showHour();
+        if (had) openZoom(viewMid(), true);
+      }
+      else if (S.view === "hour") showHour();
+      else openZoom(viewMid(), true);
     };
     box.appendChild(b);
   }
@@ -442,9 +496,23 @@ function buildHours() {
     o.value = h; o.textContent = `${pad(h)}時`;
     sel.appendChild(o);
   }
-  sel.onchange = () => { S.hour = +sel.value; showHour(); };
-  $("prevHour").onclick = () => { if (S.hour > 0) { S.hour--; showHour(); } };
-  $("nextHour").onclick = () => { if (S.hour < 23) { S.hour++; showHour(); } };
+  sel.onchange = () => changeHour(+sel.value);
+  $("prevHour").onclick = () => { if (S.hour > 0) changeHour(S.hour - 1); };
+  $("nextHour").onclick = () => { if (S.hour < 23) changeHour(S.hour + 1); };
+}
+// 時間を替える。広い画面で、右の拡大がほかの時間を見ているときは、拡大を消す(左の図の時間と拡大の時間がずれないように)
+function changeHour(h) {
+  S.hour = h;
+  if (S.wide && Object.keys(S.traces).length && Math.floor(viewMid() / 3600) !== h) clearZoom();
+  showHour();
+}
+function clearZoom() {
+  S.token++;                    // 読み込み中の拡大は捨てる
+  stopAudio();
+  S.traces = {};
+  $("viewBand").innerHTML = "";
+  $("status").textContent = "左の図をタップすると、ここにその時刻の拡大が出ます。";
+  requestDraw();
 }
 // 1 時間の図の画像を替える。読み込むまでは前の図をうすくして「読み込み中…」を出す。前後の時間も先に読んでおく
 const preloaded = new Map();
@@ -463,6 +531,7 @@ function setHourImage(src) {
 }
 function showHour() {
   setView("hour");
+  if (S.wide) S.view = Object.keys(S.traces).length ? "zoom" : "hour";
   $("hourSel").value = S.hour;
   $("prevHour").disabled = S.hour === 0; $("nextHour").disabled = S.hour === 23;
   const st = station(S.st), src = imageSrc(S.hour);
@@ -471,7 +540,23 @@ function showHour() {
   $("check").textContent = S.checked ? "答えを見る" : "答え合わせ";
   $("check").classList.toggle("on", S.checked);
   drawOverlay($("marks"), S.hour, S.checked);
+  drawViewBand();
   setHash();
+}
+// 広い画面で、右の拡大に見えている範囲を、左の 1 時間の図に枠で示す
+function drawViewBand() {
+  const box = $("viewBand");
+  box.innerHTML = "";
+  if (!S.wide || !Object.keys(S.traces).length) return;
+  const h0 = S.hour * 3600, a = Math.max((S.base + S.v0) / RATE, h0), b = Math.min((S.base + S.v0 + S.span) / RATE, h0 + 3600);
+  if (a >= b) return;
+  for (let r = Math.floor((a - h0) / 60); r <= Math.floor((b - 1e-6 - h0) / 60); r++) {
+    const x0 = Math.max(a - h0, r * 60), x1 = Math.min(b - h0, (r + 1) * 60);
+    const [fx0, ftop, unit] = secToFig(x0), fx1 = META.box[0] + (x1 - r * 60) / 60 * META.box[2];
+    const div = Object.assign(document.createElement("div"), { className: "viewBand" });
+    Object.assign(div.style, { left: fx0 * 100 + "%", width: Math.max(0.5, (fx1 - fx0) * 100) + "%", top: ftop * 100 + "%", height: unit * 100 + "%" });
+    box.appendChild(div);
+  }
 }
 // 図の中の位置(図の幅・高さに対する割合)と、その時間の始まりからの秒
 function figToSec(fx, fy) {
@@ -535,7 +620,8 @@ $("hourImg").addEventListener("click", e => {
   const dot = Object.assign(document.createElement("div"), { className: "tapDot" });
   Object.assign(dot.style, { left: (e.clientX - r.left) + "px", top: (e.clientY - r.top) + "px" });
   $("marks").appendChild(dot);
-  setTimeout(() => zoomFrom("hour", S.hour * 3600 + s), 120);
+  if (S.wide) zoomFrom("hour", S.hour * 3600 + s);
+  else setTimeout(() => zoomFrom("hour", S.hour * 3600 + s), 120);
 });
 // 拡大へ(戻るボタンで from の画面に戻る)
 function zoomFrom(from, sec) { S.from = from; S.fromY = window.scrollY; openZoom(sec, false); }
@@ -578,9 +664,10 @@ function prepare(tr) {          // 今のフィルタをかけて、描くため
 async function openZoom(sec, keepView) {
   stopAudio();
   const token = ++S.token;
-  S.view = "zoom"; S.center = sec;
+  S.center = sec;
   setView("zoom");
   const h = Math.min(23, Math.floor(sec / 3600));
+  if (h !== S.hour) { S.hour = h; if (S.wide) { showHour(); S.view = "zoom"; } }   // 左の図(狭い画面では戻ったとき)の時間を、拡大の時間にそろえる
   const keep = keepView && S.base === (h - 1) * HOUR_N ? [S.v0, S.span] : null;
   S.base = (h - 1) * HOUR_N; S.n = 3 * HOUR_N;
   const ids = S.all4 ? META.stations.map(s => s.id) : [S.st];
@@ -601,6 +688,7 @@ async function openZoom(sec, keepView) {
   if (keep) [S.v0, S.span] = keep; else [S.v0, S.span] = S.home;
   clampView();
   updateZoomNote();
+  if (S.wide) drawOverlay($("marks"), S.hour, S.checked);
   setHash();
   requestDraw();
 }
@@ -635,7 +723,7 @@ function buildSpeeds() {
   }
 }
 $("back").onclick = () => {
-  if (S.from === "answers" && S.checked) { showAnswers(); window.scrollTo(0, S.fromY || 0); return; }
+  if (S.from === "answers" && S.checked) { S.from = "hour"; showAnswers(); window.scrollTo(0, S.fromY || 0); return; }
   S.hour = Math.min(23, Math.floor(viewMid() / 3600)); showHour();
 };
 $("earlier").onclick = () => { S.v0 -= 60 * RATE; recenter(); };
@@ -660,7 +748,7 @@ function readColors() {
   for (const k of ["ink", "muted", "line", "wave", "gap", "cursor", "sel", "accent"]) colors[k] = cs.getPropertyValue("--" + k).trim();
 }
 let drawQueued = false;
-function requestDraw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(() => { drawQueued = false; draw(); }); } }
+function requestDraw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(() => { drawQueued = false; draw(); drawViewBand(); }); } }
 function resize() {
   S.dpr = window.devicePixelRatio || 1;
   const r = canvas.getBoundingClientRect();
@@ -769,6 +857,7 @@ attachGestures(canvas, {
     if (S.zoomMark) {                       // 印: タップした時刻に付ける(近くの印は消す)
       const sec = (S.base + S.v0 + x / W * S.span) / RATE, tol = 20 / W * S.span / RATE;
       toggleMark(sec, tol); requestDraw();
+      if (S.wide) drawOverlay($("marks"), S.hour, S.checked);
       return;
     }
     const ids = Object.keys(S.traces);      // 4 拠点のときは、タップした段の拠点の音にする
@@ -800,9 +889,24 @@ function route() {
 $("title").textContent = META.title;
 loadMarks(); updateMarkBar(); setTapMode("zoom");
 buildHours(); buildFilters(); buildSpeeds();
-window.addEventListener("resize", () => { if (S.view === "zoom") resize(); });
+// 拡大は、はじめから 4 拠点を並べ、タップで印を付ける
+$("all4").classList.toggle("on", S.all4); $("markZoom").classList.toggle("on", S.zoomMark);
+S.wide = WIDE.matches; document.body.classList.toggle("wide", S.wide);
+if (S.wide) $("zoom").prepend($("zoomBar"));
+$("useCopy").innerHTML = $("use").innerHTML.replace(/<summary>.*?<\/summary>/, "");
+WIDE.addEventListener("change", applyWide);
+window.addEventListener("resize", () => { updateHeaderHeight(); if (!$("zoom").hidden) resize(); });
+// キーボード(パソコン): ← → で 1 分ずつ、スペースで聴く・止める(拡大が出ているとき)
+document.addEventListener("keydown", e => {
+  if ($("zoom").hidden || !Object.keys(S.traces).length || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement && document.activeElement.tagName)) return;
+  if (e.key === "ArrowLeft") { e.preventDefault(); $("earlier").click(); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); $("later").click(); }
+  else if (e.key === " ") { e.preventDefault(); $("play").click(); }
+});
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", requestDraw);
 route();
+updateHeaderHeight();
 </script>
 </body>
 </html>
