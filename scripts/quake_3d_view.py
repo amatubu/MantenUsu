@@ -42,13 +42,21 @@ MP4_MUXER_URL = f"https://cdn.jsdelivr.net/npm/mp4-muxer@{MP4_MUXER_VERSION}/bui
 MARGIN_KM = 1.5            # 拠点・震源の外側に足す広さ [km]
 MIN_HALF_WIDTH_KM = 3.0    # 山頂からの範囲の最小 [km](震源が少なくても山体が見えるように)
 GRID_STEP_KM = 0.05        # 地形の格子の間隔 [km]
-BOTTOM_MIN_KM = 3.0        # ブロックの底の深さの最小 [km](震源がもっと深ければ、その下まで)
+BOTTOM_MIN_KM = 2.0        # ブロックの底の深さの最小 [km](震源がもっと深ければ、その下まで)
+BOTTOM_MARGIN_KM = 0.1     # いちばん深いもの(深さの範囲の下の端・波の通り道)からブロックの底までの余白 [km]
+BOTTOM_STEP_KM = 0.5       # ブロックの底の深さの刻み [km]
 VP_RANGE = (2.0, 6.0)      # 側面の色の P波の速度の範囲 [km/s]
 EXAGGERATIONS = (1, 1.2, 1.5, 2, 3)  # 縦の倍率の選択肢(全体)
 ABOVE_EXAGGERATIONS = (1.5, 2)       # 海面より上だけ強調する倍率の選択肢(3Dプリントの模型と同じ。深さはそのまま)
 DEFAULT_OPACITY = 0.6      # 地表のはじめの不透明度(地下の震源が透けて見えるように)
 SIDE_HALF_OPACITY = 0.35   # 側面を半透明にしたときの不透明度(横から見て内部の震源が見えるように)
 OTHERS_OPACITY = 0.3       # 地震を1つ選んだときの、ほかの震源の不透明度(選んだ地震を目立たせる)
+# 図の左下に書く謝辞(到着時刻の読み取りに、ほかの機関の観測点の波形を使っている。図に波形は出さない)
+ACKNOWLEDGEMENT = ("到着時刻の読み取りには、防災科学技術研究所の基盤的火山観測網(V-net、doi:10.17598/NIED.0006)と"
+                   "気象庁の観測点の波形も使わせていただきました")
+# 幅の狭い画面(スマートフォン)で出す短い謝辞(図の文字は折り返さないので、行を分ける)
+ACKNOWLEDGEMENT_SHORT = ("到着時刻の読み取りに、防災科研の V-net<br>(doi:10.17598/NIED.0006)と気象庁の"
+                         "<br>観測点の波形も使わせていただきました")
 
 # 地形の色(低い所は緑、高い所は茶色。模式的に落ち着いた色)
 TERRAIN_COLORS = [[0.0, "#5b8c5a"], [0.25, "#8fae6b"], [0.5, "#c8b77a"], [0.75, "#a98763"], [1.0, "#8a7462"]]
@@ -328,11 +336,14 @@ def event_key(cand):
 #   items ... [(候補, 結果), ...](quake_locate.locate_all_cached の結果)
 #   stations ... 満点の拠点 {名前: (緯度, 経度, 高度[m])}
 #   html_dir ... HTML を書き出すフォルダ(波形の画像への相対パスを作るため。None なら画像を探さない)
-def quake_items(items, stations, proj, model, html_dir=None):
+#   keep ... 描く地震を選ぶ関数 (一覧の番号, 候補, 結果) → bool(None ならすべて)。番号は、選ぶ前の一覧の番号のまま
+def quake_items(items, stations, proj, model, html_dir=None, keep=None):
   out = []
   usu_images = usu_list_images() if html_dir is not None else None
   local = [(cand, r) for cand, r in items if r["kind"] in LOCAL_KINDS and r.get("lat") is not None]
   for i, (cand, r) in enumerate(local, 1):
+    if keep is not None and not keep(i, cand, r):
+      continue
     loc, q = r["loc"], cand["jma"]
     x, y = proj.to_xy(r["lat"], r["lon"])
     depth = depth_for_plot(loc)
@@ -382,21 +393,29 @@ def quake_items(items, stations, proj, model, html_dir=None):
 
 # --- HTML ---
 
+# 図の左下に書く、速度の構造の説明(S波の速さは、深さで変わる vp/vs で P波の速さから決める)
+VP_VS_NOTE_DEPTHS = (0.0, 1.0, 3.5)   # 速さを書く深さ [km](海面からの深さ)
+def velocity_note(model):
+  zs = np.array(VP_VS_NOTE_DEPTHS)
+  join = lambda vals, fmt: " / ".join(format(float(v), fmt) for v in vals)
+  where = " / ".join("海面" if z == 0 else f"深さ {z:g} km" for z in VP_VS_NOTE_DEPTHS)
+  return (f"速さ({where}): P波 {join(model.vp(zs), '.1f')} km/s、S波 {join(model.vs(zs), '.1f')} km/s"
+          f"(vp/vs {join(model.vp_vs(zs), '.2f')})")
+
 #   html_dir ... HTML を書き出すフォルダ(波形の画像への相対パスのため)
 #   戻り値 ... (plotly.js の図 {data, layout}, 画面の切り替えに使う情報, 描いた震源の数)
-def figure(items, stations, title, model=None, html_dir=None):
+def figure(items, stations, title, model=None, html_dir=None, keep=None):
   model = model or velocity_model.MODELS[velocity_model.DEFAULT]
   proj = LocalProjection(list(stations.values()))
   external = {}
   for _cand, r in items:
     external.update(r.get("external") or {})
-  quakes = quake_items(items, stations, proj, model, html_dir)
+  quakes = quake_items(items, stations, proj, model, html_dir, keep)
   pts = [proj.to_xy(la, lo) for la, lo, _el in list(stations.values()) + list(external.values())]
   pts += [(q["x"], q["y"]) for q, _rays in quakes]
   box = bounds(pts, proj)
   x, y, h, water = terrain(box, proj)
-  deepest = max([q["depth"] + q["err_down"] for q, _rays in quakes] + [0.0])
-  bottom = max(BOTTOM_MIN_KM, float(np.ceil(deepest + 0.5)))
+  bottom = bottom_depth(quakes)
 
   sides = side_traces(x, y, h, bottom, model)
   traces = [terrain_trace(x, y, h, water)] + sides + [sea_level_trace(box)]
@@ -432,7 +451,9 @@ def figure(items, stations, title, model=None, html_dir=None):
               "zaxis": {"title": {"text": "高さ [km]"}}, "aspectmode": "manual", "aspectratio": aspect,
               "camera": {"eye": {"x": -0.9, "y": -1.5, "z": 0.8}}},
     "annotations": [{"text": f"{gsi_tiles.DEM_ATTRIBUTION}。地下構造と波の通り道は、震源を求めるのに使う深さで速度が変わる構造(模式的なもの)。"
-                             "<br>震源の縦の線は深さの範囲、白抜きは残差が大きいもの。湖・海は青(湖底の形は無い)",
+                             f"<br>{velocity_note(model)}"
+                             "<br>震源の縦の線は深さの範囲、白抜きは残差が大きいもの。湖・海は青(湖底の形は無い)"
+                             f"<br>{ACKNOWLEDGEMENT}",
                      "xref": "paper", "yref": "paper", "x": 0.01, "y": 0.0, "xanchor": "left", "yanchor": "bottom", "align": "left",
                      "showarrow": False, "font": {"size": 11, "color": "#555"}}],
   }
@@ -444,11 +465,20 @@ def figure(items, stations, title, model=None, html_dir=None):
                            + [{"label": f"海面より上だけ {a:g} 倍", "ex": 1, "above": a} for a in ABOVE_EXAGGERATIONS],
           "quake_trace": quake_index, "number_trace": number_index, "others_opacity": OTHERS_OPACITY,
           "rays": list(range(ray_start, label_start)), "labels": list(range(label_start, len(traces))),
-          "quakes": [{"short": q["short"], "key": q["key"], "image": q["image"], "lines": q["lines"], "waves": q["waves"],
+          "quakes": [{"no": q["no"], "short": q["short"], "key": q["key"], "image": q["image"], "lines": q["lines"], "waves": q["waves"],
                       "label": q["short"]} for q, _rays in quakes],
-          "waves": wave_index, "attribution": gsi_tiles.DEM_ATTRIBUTION, "p_color": P_WAVE_COLOR, "s_color": S_WAVE_COLOR,
+          "waves": wave_index, "attribution": f"{gsi_tiles.DEM_ATTRIBUTION}<br>{ACKNOWLEDGEMENT_SHORT}", "p_color": P_WAVE_COLOR, "s_color": S_WAVE_COLOR,
           "video": {"fps": VIDEO_FPS, "max_width": VIDEO_MAX_WIDTH, "bitrate": VIDEO_BITRATE}}
   return {"data": traces, "layout": layout}, meta, len(quakes)
+
+# ブロックの底の深さ [km]: 震源の深さの範囲の下の端と、P波・S波の通り道(下に回り込むことがある)のいちばん深い所に
+#   余白を足し、刻みに切り上げる(地下を必要以上に深く見せないように)
+def bottom_depth(quakes):
+  deepest = [q["depth"] + q["err_down"] for q, _rays in quakes]
+  deepest += [-p[2] for _q, rays in quakes for path in rays for p in path]
+  deepest += [-p[2] for q, _rays in quakes for path in q["waves"]["S"] for p in path]
+  need = max(deepest + [0.0]) + BOTTOM_MARGIN_KM
+  return max(BOTTOM_MIN_KM, float(np.ceil(need / BOTTOM_STEP_KM - 1e-9) * BOTTOM_STEP_KM))
 
 # 3Dの図の HTML のファイル名(サーバーに置けるよう、英数字と _ - だけにする)
 #   有珠山付近の地震の一覧は usu_quakes_3d.html。日本語などを含む題名は、使える文字に、題名から作った番号を足す(別の一覧と重ならないように)
@@ -464,9 +494,10 @@ def html_file_name(title):
 # HTML を書き出す
 #   有珠山付近の地震の一覧で、同じフォルダに拡大できる波形のページ(WAVE_PAGE_FILE)があれば、そこへのリンクを出す
 #   戻り値 ... 描いた震源の数
-def write_3d_view(path, items, stations, title, model=None):
+#   keep ... 描く地震を選ぶ関数(quake_items と同じ。番号は選ぶ前の一覧の番号のまま)
+def write_3d_view(path, items, stations, title, model=None, keep=None):
   path = Path(path)
-  fig, meta, count = figure(items, stations, title, model, html_dir=path.parent.resolve())
+  fig, meta, count = figure(items, stations, title, model, html_dir=path.parent.resolve(), keep=keep)
   has_page = USU_LIST_TITLE in title and (path.parent / WAVE_PAGE_FILE).exists()
   meta.update(wave_page=WAVE_PAGE_FILE if has_page else "", wave_window=WAVE_PAGE_WINDOW)
   path.parent.mkdir(parents=True, exist_ok=True)
@@ -544,6 +575,18 @@ body {{ display: flex; flex-direction: column; }}
 const fig = {fig};
 const meta = {meta};
 const gd = document.getElementById("view");
+// URL の only=1,5,13 で、出す震源を一覧の番号で選ぶ(ほかの震源は描かない。番号は一覧のまま)
+const onlyNos = (new URLSearchParams(location.search).get("only") || "").split(",").map((v) => v.trim()).filter((v) => v);
+const shown = meta.quakes.map((q) => !onlyNos.length || onlyNos.includes(String(q.no)));
+if (onlyNos.length && shown.some((v) => v)) {{
+  [meta.quake_trace, meta.number_trace].forEach((k) => {{
+    const t = fig.data[k];
+    ["x", "y", "z"].forEach((a) => {{ t[a] = t[a].map((v, i) => (shown[i] ? v : null)); }});
+  }});
+  const err = fig.data[meta.quake_trace].error_z;
+  err.array = err.array.map((v, i) => (shown[i] ? v : 0));
+  err.arrayminus = err.arrayminus.map((v, i) => (shown[i] ? v : 0));
+}} else shown.fill(true);
 const NARROW_WIDTH = 700;
 // 幅の狭い画面(スマートフォン)では、はじめは凡例と速度の色の帯を隠して、図を広く使う(上の「凡例」で出せる)
 const showLegendAtStart = window.innerWidth >= NARROW_WIDTH;
@@ -558,7 +601,7 @@ $("legend").onchange = (e) => {{
                 [meta.sides[0]]);
 }};
 meta.exaggerations.forEach((e, i) => $("exag").add(new Option(e.label, i)));
-meta.quakes.forEach((q, i) => $("quake").add(new Option(q.short, i)));
+meta.quakes.forEach((q, i) => {{ if (shown[i]) $("quake").add(new Option(q.short, i)); }});
 $("surface").onchange = (e) => {{
   const v = e.target.value;
   Plotly.restyle(gd, v === "hide" ? {{visible: false}} : {{visible: true, opacity: v === "half" ? meta.opacity : 1}},
@@ -583,7 +626,7 @@ $("exag").onchange = (e) => {{
   }}
   const zr = ((meta.top * o.above + meta.bottom) * o.ex) / meta.span;
   const ticks = [];
-  for (let v = -Math.floor(meta.bottom); v <= meta.top + 1e-9; v += 0.5) ticks.push(v);
+  for (let v = -Math.floor(meta.bottom * 2) / 2; v <= meta.top + 1e-9; v += 0.5) ticks.push(v);
   const axis = o.above === 1 ? {{tickmode: "auto"}}
     : {{tickmode: "array", tickvals: ticks.map((v) => (v > 0 ? v * o.above : v)), ticktext: ticks.map((v) => v.toFixed(1))}};
   Plotly.relayout(gd, {{"scene.aspectratio": {{x: meta.aspect.x, y: meta.aspect.y, z: zr}},
@@ -647,7 +690,7 @@ $("quake").onchange = (e) => {{
   const v = e.target.value;
   const one = v !== "none" && v !== "all" ? parseInt(v) : null;
   if (meta.rays.length) {{
-    Plotly.restyle(gd, {{visible: meta.rays.map((_, i) => v === "all" || i === one)}}, meta.rays);
+    Plotly.restyle(gd, {{visible: meta.rays.map((_, i) => (v === "all" && shown[i]) || i === one)}}, meta.rays);
     Plotly.restyle(gd, {{visible: meta.labels.map((_, i) => i === one)}}, meta.labels);
     Plotly.restyle(gd, {{opacity: one === null ? 1 : meta.others_opacity}}, [meta.quake_trace]);
   }}
@@ -979,6 +1022,44 @@ $("record").onclick = async () => {{
   a.download = blob.fileName;
   a.click();
 }};
+// URL の後ろに付けた値で、はじめの表示を選ぶ(例: usu_quakes_3d.html?exag=2&surface=opaque&quake=15)
+//   surface・sides ... half(半透明)・opaque(不透明)・hide(隠す)
+//   exag ... 縦の倍率(1・1.2・1.5・2・3)。above ... 海面より上だけの倍率(1.5・2)
+//   numbers・legend ... 1(出す)・0(出さない)。quake ... 地震の番号(No.)か all。wave ... image・page。slow ... 1・5・10・20
+//   only ... 出す震源の番号をカンマで区切ったもの(はじめに図を描く前に使う)
+//   選択肢に無い値は使わない
+function applyUrlOptions() {{
+  const q = new URLSearchParams(location.search);
+  const choose = (id, value) => {{
+    const el = $(id);
+    if (value === null || ![...el.options].some((o) => o.value === value)) return;
+    el.value = value;
+    el.dispatchEvent(new Event("change"));
+  }};
+  const check = (id, value) => {{
+    if (value !== "0" && value !== "1") return;
+    $(id).checked = value === "1";
+    $(id).dispatchEvent(new Event("change"));
+  }};
+  choose("surface", q.get("surface"));
+  choose("sides", q.get("sides"));
+  if (q.has("exag") || q.has("above")) {{
+    const ex = parseFloat(q.get("exag") || "1"), above = parseFloat(q.get("above") || "1");
+    const k = meta.exaggerations.findIndex((o) => o.ex === ex && o.above === above);
+    if (k >= 0) choose("exag", String(k));
+  }}
+  check("numbers", q.get("numbers"));
+  check("legend", q.get("legend"));
+  if (meta.wave_page) choose("wavekind", q.get("wave"));
+  if (q.has("slow")) choose("slow", String(parseFloat(q.get("slow"))));
+  const quake = q.get("quake");
+  if (quake === "all") choose("quake", "all");
+  else if (quake !== null) {{
+    const k = meta.quakes.findIndex((e, i) => shown[i] && (String(e.no) === quake || e.key === quake));
+    if (k >= 0) choose("quake", String(k));
+  }}
+}}
+applyUrlOptions();
 // 上の欄に選択肢を入れると欄の高さが変わるので、図の大きさを合わせ直す(図の下の端が画面の外に出ないように)
 Plotly.Plots.resize(gd);
 </script>
@@ -988,6 +1069,26 @@ Plotly.Plots.resize(gd);
 
 
 # --- 単体で実行するとき: 有珠山付近の地震の一覧 ---
+
+# 描く地震を選ぶ(--min-picks・--min-manten は到着時刻を読んだ観測点の数、--only は一覧の番号)
+#   戻り値 ... (選ぶ関数(選ばないときは None), 題名, ファイル名に足す文字)
+def pick_filter(stations, min_picks=0, min_manten=0, only=None):
+  if min_picks <= 0 and min_manten <= 0 and not only:
+    return None, USU_LIST_TITLE, ""
+  def keep(no, _cand, r):
+    picks = r.get("picks") or {}
+    return ((not only or no in only) and len(picks) >= min_picks
+            and sum(name in stations for name in picks) >= min_manten)
+  if only:
+    return keep, f"{USU_LIST_TITLE}({len(only)}件を選んだもの)", "_" + "-".join(str(n) for n in sorted(only))
+  words, suffix = [], ""
+  if min_picks > 0:
+    words.append(f"{min_picks} 観測点以上")
+    suffix += f"_p{min_picks}"
+  if min_manten > 0:
+    words.append(f"満点 {min_manten} 拠点以上")
+    suffix += f"_m{min_manten}"
+  return keep, f"{USU_LIST_TITLE}(P波を {'・'.join(words)}で読んだもの)", suffix
 
 def load_hour_from_zips(dt):
   import tempfile
@@ -1015,7 +1116,14 @@ def main():
   parser.add_argument("-o", "--output", help="出力する HTML(省略すると batch_plots/quakes/locate/usu_quakes_3d.html)")
   parser.add_argument("--no-images", action="store_true",
                       help="満点の拠点だけの波形の画像を作り直さない(前に作ったものがあればそれを使う)")
+  parser.add_argument("--min-picks", type=int, default=0, metavar="N",
+                      help="P波の到着時刻を読んだ観測点(ほかの機関も含む)が N 以上の地震だけ描く")
+  parser.add_argument("--min-manten", type=int, default=0, metavar="N",
+                      help="P波の到着時刻を読んだ満点の拠点が N 以上の地震だけ描く")
+  parser.add_argument("--only", metavar="1,5,13",
+                      help="一覧の番号をカンマで区切って並べ、その地震だけ描く(番号は一覧のまま)")
   args = parser.parse_args()
+  only = {int(v) for v in args.only.split(",") if v.strip()} if args.only else None
   stations = load_stations(app_paths.ETC_DIR)
   proj = LocalProjection(list(stations.values()))
   with tempfile.TemporaryDirectory() as d:
@@ -1034,8 +1142,10 @@ def main():
     setup_japanese_font()
     n_img = save_manten_images(items, stations, load_hour_from_zips, log=lambda m: None)
     print(f"満点の拠点だけの波形の画像: {n_img}件({manten_image_dir()})")
-  out = Path(args.output) if args.output else quake_locate.OUTPUT_DIR / html_file_name(USU_LIST_TITLE)
-  n = write_3d_view(out, items, stations, USU_LIST_TITLE)
+  keep, title, suffix = pick_filter(stations, args.min_picks, args.min_manten, only)
+  default = html_file_name(USU_LIST_TITLE).replace("_3d.html", f"_3d{suffix}.html")
+  out = Path(args.output) if args.output else quake_locate.OUTPUT_DIR / default
+  n = write_3d_view(out, items, stations, title, keep=keep)
   print(f"3Dの図を書き出しました(震源 {n}件): {out}")
 
 if __name__ == "__main__":

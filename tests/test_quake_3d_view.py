@@ -121,3 +121,45 @@ def test_html_file_name_is_ascii():
   # 日本語などを含む題名は英数字だけにし、題名が違えば別の名前になる
   a, b = name("S波の読み直し候補"), name("S波の見直し候補")
   assert a != b and re.fullmatch(r"[A-Za-z0-9_-]+\.html", a) and re.fullmatch(r"[A-Za-z0-9_-]+\.html", name("発破"))
+
+
+def test_notes_have_speeds_and_acknowledgement(tmp_path, monkeypatch):
+  monkeypatch.setattr(gsi_tiles, "elevations", lambda lats, lons, z=None: np.full(np.shape(lats), 100.0))
+  monkeypatch.setattr(quake_3d_view, "waveform_image", lambda cand, r, usu=None: None)
+  monkeypatch.setattr(quake_3d_view, "usu_list_images", lambda: {})
+  stations = {"Mimatsu": (42.54075, 140.85705, 189.8), "Bamba": (42.53533, 140.78266, 17.1)}
+  fig, meta, _n = quake_3d_view.figure(fake_items(), stations, "テスト")
+  note = fig["layout"]["annotations"][0]["text"]
+  model = velocity_model.MODELS[velocity_model.DEFAULT]
+  assert f"S波 {float(model.vs(0.0)):.1f} / " in note and f"vp/vs {float(model.vp_vs(0.0)):.2f} / " in note
+  assert quake_3d_view.ACKNOWLEDGEMENT in note and "V-net" in quake_3d_view.ACKNOWLEDGEMENT
+  assert quake_3d_view.ACKNOWLEDGEMENT_SHORT in meta["attribution"]   # 幅の狭い画面で出す短い説明にも入れる
+
+
+def test_pick_filter_keeps_list_numbers(tmp_path, monkeypatch):
+  monkeypatch.setattr(gsi_tiles, "elevations", lambda lats, lons, z=None: np.full(np.shape(lats), 100.0))
+  monkeypatch.setattr(quake_3d_view, "waveform_image", lambda cand, r, usu=None: None)
+  monkeypatch.setattr(quake_3d_view, "usu_list_images", lambda: {})
+  stations = {"Mimatsu": (42.54075, 140.85705, 189.8), "Bamba": (42.53533, 140.78266, 17.1)}
+  (cand, r), _far = fake_items()
+  few = dict(r, picks={"Mimatsu": 33.4})
+  items = [({**cand, "start": datetime(2025, 9, 1)}, few), (cand, r)]
+  keep, title, suffix = quake_3d_view.pick_filter(stations, min_picks=2)
+  assert quake_3d_view.USU_LIST_TITLE in title and suffix == "_p2"
+  _fig, meta, n = quake_3d_view.figure(items, stations, title, keep=keep)
+  assert n == 1 and meta["quakes"][0]["no"] == 2 and meta["quakes"][0]["short"].startswith("No.2 ")   # 一覧の番号のまま
+  keep, _title, suffix = quake_3d_view.pick_filter(stations, min_manten=2)
+  assert suffix == "_m2" and not keep(2, cand, r)   # 満点の拠点は Mimatsu だけ
+  assert quake_3d_view.pick_filter(stations) == (None, quake_3d_view.USU_LIST_TITLE, "")
+  keep, title, suffix = quake_3d_view.pick_filter(stations, only={1})
+  assert suffix == "_1" and "1件" in title
+  _fig, meta, n = quake_3d_view.figure(items, stations, title, keep=keep)
+  assert n == 1 and meta["quakes"][0]["no"] == 1
+
+
+def test_bottom_depth_follows_deepest_point():
+  q = {"depth": 1.0, "err_down": 1.4, "waves": {"S": [[[0, 0, -2.15, 0.0]]]}}
+  assert quake_3d_view.bottom_depth([(q, [[(0, 0, -2.1)]])]) == 2.5          # 2.4 km + 余白 → 0.5 km 刻みで 2.5 km
+  deep = dict(q, waves={"S": [[[0, 0, -2.45, 0.0]]]})
+  assert quake_3d_view.bottom_depth([(deep, [])]) == 3.0                     # 通り道が深ければ、その下まで
+  assert quake_3d_view.bottom_depth([]) == quake_3d_view.BOTTOM_MIN_KM
