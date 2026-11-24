@@ -108,6 +108,9 @@ def test_written_page_is_self_contained(tmp_path):
   text = path.read_text(encoding="utf-8")
   assert size == path.stat().st_size
   assert "__META__" not in text and "__WAVES__" not in text and "__TITLE__" not in text
+  assert "__COUNT__" not in text and "__SIZE__" not in text
+  # 読み込み中の表示: 波形の前に出し、地震を1つ読むごとに数を進める
+  assert text.index('id="loading"') < text.index('id="w1"') < text.index("<script>loadingStep(1)</script>")
   assert not re.search(r"""(?:src|href)=["']?https?:""", text)      # 外部のファイルを読まない
   meta = json.loads(re.search(r'id="meta">(.*?)</script>', text, re.S).group(1))
   assert [s["id"] for s in meta["stations"]] == ["Bamba", "Hokudai"] and meta["title"] == "地震</script>"

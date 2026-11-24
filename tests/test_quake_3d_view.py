@@ -62,6 +62,8 @@ def test_write_3d_view(tmp_path, monkeypatch):
   assert n == 1   # 遠い地震は描かない
   page = path.read_text(encoding="utf-8")
   assert quake_3d_view.PLOTLY_URL in page and gsi_tiles.DEM_ATTRIBUTION in page
+  # 読み込み中の表示は、plotly.js を読む前に出す(回線が遅いと何も出ないため)
+  assert page.index('id="loading"') < page.index(quake_3d_view.PLOTLY_URL) < page.index("const fig = ")
   fig = json.loads(page.split("const fig = ", 1)[1].split(";\nconst meta", 1)[0])
   meta = json.loads(page.split("const meta = ", 1)[1].split(";\nconst gd", 1)[0])
   names = [t["name"] for t in fig["data"]]

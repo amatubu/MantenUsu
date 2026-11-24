@@ -573,8 +573,6 @@ PAGE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} (3D)</title>
-<script src="{plotly_url}"></script>
-<script src="{muxer_url}"></script>
 <style>
 html, body {{ margin: 0; height: 100%; background: white; color: #222; font-family: sans-serif; font-size: 13px;
               overflow: hidden; }}
@@ -604,10 +602,30 @@ body {{ display: flex; flex-direction: column; }}
 #waveinfo .s {{ font-size: 12px; color: #444; }}
 #wave header a {{ margin-left: auto; margin-right: 8px; color: #1565c0; white-space: nowrap; }}
 #wave .none {{ padding: 10px; color: #666; }}
+/* 読み込み中の表示: ネットワークが遅いと、図の部品(plotly.js)と図のデータが届くまで何も出ないため */
+#loading {{ position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; gap: 12px; background: white; color: #444; font-size: 15px; text-align: center;
+            padding: 0 16px; }}
+#loading .spin {{ width: 36px; height: 36px; border: 4px solid #ddd; border-top-color: #1565c0; border-radius: 50%;
+                  animation: spin 0.9s linear infinite; }}
+#loading.error .spin {{ display: none; }}
+#loading .sub {{ color: #777; font-size: 12px; }}
+@keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+#wave .loadingimg {{ padding: 10px; color: #666; }}
 #wave .times {{ padding: 4px 8px; font-size: 12px; line-height: 1.5; border-top: 1px solid #eee; }}
 </style>
 </head>
 <body>
+<div id="loading"><div class="spin"></div><div id="loadingtext">読み込み中…</div>
+  <div class="sub" id="loadingsub">図を描く部品(plotly.js)と図のデータを読み込んでいます。回線が遅いと少し時間がかかります</div></div>
+<script>
+function loadingStep(text, sub, error) {{
+  const box = document.getElementById("loading");
+  document.getElementById("loadingtext").textContent = text;
+  document.getElementById("loadingsub").textContent = sub || "";
+  if (error) box.classList.add("error");
+}}
+</script>
 <div id="bar">
   <label>地表 <select id="surface"><option value="half">半透明</option><option value="opaque">不透明</option>
     <option value="hide">隠す</option></select></label>
@@ -630,6 +648,13 @@ body {{ display: flex; flex-direction: column; }}
 <div id="view"><div id="waveinfo"><div class="s" id="infotitle"></div><div class="t" id="infotime"></div>
   <div class="s"><span id="infop">●</span> P波 <span id="infos">●</span> S波</div></div><div id="wave"><header><span id="wavetitle"></span><a id="wavelink" style="display:none">拡大できる波形 ↗</a><button id="waveclose" title="閉じる">×</button></header>
   <div id="wavebody"></div></div></div>
+<script src="{plotly_url}"></script>
+<script async src="{muxer_url}"></script>
+<script>
+if (window.Plotly) loadingStep("図のデータを読み込み中…", "地形と震源のデータを読み込んでいます");
+else loadingStep("図を描く部品(plotly.js)を読み込めませんでした",
+                 "インターネットにつながっているかを確かめて、ページを開き直してください", true);
+</script>
 <script>
 const fig = {fig};
 const meta = {meta};
@@ -652,7 +677,9 @@ const showLegendAtStart = window.innerWidth >= NARROW_WIDTH;
 fig.layout.showlegend = showLegendAtStart;
 fig.data[meta.sides[0]].showscale = showLegendAtStart;
 if (!showLegendAtStart) fig.layout.annotations[0].text = meta.attribution;   // 長い説明は入らないので、出典だけにする
-Plotly.newPlot(gd, fig.data, fig.layout, {{responsive: true, displaylogo: false}});
+loadingStep("図を描いています…");
+Plotly.newPlot(gd, fig.data, fig.layout, {{responsive: true, displaylogo: false}})
+  .then(() => {{ document.getElementById("loading").remove(); }});
 const $ = (id) => document.getElementById(id);
 $("legend").checked = showLegendAtStart;
 $("legend").onchange = (e) => {{
@@ -730,7 +757,13 @@ function showWave(i) {{
   if (meta.wave_page) $("wavelink").href = wavePageUrl(i);
   $("wavebody").innerHTML = "";
   if (q.image) {{
+    const wait = document.createElement("div");
+    wait.className = "loadingimg";
+    wait.textContent = "波形の画像を読み込み中…";
+    $("wavebody").appendChild(wait);
     const img = new Image();
+    img.style.display = "none";
+    img.onload = () => {{ wait.remove(); img.style.display = ""; }};
     img.src = q.image;
     img.alt = q.short + " の波形";
     img.title = "押すと大きく(もう一度押すと小さく)";

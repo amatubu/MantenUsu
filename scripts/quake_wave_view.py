@@ -219,11 +219,16 @@ def write_wave_view(path, events, stations, title):
           "filter": {"low": PICK_BAND[0], "high": PICK_BAND[1], "sections": filter_sections()},
           "stations": [{"id": nm, "label": station_names.short(nm)} for nm in stations],
           "events": [info for info, _waves in events]}
-  blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}">{script_json(waves)}</script>'
-                     for info, waves in events)
+  # 波形の間に小さなスクリプトを置き、読み込めた地震の数を「読み込み中」の表示に出す(回線が遅いと何も出ないため)
+  blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}">{script_json(waves)}</script>\n'
+                      f'<script>loadingStep({k})</script>'
+                      for k, (info, waves) in enumerate(events, 1))
   page = (PAGE.replace("__TITLE__", html.escape(title))
           .replace("__META__", script_json(meta))
-          .replace("__WAVES__", blocks))
+          .replace("__WAVES__", blocks)
+          .replace("__COUNT__", str(len(events))))
+  mb = len(page.encode("utf-8")) / 1e6
+  page = page.replace("__SIZE__", f"{mb:.1f}" if mb >= 1 else f"{mb:.2f}")
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(page, encoding="utf-8")
   return path.stat().st_size
@@ -283,12 +288,30 @@ header button:disabled { color: var(--line); cursor: default; }
 #wave { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none;
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 #status { position: absolute; left: 16px; right: 16px; top: 40%; text-align: center; color: var(--muted); font-size: 14px; pointer-events: none; }
+#loading { display: flex; align-items: center; gap: 12px; margin: 12px 0; padding: 12px; border-radius: 8px;
+  background: var(--panel); font-size: 14px; }
+#loading .spin { flex: none; width: 24px; height: 24px; border: 3px solid var(--line); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.9s linear infinite; }
+#loading small { display: block; color: var(--muted); font-size: 12px; }
+#loadingBar { height: 4px; margin-top: 6px; border-radius: 2px; background: var(--line); overflow: hidden; }
+#loadingBar div { width: 0; height: 100%; background: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
 .warn { margin: 16px 0; padding: 12px; border-radius: 8px; background: var(--panel); font-size: 14px; }
 </style>
 </head>
 <body>
 <main id="list">
   <h1>__TITLE__</h1>
+  <div id="loading"><div class="spin"></div><div style="flex:1">
+    <div id="loadingText">波形を読み込み中… 0 / __COUNT__ 件</div>
+    <small>ページ全体で約 __SIZE__ MB あります。回線が遅いと少し時間がかかります</small>
+    <div id="loadingBar"><div></div></div></div></div>
+  <script>
+  function loadingStep(k) {
+    document.getElementById("loadingText").textContent = `波形を読み込み中… ${k} / __COUNT__ 件`;
+    document.querySelector("#loadingBar div").style.width = (100 * k / __COUNT__) + "%";
+  }
+  </script>
   <div id="count"></div>
   <noscript><p class="warn">プレビューの画面では動きません。Safari などのブラウザで開いてください。</p></noscript>
   <p class="warn" id="unsupported" hidden>このブラウザは圧縮の展開(DecompressionStream)に対応していません。iOS 16.4 以降の Safari で開いてください。</p>
@@ -766,6 +789,7 @@ new ResizeObserver(resize).observe(canvas);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); requestDraw(); });
 if (typeof DecompressionStream === "undefined") $("unsupported").hidden = false;
 readColors(); updateTools(); buildList(); route();
+$("loading").remove();
 </script>
 </body>
 </html>
