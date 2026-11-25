@@ -4,7 +4,8 @@
 #     割合の gamma 乗にする。Python の haptic_* とページの JavaScript(HAPTIC_JS の hapticEnvelope など)は同じ計算(テストで比べる)
 #   再生: テスト用の iPhone のアプリ(ios/UsuMantenFeel、WKWebView)の中で開いたときは、webkit.messageHandlers.usuHaptics に
 #     {cmd: "play", interval: 秒, intensity: [0〜1, ...], sharpness: 0〜1} を送り、アプリが Core Haptics で振動させる(止めるときは {cmd: "stop"})。
-#     Safari などでは、画面の要素を揺らし(と、選べば低い音)で代わりにする
+#     Safari などアプリの外では振動できないので、振動の操作はページに出さない(hapticHideOutsideApp)。
+#     hapticPlay は、アプリの外でも画面の要素を揺らし(と、選べば低い音)で代わりにする
 #   使っているページ: quake_wave_view.py(有珠山付近の地震の波形)、shake_compare.py(揺れを比べる)、shake_world.py(世界の地震が届く)
 import numpy as np
 
@@ -126,6 +127,11 @@ function hapticBridge() {
   return window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.usuHaptics;
 }
 function hapticNative() { return !!hapticBridge(); }
+// アプリの外(Safari など)では振動できないので、振動の操作の要素を隠す
+function hapticHideOutsideApp(...els) {
+  if (hapticNative()) return;
+  for (const el of els) if (el) el.style.display = "none";
+}
 // levels ... 強さ 0〜1 の並び、dt ... 1 コマの秒
 //   opts ... {sharpness, sound, shake: 揺らす要素, meter: 強さの棒(幅を変える要素), onTick(何コマ目か), onStop()}
 function hapticPlay(levels, dt, opts) {

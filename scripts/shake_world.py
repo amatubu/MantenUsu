@@ -7,7 +7,7 @@
 #   波形は 0.1〜0.5 Hz(L)と 0.5〜2 Hz(A)をかけて 10 Hz に間引く。読んだ波形は output/shake_world/ に保存して次から使う
 #   入れるのは満点の拠点の波形だけ。時刻は日本時間
 #   振動(TODO 58): 「振動」にすると、再生に合わせて、音の拠点の揺れの強さ(音と同じ 0.3〜15 Hz を、画面の速さで 20 ms ごと)を振動にする
-#     (テスト用の iPhone のアプリの中で。ほかは画面の揺れ。haptic_page.py)
+#     (テスト用の iPhone のアプリの中だけ。ほかでは「振動」を出さない。haptic_page.py)
 #
 #     python3 scripts/shake_world.py [-o 出力の HTML] [--quiz 問題の番号 ...]
 #   省略すると batch_plots/quiz/world.html に書き出す
@@ -22,6 +22,7 @@ import numpy as np
 
 import app_paths
 import haptic_page
+import page_common
 import station_names
 import shake_quiz as sq
 
@@ -258,13 +259,28 @@ def front_key(depth):
     _fronts[key] = front_rays(float(key))
   return key
 
+# 地震ごとの大きなデータ(波形・音)と波面は、ページの本文のあとに 1 件ずつのかたまりで置き、
+# 1 件読むごとに「読み込み中」の数とバーを進める(ページが大きく、回線が遅いと何も出ないため)
+HEAVY = ("waves", "sound")
 def write_page(path, events):
-  stations = [{"id": nm, "label": station_names.full(nm)} for nm in sq.STATIONS]
-  meta = {"events": events, "fronts": _fronts, "shadow": list(SHADOW), "stations": stations, "bands": {b: list(v) for b, v in BANDS.items()},
-          "R": R_EARTH, "cmb": 3482.0, "icb": 1217.0, "haptic": haptic_page.HAPTIC}
   from quake_wave_view import script_json
+  stations = [{"id": nm, "label": station_names.full(nm)} for nm in sq.STATIONS]
+  light = [{k: v for k, v in e.items() if k not in HEAVY} for e in events]
+  meta = {"events": light, "shadow": list(SHADOW), "stations": stations, "bands": {b: list(v) for b, v in BANDS.items()},
+          "R": R_EARTH, "cmb": 3482.0, "icb": 1217.0, "haptic": haptic_page.HAPTIC}
+  blocks, done = [], set()
+  for k, e in enumerate(events, 1):
+    if e["front"] not in done:                # 波面は、その深さを使う最初の地震の前に置く
+      done.add(e["front"])
+      blocks.append(f'<script type="application/json" id="front{e["front"]}">{script_json(_fronts[e["front"]])}</script>')
+    blocks.append(f'<script type="application/json" id="data{e["no"]}">{script_json({h: e[h] for h in HEAVY})}</script>'
+                  + page_common.loading_step(k))
   page = (PAGE.replace("__DATA__", script_json(meta)).replace("__TITLE__", html.escape("世界の地震が届く"))
-          .replace("__HAPTIC_JS__", haptic_page.HAPTIC_JS))
+          .replace("__HAPTIC_JS__", haptic_page.HAPTIC_JS)
+          .replace("__BLOCKS__", "\n".join(blocks))
+          .replace("__LOADING__", page_common.loading_html(len(events), "件"))
+          .replace("__LOADING_CSS__", page_common.LOADING_CSS))
+  page = page_common.fill_size(page)
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(page, encoding="utf-8")
   return path.stat().st_size
@@ -277,11 +293,12 @@ PAGE = r"""<!DOCTYPE html>
 <title>__TITLE__</title>
 <style>
 :root { color-scheme: light dark; --bg: #fff; --ink: #1c2126; --muted: #68727d; --panel: #f4f5f7; --line: #d5d9de;
-  --p: #c8501e; --s: #1565c0; --sf: #2e7d32; --mantle: #efe7da; --outer: #dfe3e8; --inner: #c6cdd6; --wave: #1c2126; --btn: #e9ecef; --on: #1c2126; --onink: #fff; }
+  --accent: #1565c0; --p: #c8501e; --s: #1565c0; --sf: #2e7d32; --mantle: #efe7da; --outer: #dfe3e8; --inner: #c6cdd6; --wave: #1c2126; --btn: #e9ecef; --on: #1c2126; --onink: #fff; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14171a; --ink: #e8ecef; --muted: #9aa5af; --panel: #1f2428; --line: #39424a;
-  --p: #ff8a50; --s: #64a8f0; --sf: #66bb6a; --mantle: #3a332b; --outer: #2c333b; --inner: #3d4650; --wave: #e8ecef; --btn: #2a3036; --on: #e8ecef; --onink: #14171a; } }
+  --accent: #64a8f0; --p: #ff8a50; --s: #64a8f0; --sf: #66bb6a; --mantle: #3a332b; --outer: #2c333b; --inner: #3d4650; --wave: #e8ecef; --btn: #2a3036; --on: #e8ecef; --onink: #14171a; } }
 :root[data-theme="dark"] { --bg: #14171a; --ink: #e8ecef; --muted: #9aa5af; --panel: #1f2428; --line: #39424a;
-  --p: #ff8a50; --s: #64a8f0; --sf: #66bb6a; --mantle: #3a332b; --outer: #2c333b; --inner: #3d4650; --wave: #e8ecef; --btn: #2a3036; --on: #e8ecef; --onink: #14171a; }
+  --accent: #64a8f0; --p: #ff8a50; --s: #64a8f0; --sf: #66bb6a; --mantle: #3a332b; --outer: #2c333b; --inner: #3d4650; --wave: #e8ecef; --btn: #2a3036; --on: #e8ecef; --onink: #14171a; }
+__LOADING_CSS__
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; }
 main { max-width: 1280px; margin: 0 auto; padding: 12px 16px 24px; }
@@ -338,6 +355,7 @@ canvas { width: 100%; display: block; background: var(--panel); border-radius: 8
 <body>
 <main>
 <h1>世界の地震が届く</h1>
+__LOADING__
 <div class="bar"><div class="group" id="events"><span>地震</span></div><select id="evsel" aria-label="地震"></select></div>
 <div id="info"></div>
 <div class="dock"><div id="dockbands"></div>
@@ -400,8 +418,15 @@ S波は液体の外核を通れないので、およそ 100° より遠くには
 <p>波の通り道と届く時刻は、地球の中の速さの標準的なモデル(iasp91)からの見込みです。地球の表面波は、速さを決めて描いた目安です。</p>
 </div>
 </main>
+__BLOCKS__
 <script>
 const META = __DATA__;
+// 本文のあとに置いた波面と、地震ごとの波形・音を読み込む
+META.fronts = {};
+for (const e of META.events) {
+  if (!META.fronts[e.front]) META.fronts[e.front] = JSON.parse(document.getElementById("front" + e.front).textContent);
+  Object.assign(e, JSON.parse(document.getElementById("data" + e.no).textContent));
+}
 __HAPTIC_JS__
 const $ = (id) => document.getElementById(id);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -828,6 +853,8 @@ function saveSettings() {
 const saved = loadSettings();
 if (SPEEDS.includes(saved.speed)) speed = saved.speed;
 for (const id of ["fast", "codes", "carry", "sound", "feel"]) if (typeof saved[id] === "boolean") $(id).checked = saved[id];
+// 振動はテスト用の iPhone のアプリの中だけ。ほかでは「振動」を出さず、切っておく
+if (!hapticNative()) { $("feel").checked = false; hapticHideOutsideApp($("feel").parentElement); }
 let prefStation = META.stations.some((s) => s.id === saved.station) ? saved.station : META.events[0].sound_station;
 const evs = [...META.events].sort((a, b) => a.deg - b.deg);
 buttons($("events"), evs.map((e) => [e.no, `${e.place} ${Math.round(e.deg)}°`]), evs[0].no, (no) => { pick(no); $("evsel").value = no; });
@@ -859,6 +886,7 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", draw);
 // 最後に見た地震から始める
 const first = evs.find((e) => e.no === saved.event) || evs[0];
 pick(first.no); $("evsel").value = first.no; mark($("events"), first.no);
+$("loading").remove();   // 読み込みが終わったので「読み込み中」を消す
 </script>
 </body>
 </html>

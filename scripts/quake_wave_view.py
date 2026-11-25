@@ -13,7 +13,7 @@
 #   「振動」(TODO 58 の試作): 選んだ拠点の 3 成分(フィルタをかけたもの)から 20 ms ごとの揺れの強さ(0〜1)を求め、
 #     速度か加速度(微分)か、強さの基準を地震ごとか拠点の全部の地震で共通にするか、振動の鋭さを選べる。見えている範囲を再生する。テスト用の iPhone のアプリ(WKWebView)の中で開いたときは、
 #     webkit.messageHandlers.usuHaptics に {cmd: "play", interval: 秒, intensity: [0〜1, ...], sharpness: 0〜1} を送り、
-#     アプリが Core Haptics で振動させる(止めるときは {cmd: "stop"})。Safari などでは、画面の揺れ(と、選べば低い音)にする
+#     アプリが Core Haptics で振動させる(止めるときは {cmd: "stop"})。Safari などアプリの外では、振動の操作を出さない
 #
 #     python3 scripts/quake_wave_view.py [-o 出力のHTML]
 #   省略すると batch_plots/quakes/locate/usu_quakes_waves.html に書き出す。3Dの図(usu_quakes_3d.html)と同じフォルダにあると、
@@ -678,11 +678,12 @@ function draw() {
       else labelBox(name, x + 3 * d, top + blockH - 15 * d, "left", color);
       ctx.font = `${11 * d}px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif`;
     }
-    if (st.id === FEEL.station) {   // 振動にする拠点は、左に色の帯を付け、名前を色で書く
+    const feelSt = hapticNative() && st.id === FEEL.station;   // 振動にする拠点(アプリの中だけ)
+    if (feelSt) {   // 振動にする拠点は、左に色の帯を付け、名前を色で書く
       ctx.fillStyle = colors.accent;
       ctx.fillRect(0, top, 3 * d, blockH);
     }
-    labelBox(st.label, 6 * d, top + 2 * d, "left", st.id === FEEL.station ? colors.accent : colors.ink);
+    labelBox(st.label, 6 * d, top + 2 * d, "left", feelSt ? colors.accent : colors.ink);
     if (any) labelBox("±" + formatAmp(half), W - 6 * d, top + 2 * d, "right", colors.muted);
     else {
       ctx.fillStyle = colors.muted; ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -939,7 +940,7 @@ function selectStationAt(clientY) {
   const r = canvas.getBoundingClientRect(), plotH = r.height - 22;
   const k = Math.floor((clientY - r.top) / (plotH / META.stations.length));
   const st = META.stations[k];
-  if (!st || !S.data || !S.data[st.id] || st.id === FEEL.station) return;
+  if (!hapticNative() || !st || !S.data || !S.data[st.id] || st.id === FEEL.station) return;   // アプリの外では振動を使わない
   stopFeel();
   FEEL.station = st.id;
   $("feelStation").value = st.id;
@@ -958,6 +959,7 @@ $("feelNote").textContent = (hapticBridge() ? "「▶ 振動」で、見えて�
   + "「速度」は地震計の測る速度、「加速度」はそれを微分したもの(人が感じる揺れに近く、細かい揺れが強めに出ます)。"
   + "「地震ごと」はその地震のいちばん大きい所を最大に、「共通」はその拠点の " + META.events.length + " 件の中でいちばん大きい揺れを最大にします(大きい地震ほど強く振動します)。"
   + "「やわらか」「くっきり」は振動の鋭さです。波形をタップすると、その拠点を振動にします(左に色の帯が付きます)。「音」を選ぶと、同じ強さで低い音も鳴らします。";
+hapticHideOutsideApp($("feel"), $("feel2"), $("feelNote"));   // 振動はテスト用の iPhone のアプリの中だけ
 window.addEventListener("hashchange", route);
 new ResizeObserver(resize).observe(canvas);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); requestDraw(); });

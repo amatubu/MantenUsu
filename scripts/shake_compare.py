@@ -23,7 +23,7 @@
 #   - 波形: ピンチで拡大・縮小、1本指で移動、ダブルタップで全体に戻す(全部の段がいっしょに動く)。フィルタ A〜D・L(0.1〜0.5 Hz)、振幅を段ごと・共通
 #   - 音: 「♪」の段の音、または「上から順に聴く」。速さはテーマごとに選べる。音の大きさは、それぞれ最大にそろえるか、本当の大きさの比のまま
 #   - P波・S波の到着の見込みの線(気象庁の震源リストと USGS の地震)
-#   - 振動(TODO 58): ♪の段の見えている範囲の揺れの強さを、もとの速さで振動にする(テスト用の iPhone のアプリの中で。ほかは画面の揺れ。haptic_page.py)
+#   - 振動(TODO 58): ♪の段の見えている範囲の揺れの強さを、もとの速さで振動にする(テスト用の iPhone のアプリの中だけ。ほかでは出さない。haptic_page.py)
 #   波形の読み込み・符号化・描画・音・拡大や移動の操作の部品は、ほかの教材のページと同じ(page_common.py)。入れるのは満点の拠点の波形だけ
 #
 #     python3 scripts/shake_compare.py [-o 出力の HTML] [--themes テーマの一覧の CSV]
@@ -742,7 +742,7 @@ function playFeel() {
 function stopFeel() { if (FEEL.playing) hapticStop(); }
 function updateFeelButton() {
   $("feelOne").textContent = FEEL.playing ? "■ 止める" : (hapticNative() ? "📳 ♪の段を振動で感じる" : "📳 ♪の段を揺れで見る") + "(もとの速さ)";
-  $("feelRow").hidden = freqMode();
+  $("feelRow").hidden = freqMode() || !hapticNative();   // アプリの外では振動できないので出さない
 }
 $("feelOne").addEventListener("click", playFeel);
 function play(all) {

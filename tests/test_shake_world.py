@@ -84,7 +84,10 @@ def test_write_page(tmp_path, monkeypatch):
   text = (tmp_path / "world.html").read_text(encoding="utf-8")
   meta = json.loads(re.search(r"const META = (\{.*?\});\n", text, re.S).group(1))
   assert size > 0 and meta["events"][0]["place"] == "南サンドウィッチ諸島付近"
-  assert set(meta["fronts"]) == {"50"} and meta["events"][0]["sound"]["d"]["Nizaemn"]
+  assert "waves" not in meta["events"][0] and "sound" not in meta["events"][0]   # 大きなデータは本文のあとのかたまりに
+  block = lambda id_: json.loads(re.search(rf'<script type="application/json" id="{id_}">(.*?)</script>', text, re.S).group(1))
+  assert block("data40")["sound"]["d"]["Nizaemn"] and block("front50")["n"]
+  assert "loadingStep(1)" in text and "1 件" in text and "__SIZE__" not in text   # 読み込み中の表示と、ページの大きさ
   assert [s["label"] for s in meta["stations"]][-1] == "Nizaemon"           # 表示は発表用の名前
 
 
@@ -97,3 +100,4 @@ def test_page_has_haptics(tmp_path):
   text = path.read_text(encoding="utf-8")
   assert "__HAPTIC_JS__" not in text and "function hapticPlay(" in text and 'id="feel"' in text
   assert '"haptic":' in text and str(haptic_page.HAPTIC["gamma"]) in text
+  assert "function hapticHideOutsideApp(" in text and 'hapticHideOutsideApp($("feel").parentElement)' in text   # アプリの外では出さない
