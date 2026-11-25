@@ -300,3 +300,41 @@ function attachGestures(canvas, opts) {
 
 # ページに埋め込む全部
 PAGE_JS = COMMON_JS + VIEW_JS + AUDIO_JS + GESTURE_JS
+
+
+# 「読み込み中」の表示(ページが大きく、回線が遅いと何も出ないため)。波形のかたまりの間に loading_step(k) を置き、
+# 読み込めた数とバーを進める。ページの最後のスクリプトで document.getElementById("loading").remove() する
+LOADING_CSS = r"""
+#loading { display: flex; align-items: center; gap: 12px; margin: 12px 0; padding: 12px; border-radius: 8px;
+  background: var(--panel); font-size: 14px; }
+#loading .spin { flex: none; width: 24px; height: 24px; border: 3px solid var(--line); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.9s linear infinite; }
+#loading small { display: block; color: var(--muted); font-size: 12px; }
+#loadingBar { height: 4px; margin-top: 6px; border-radius: 2px; background: var(--line); overflow: hidden; }
+#loadingBar div { width: 0; height: 100%; background: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+"""
+
+
+def loading_html(count, unit):
+  """一覧の上に置く「読み込み中」の表示。ページの大きさは __SIZE__ のまま返す(fill_size で埋める)"""
+  return (f'<div id="loading"><div class="spin"></div><div style="flex:1">\n'
+          f'    <div id="loadingText">波形を読み込み中… 0 / {count} {unit}</div>\n'
+          f'    <small>ページ全体で約 __SIZE__ MB あります。回線が遅いと少し時間がかかります</small>\n'
+          f'    <div id="loadingBar"><div></div></div></div></div>\n'
+          f'  <script>\n'
+          f'  function loadingStep(k) {{\n'
+          f'    document.getElementById("loadingText").textContent = `波形を読み込み中… ${{k}} / {count} {unit}`;\n'
+          f'    document.querySelector("#loadingBar div").style.width = (100 * k / {count}) + "%";\n'
+          f'  }}\n'
+          f'  </script>')
+
+
+def loading_step(k):
+  return f"<script>loadingStep({k})</script>"
+
+
+def fill_size(page):
+  """__SIZE__ をページ全体の大きさ(MB)で埋める"""
+  mb = len(page.encode("utf-8")) / 1e6
+  return page.replace("__SIZE__", f"{mb:.1f}" if mb >= 1 else f"{mb:.2f}")

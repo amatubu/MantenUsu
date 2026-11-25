@@ -240,13 +240,18 @@ def write_page(path, themes):
     "haptic": haptic_page.HAPTIC,
     "audio": {"sections": {str(rate): {"base": sq.audio_sections(rate, False), "far": sq.audio_sections(rate, True)} for rate in rates}},
   }
-  blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}_{k}">{script_json(data)}</script>'
-                     for info, waves in themes for k, data in enumerate(waves))
+  # テーマの波形の間に小さなスクリプトを置き、読み込めたテーマの数を「読み込み中」の表示に出す(回線が遅いと何も出ないため)
+  blocks = "\n".join("".join(f'<script type="application/json" id="w{info["no"]}_{k}">{script_json(data)}</script>\n'
+                             for k, data in enumerate(waves)) + page_common.loading_step(j)
+                     for j, (info, waves) in enumerate(themes, 1))
   page = (PAGE.replace("__TITLE__", html.escape(TITLE))
           .replace("__COMMON_JS__", page_common.PAGE_JS)
           .replace("__HAPTIC_JS__", haptic_page.HAPTIC_JS)
           .replace("__META__", script_json(meta))
-          .replace("__WAVES__", blocks))
+          .replace("__WAVES__", blocks)
+          .replace("__LOADING__", page_common.loading_html(len(themes), "テーマ"))
+          .replace("__LOADING_CSS__", page_common.LOADING_CSS))
+  page = page_common.fill_size(page)
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(page, encoding="utf-8")
   return path.stat().st_size
@@ -314,12 +319,19 @@ header button:disabled { color: var(--line); cursor: default; }
 #speedSeg button, #loudSeg button { flex: 0 0 auto; padding: 0 10px; }
 .look { padding: 8px 10px; border-radius: 8px; background: var(--panel); }
 .look b { color: var(--accent); }
+__LOADING_CSS__
+/* 縦長の画面(スマートフォンの縦)では波形を広く取り、下の説明は短くしてスクロールで読む */
+@media (orientation: portrait) and (max-width: 700px) {
+  #stage { min-height: 60vh; min-height: 60dvh; }
+  #bottom { flex: 1 1 0; min-height: 96px; max-height: none; }
+}
 .warn { margin: 16px 0; padding: 12px; border-radius: 8px; background: var(--panel); font-size: 14px; }
 </style>
 </head>
 <body>
 <main id="list">
   <h1>__TITLE__</h1>
+  __LOADING__
   <p class="note">有珠山のまわりの満点地震計 4 か所の記録を、テーマごとに並べました。同じフィルタ・同じ時間の幅・同じ音の速さで、見比べたり聴き比べたりできます。</p>
   <noscript><p class="warn">プレビューの画面では動きません。Safari などのブラウザで開いてください。</p></noscript>
   <p class="warn" id="unsupported" hidden>このブラウザは圧縮の展開(DecompressionStream)に対応していません。iOS 16.4 以降の Safari で開いてください。</p>
@@ -437,7 +449,8 @@ function resize() {
 const FONT = `-apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif`;
 function layout() {
   const d = S.dpr, axisH = Math.round(22 * d), plotH = canvas.height - axisH;
-  return { axisH, plotH, blockH: plotH / theme().rows.length };
+  // headH: 段の上の、名前と振幅を書く帯(波形はその下に描き、文字が波形の始まりにかぶらないようにする)
+  return { axisH, plotH, blockH: plotH / theme().rows.length, headH: Math.round(15 * d) };
 }
 function draw() {
   const W = canvas.width, H = canvas.height, d = S.dpr;
@@ -446,7 +459,7 @@ function draw() {
   const th = theme();
   if (!th || !S.data) return;
   if (freqMode()) return drawSpectra();
-  const { axisH, plotH, blockH } = layout(), rate = th.rate, n = th.n;
+  const { axisH, plotH, blockH, headH } = layout(), rate = th.rate, n = th.n;
   const timeOf = i => th.t0 + i / rate, xOfTime = t => ((t - th.t0) * rate - S.v0) / S.span * W;
   ctx.font = `${11 * d}px ${FONT}`;
 
@@ -494,14 +507,26 @@ function draw() {
   th.rows.forEach((row, k) => {
     const top = k * blockH, tr = traceOf(k), id = stationOf(row);
     const half = S.common === true ? allHalf : halves[k];
-    if (tr) drawTrace(tr, top, blockH, centers[k], half, n);
+    if (tr) drawTrace(tr, top + headH, blockH - headH, centers[k], half, n);
+    // 名前(左)と振幅(右)は段の上の帯に書く。せまい画面で重なるときは名前を「…」で切る
     const sound = k === S.sel;
-    ctx.font = `${sound ? "600 " : ""}${11 * d}px ${FONT}`;
-    labelBox((sound ? "♪ " : "") + row.label, 6 * d, top + 2 * d, "left", sound ? colors.cursor : colors.ink);
+    ctx.textBaseline = "top";
     ctx.font = `${11 * d}px ${FONT}`;
-    if (tr) labelBox("±" + formatAmp(half) + (win && over[k] > 1.5 ? `(最大はこの ${over[k] >= 100 ? Math.round(over[k]).toLocaleString() : over[k].toFixed(1)} 倍)` : ""),
-                     W - 6 * d, top + 2 * d, "right", colors.muted);
-    else {
+    const name = (sound ? "♪ " : "") + row.label, nameFont = `${sound ? "600 " : ""}${11 * d}px ${FONT}`;
+    let amp = tr ? "±" + formatAmp(half) : "";
+    if (tr && win && over[k] > 1.5) {                                            // 入りきらないときは「最大は…倍」を「(×…)」に縮める
+      const x = over[k] >= 100 ? Math.round(over[k]).toLocaleString() : over[k].toFixed(1);
+      ctx.font = nameFont; const nameW = ctx.measureText(name).width; ctx.font = `${11 * d}px ${FONT}`;
+      const long = amp + `(最大はこの ${x} 倍)`;
+      amp = nameW + ctx.measureText(long).width + 22 * d <= W ? long : amp + `(最大 ×${x})`;
+    }
+    const ampW = amp ? ctx.measureText(amp).width + 10 * d : 0;
+    if (amp) { ctx.fillStyle = colors.muted; ctx.textAlign = "right"; ctx.fillText(amp, W - 6 * d, top + 2 * d); }
+    ctx.font = nameFont;
+    ctx.fillStyle = sound ? colors.cursor : colors.ink; ctx.textAlign = "left";
+    ctx.fillText(fitText(name, W - 12 * d - ampW), 6 * d, top + 2 * d);
+    ctx.font = `${11 * d}px ${FONT}`;
+    if (!tr) {
       ctx.fillStyle = colors.muted; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(`記録なし(${stationLabel(id)})`, W / 2, top + blockH / 2);
     }
@@ -512,7 +537,7 @@ function draw() {
       const x = Math.round(xOfTime(ph[key])) + 0.5, color = key[0] === "p" ? colors.p : colors.s;
       if (x < 0 || x > W) continue;
       ctx.strokeStyle = color; ctx.lineWidth = Math.max(1, 1.5 * d); ctx.setLineDash([4 * d, 3 * d]);
-      ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + blockH); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(x, top + headH); ctx.lineTo(x, top + blockH); ctx.stroke(); ctx.setLineDash([]);
       ctx.font = `600 ${11 * d}px ${FONT}`;
       const text = key.toUpperCase();
       if (key[0] === "p") labelBox(text, x - 3 * d, top + blockH - 15 * d, "right", color);
@@ -533,6 +558,13 @@ function draw() {
     labelBox("▲" + mark, right ? x - 4 * d : x + 4 * d, plotH - 16 * d, right ? "right" : "left", colors.ref);
   });
   ctx.font = `${11 * d}px ${FONT}`;
+}
+// 幅 w に収まらない文字は、後ろを「…」にして切る
+function fitText(text, w) {
+  if (ctx.measureText(text).width <= w) return text;
+  let lo = 0, hi = text.length;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ctx.measureText(text.slice(0, m) + "…").width <= w) lo = m; else hi = m - 1; }
+  return text.slice(0, lo) + "…";
 }
 // 名前の付いた線: [[秒, 名前, 印], ...](印は 1 本なら「※」、2 本以上なら「※1」「※2」…)
 function lineNames(th) {
@@ -926,6 +958,7 @@ new ResizeObserver(resize).observe(canvas);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); requestDraw(); });
 if (typeof DecompressionStream === "undefined") $("unsupported").hidden = false;
 readColors(); buildFilterButtons(); buildList(); route();
+$("loading").remove();
 </script>
 </body>
 </html>

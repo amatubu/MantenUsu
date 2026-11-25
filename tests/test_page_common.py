@@ -29,3 +29,14 @@ def test_pages_do_not_redefine_common_functions():
     assert "__COMMON_JS__" in page
     assert not common & set(functions(page)), mod.__name__
     assert "attachGestures(canvas" in page, mod.__name__
+
+
+def test_loading_parts():
+  # 「読み込み中」の表示: 数と単位、__SIZE__ を埋める。クイズと比べるページの両方に入っていること
+  text = page_common.loading_html(17, "テーマ")
+  assert "0 / 17 テーマ" in text and "100 * k / 17" in text and "function loadingStep" in text
+  assert page_common.loading_step(3) == "<script>loadingStep(3)</script>"
+  page = page_common.fill_size(text)
+  assert "__SIZE__" not in page and "約 0.00 MB" in page
+  for mod in (shake_quiz, shake_compare):
+    assert "__LOADING__" in mod.PAGE and "__LOADING_CSS__" in mod.PAGE and '$("loading").remove();' in mod.PAGE

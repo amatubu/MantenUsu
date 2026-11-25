@@ -31,6 +31,7 @@ import numpy as np
 
 import app_paths
 import station_names
+import page_common
 from page_common import COMMON_JS, PAGE_JS   # COMMON_JS はほかのスクリプトのために残す
 from quake_wave_view import count_steps, filter_sections, load_stream, script_json, trace_samples
 
@@ -303,12 +304,17 @@ def write_page(path, events):
     "audio": {"common": COMMON_SPEED, "first": FIRST_SOUND,
               "sections": {str(rate): {"base": audio_sections(rate, False), "far": audio_sections(rate, True)} for rate in rates}},
   }
-  blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}">{script_json(waves)}</script>' for info, waves in events)
+  # 問題の波形の間に小さなスクリプトを置き、読み込めた問題の数を「読み込み中」の表示に出す(回線が遅いと何も出ないため)
+  blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}">{script_json(waves)}</script>' + page_common.loading_step(k)
+                     for k, (info, waves) in enumerate(events, 1))
   page = (PAGE.replace("__FIRST__", html.escape(station_names.full(FIRST_SOUND[0])))
           .replace("__TITLE__", html.escape(TITLE))
           .replace("__COMMON_JS__", PAGE_JS)
           .replace("__META__", script_json(meta))
-          .replace("__WAVES__", blocks))
+          .replace("__WAVES__", blocks)
+          .replace("__LOADING__", page_common.loading_html(len(events), "問"))
+          .replace("__LOADING_CSS__", page_common.LOADING_CSS))
+  page = page_common.fill_size(page)
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(page, encoding="utf-8")
   return path.stat().st_size
@@ -397,12 +403,14 @@ header button:disabled { color: var(--line); cursor: default; }
 #result td, #result th { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; font-weight: normal; }
 #result tr.best td { font-weight: 600; }
 #nextQ { margin-top: 6px; width: 100%; height: 44px; border-radius: 8px; background: var(--accent); color: var(--bg); font-weight: 600; }
+__LOADING_CSS__
 .warn { margin: 16px 0; padding: 12px; border-radius: 8px; background: var(--panel); font-size: 14px; }
 </style>
 </head>
 <body>
 <main id="list">
   <h1>__TITLE__</h1>
+  __LOADING__
   <p class="note">有珠山のまわりの満点地震計 4 か所の記録です。地震・発破・花火・列車など、いろいろな揺れが入っています。波形を見て、何の揺れかを当ててください。</p>
   <noscript><p class="warn">プレビューの画面では動きません。Safari などのブラウザで開いてください。</p></noscript>
   <p class="warn" id="unsupported" hidden>このブラウザは圧縮の展開(DecompressionStream)に対応していません。iOS 16.4 以降の Safari で開いてください。</p>
@@ -894,6 +902,7 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () 
 if (typeof DecompressionStream === "undefined") $("unsupported").hidden = false;
 $("choiceNote").textContent = META.choiceNote;
 readColors(); buildFilterButtons(); buildChoices(); setCommon(false); setMode(S.mode); route();
+$("loading").remove();
 </script>
 </body>
 </html>
