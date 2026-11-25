@@ -6,6 +6,8 @@
 #   震源は USGS(world_quakes)、波の通り道と時刻は iasp91(jma_match.model の TauPy)
 #   波形は 0.1〜0.5 Hz(L)と 0.5〜2 Hz(A)をかけて 10 Hz に間引く。読んだ波形は output/shake_world/ に保存して次から使う
 #   入れるのは満点の拠点の波形だけ。時刻は日本時間
+#   振動(TODO 58): 「振動」にすると、再生に合わせて、音の拠点の揺れの強さ(音と同じ 0.3〜15 Hz を、画面の速さで 20 ms ごと)を振動にする
+#     (テスト用の iPhone のアプリの中で。ほかは画面の揺れ。haptic_page.py)
 #
 #     python3 scripts/shake_world.py [-o 出力の HTML] [--quiz 問題の番号 ...]
 #   省略すると batch_plots/quiz/world.html に書き出す
@@ -19,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 import app_paths
+import haptic_page
 import station_names
 import shake_quiz as sq
 
@@ -258,9 +261,10 @@ def front_key(depth):
 def write_page(path, events):
   stations = [{"id": nm, "label": station_names.full(nm)} for nm in sq.STATIONS]
   meta = {"events": events, "fronts": _fronts, "shadow": list(SHADOW), "stations": stations, "bands": {b: list(v) for b, v in BANDS.items()},
-          "R": R_EARTH, "cmb": 3482.0, "icb": 1217.0}
+          "R": R_EARTH, "cmb": 3482.0, "icb": 1217.0, "haptic": haptic_page.HAPTIC}
   from quake_wave_view import script_json
-  page = PAGE.replace("__DATA__", script_json(meta)).replace("__TITLE__", html.escape("世界の地震が届く"))
+  page = (PAGE.replace("__DATA__", script_json(meta)).replace("__TITLE__", html.escape("世界の地震が届く"))
+          .replace("__HAPTIC_JS__", haptic_page.HAPTIC_JS))
   path.parent.mkdir(parents=True, exist_ok=True)
   path.write_text(page, encoding="utf-8")
   return path.stat().st_size
@@ -353,6 +357,7 @@ canvas { width: 100%; display: block; background: var(--panel); border-radius: 8
 </div>
 <div class="bar">
   <label><input type="checkbox" id="sound">♪ 音を出す</label>
+  <label><input type="checkbox" id="feel">📳 振動</label>
   <div class="group" id="sstations"><span>音の拠点</span></div>
   <span class="hint">音は ×40・×80 がよく聞こえます(×10・×20 ではとても低い音)。イヤホンかヘッドホンで</span>
 </div>
@@ -397,6 +402,7 @@ S波は液体の外核を通れないので、およそ 100° より遠くには
 </main>
 <script>
 const META = __DATA__;
+__HAPTIC_JS__
 const $ = (id) => document.getElementById(id);
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const dec16 = (s) => { const b = Uint8Array.from(atob(s), (c) => c.charCodeAt(0)); return new Int16Array(b.buffer); };
@@ -728,7 +734,36 @@ function startSound() {
   if (pos >= 0) src.start(now, pos / BUF_RATE); else src.start(now - pos / rate / speed, 0);
   anchor = { ctx: now, t: t };
 }
-function restartSound() { if (playing) startSound(); else stopSound(); }
+function restartSound() { if (playing) startSound(); else stopSound(); restartFeel(); }
+
+// --- 振動(TODO 58) ---
+//   音の拠点の揺れ(音のデータ: 0.3〜15 Hz、50 Hz)を、画面の速さで 20 ms ごとのコマに分けて揺れの強さにし、再生に合わせて振動させる
+//   (×40 なら 1 コマが記録の 0.8 秒)。雑音は最初の波の 5 秒前まで、いちばん大きい揺れを最大にする。早送りの間は振動しない
+const feelCache = {};
+function feelEnvelope(e, nm, F) {
+  const key = `${e.no}_${nm}_${F}`;
+  if (!feelCache[key]) {
+    const q = dec8(e.sound.d[nm]), v = new Float64Array(q.length);
+    for (let i = 0; i < q.length; i++) { const a = q[i] / 127; v[i] = Math.sign(a) * (Math.pow(1 + MU, Math.abs(a)) - 1) / MU; }
+    const P = Object.assign({}, META.haptic, { frame: F, noiseBefore: e.first - 5 });
+    const env = hapticEnvelope([{ v, step: 1 }], v.length, e.sound.rate, P, false);
+    let peak = 0;
+    for (const x of env) peak = Math.max(peak, x);
+    feelCache[key] = hapticLevels(env, hapticNoise(env, e.sound.start, e.sound.rate, P), peak, P);
+  }
+  return feelCache[key];
+}
+function startFeel() {
+  hapticStop();
+  if (!playing || !$("feel").checked || inFast() || !ev.sound.d[sndStation]) return;
+  const rate = ev.sound.rate, F = Math.max(1, Math.round(0.02 * speed * rate)), levels = feelEnvelope(ev, sndStation, F);
+  const pos = (t - ev.sound.start) * rate / F, k0 = Math.max(0, Math.floor(pos)), lead = Math.max(0, Math.round(-pos));
+  if (k0 >= levels.length) return;
+  const part = new Float64Array(lead + levels.length - k0);
+  part.set(levels.subarray(k0), lead);      // 音のデータが始まる前は 0
+  hapticPlay(part, F / rate / speed, { sharpness: META.haptic.sharpness[1], shake: document.querySelector(".stage") });
+}
+function restartFeel() { if (playing) startFeel(); else hapticStop(); }
 
 function draw() {
   drawEarth(); drawWaves();
@@ -745,6 +780,7 @@ function tick(now) {
     if (!inFast() && $("sound").checked && !src) startSound();   // 早送りが終わったら音を出す
   }
   if (t >= ev.end) setPlaying(false);
+  else if (!inFast() && $("feel").checked && !hapticPlaying()) startFeel();   // 早送りが終わったら振動させる
   last = now;
   draw();
   if (playing) requestAnimationFrame(tick);
@@ -752,8 +788,8 @@ function tick(now) {
 function setPlaying(on) {
   playing = on;
   $("play").textContent = on ? "❚❚ 止める" : "▶ 再生";
-  if (on) { if (t >= ev.end) t = 0; last = null; startSound(); requestAnimationFrame(tick); }
-  else stopSound();
+  if (on) { if (t >= ev.end) t = 0; last = null; startSound(); startFeel(); requestAnimationFrame(tick); }
+  else { stopSound(); hapticStop(); }
 }
 function buttons(box, items, current, onPick) {
   for (const [key, text] of items) {
@@ -786,12 +822,12 @@ function loadSettings() { try { return JSON.parse(localStorage.getItem(STORE)) |
 function saveSettings() {
   try {
     localStorage.setItem(STORE, JSON.stringify({ speed, station: prefStation, event: ev && ev.no,
-      fast: $("fast").checked, codes: $("codes").checked, carry: $("carry").checked, sound: $("sound").checked }));
+      fast: $("fast").checked, codes: $("codes").checked, carry: $("carry").checked, sound: $("sound").checked, feel: $("feel").checked }));
   } catch (_) {}
 }
 const saved = loadSettings();
 if (SPEEDS.includes(saved.speed)) speed = saved.speed;
-for (const id of ["fast", "codes", "carry", "sound"]) if (typeof saved[id] === "boolean") $(id).checked = saved[id];
+for (const id of ["fast", "codes", "carry", "sound", "feel"]) if (typeof saved[id] === "boolean") $(id).checked = saved[id];
 let prefStation = META.stations.some((s) => s.id === saved.station) ? saved.station : META.events[0].sound_station;
 const evs = [...META.events].sort((a, b) => a.deg - b.deg);
 buttons($("events"), evs.map((e) => [e.no, `${e.place} ${Math.round(e.deg)}°`]), evs[0].no, (no) => { pick(no); $("evsel").value = no; });
@@ -814,6 +850,7 @@ buttons($("bands"), Object.entries(META.bands).map(([k, v]) => [k, `${v[0]}〜${
 $("play").onclick = () => setPlaying(!playing);
 $("seek").oninput = () => { t = +$("seek").value; restartSound(); draw(); };
 $("sound").onchange = () => { restartSound(); draw(); saveSettings(); };
+$("feel").onchange = () => { restartFeel(); saveSettings(); };
 $("fast").onchange = () => { restartSound(); saveSettings(); };
 $("codes").onchange = () => { draw(); saveSettings(); };
 $("carry").onchange = () => { draw(); saveSettings(); };

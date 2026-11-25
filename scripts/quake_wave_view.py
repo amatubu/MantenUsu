@@ -10,6 +10,10 @@
 #     地震を選んだときだけ、ブラウザの DecompressionStream で戻す(iOS は 16.4 以降)
 #   表示の既定は、到着時刻の検出と同じ帯域のフィルタ(hypocenter.pick_filtered と同じ計算をブラウザで行う)。元の波形にも切り替えられる
 #   入れるのは満点の拠点の波形だけ(V-net などの再配布できない外部の観測点の波形は入れない)
+#   「振動」(TODO 58 の試作): 選んだ拠点の 3 成分(フィルタをかけたもの)から 20 ms ごとの揺れの強さ(0〜1)を求め、
+#     速度か加速度(微分)か、強さの基準を地震ごとか拠点の全部の地震で共通にするか、振動の鋭さを選べる。見えている範囲を再生する。テスト用の iPhone のアプリ(WKWebView)の中で開いたときは、
+#     webkit.messageHandlers.usuHaptics に {cmd: "play", interval: 秒, intensity: [0〜1, ...], sharpness: 0〜1} を送り、
+#     アプリが Core Haptics で振動させる(止めるときは {cmd: "stop"})。Safari などでは、画面の揺れ(と、選べば低い音)にする
 #
 #     python3 scripts/quake_wave_view.py [-o 出力のHTML]
 #   省略すると batch_plots/quakes/locate/usu_quakes_waves.html に書き出す。3Dの図(usu_quakes_3d.html)と同じフォルダにあると、
@@ -25,9 +29,10 @@ from pathlib import Path
 
 import numpy as np
 import obspy
-from scipy.signal import iirfilter, zpk2sos
+from scipy.signal import iirfilter, sosfilt, zpk2sos
 
 import pick_store
+from haptic_page import HAPTIC, HAPTIC_JS, haptic_curve, haptic_envelope, haptic_levels, haptic_noise  # noqa: F401(テストから使う)
 import station_names
 from hypocenter import LOCAL_KINDS, PICK_BAND, LocalProjection, depth_short
 from quake_3d_view import USU_LIST_TITLE, WAVE_PAGE_FILE, event_key, load_hour_from_zips
@@ -110,6 +115,21 @@ def filter_sections(band=PICK_BAND, rate=SAMPLE_RATE):
   nyquist = rate / 2
   z, p, k = iirfilter(FILTER_CORNERS, [band[0] / nyquist, band[1] / nyquist], btype="band", ftype="butter", output="zpk")
   return [[float(c) for c in (*row[:3], *row[4:])] for row in zpk2sos(z, p, k)]
+
+
+# ブラウザの filterSamples と同じフィルタ(往復。カウントの整数に丸める)
+def browser_filtered(values):
+  sos = np.array([[b0, b1, b2, 1.0, a1, a2] for b0, b1, b2, a1, a2 in filter_sections()])
+  x = np.asarray(values, dtype=float)
+  return np.round(sosfilt(sos, sosfilt(sos, x)[::-1])[::-1])
+
+# 拠点ごとの揺れの大きさの最大 {拠点名: [速度 nm/s, 加速度 nm/s²]}(ページで、地震の間で共通の基準を決めるのに使う)
+def haptic_peaks(waves, n):
+  peaks = {}
+  for name, comps in waves.items():
+    traces = [(browser_filtered(decode_samples(item["d"])), item["s"]) for item in comps.values()]
+    peaks[name] = [round(float(haptic_envelope(traces, n, accel=a).max(initial=0)), 3) for a in (False, True)]
+  return peaks
 
 
 # --- 地震ごとのデータ ---
@@ -200,7 +220,8 @@ def event_data(no, cand, r, st, stations, steps, proj):
   etype = event_type(cand)
   info = {"no": no, "key": event_key(cand), "time": f"{origin:%Y-%m-%d %H:%M:%S}.{origin.microsecond // 100000}",
           "type": "" if etype == TYPE_QUAKE else etype, "m": mag, "mSource": mag_source,
-          "depth": f"{depth_short(r['loc'])} km", "t0": round((start - origin).total_seconds(), 6), "n": n, "picks": picks}
+          "depth": f"{depth_short(r['loc'])} km", "t0": round((start - origin).total_seconds(), 6), "n": n, "picks": picks,
+          "peaks": haptic_peaks(waves, n)}
   return info, waves
 
 
@@ -216,7 +237,7 @@ def script_json(value):
 def write_wave_view(path, events, stations, title):
   path = Path(path)
   meta = {"title": title, "rate": SAMPLE_RATE, "comps": list(COMPONENTS),
-          "filter": {"low": PICK_BAND[0], "high": PICK_BAND[1], "sections": filter_sections()},
+          "filter": {"low": PICK_BAND[0], "high": PICK_BAND[1], "sections": filter_sections()}, "haptic": HAPTIC,
           "stations": [{"id": nm, "label": station_names.short(nm)} for nm in stations],
           "events": [info for info, _waves in events]}
   # 波形の間に小さなスクリプトを置き、読み込めた地震の数を「読み込み中」の表示に出す(回線が遅いと何も出ないため)
@@ -224,6 +245,7 @@ def write_wave_view(path, events, stations, title):
                       f'<script>loadingStep({k})</script>'
                       for k, (info, waves) in enumerate(events, 1))
   page = (PAGE.replace("__TITLE__", html.escape(title))
+          .replace("__HAPTIC_JS__", HAPTIC_JS)
           .replace("__META__", script_json(meta))
           .replace("__WAVES__", blocks)
           .replace("__COUNT__", str(len(events))))
@@ -297,6 +319,17 @@ header button:disabled { color: var(--line); cursor: default; }
 #loadingBar div { width: 0; height: 100%; background: var(--accent); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .warn { margin: 16px 0; padding: 12px; border-radius: 8px; background: var(--panel); font-size: 14px; }
+#feel { display: flex; align-items: center; gap: 6px; padding: 0 8px 6px; }
+#feelPlay { flex: none; height: 36px; padding: 0 10px; border-radius: 8px; background: var(--accent); color: var(--bg);
+  font-size: 13px; font-weight: 600; white-space: nowrap; }
+#feelStation { flex: 1 1 auto; min-width: 0; height: 36px; padding: 0 6px; border: 0; border-radius: 8px;
+  background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; }
+#feel .seg { flex: none; }
+#feel2 { display: flex; gap: 6px; padding: 0 8px 6px; }
+#feelSound { flex: none; height: 36px; padding: 0 8px; border-radius: 8px; background: var(--panel); color: var(--muted); font-size: 12px; }
+#feelSound[aria-pressed="true"] { color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+#meter { height: 4px; margin: 0 8px 4px; border-radius: 2px; background: var(--panel); overflow: hidden; }
+#meter div { width: 0; height: 100%; background: var(--s); }
 </style>
 </head>
 <body>
@@ -319,6 +352,7 @@ header button:disabled { color: var(--line); cursor: default; }
   <p class="note">時刻は日本時間の発生時刻(満点の到着時刻から求めたもの)。M は気象庁の値で、無い地震は満点の揺れからの推定(±0.5 程度)です。P・S の線の実線は手で直した時刻、破線で「自動」と付くものは自動の検出の時刻です。</p>
   <p class="note">波形はピンチで拡大・縮小、1本指で左右に移動、ダブルタップで全体に戻ります。振幅は見えている範囲に合わせます。</p>
   <p class="note" id="filterNote"></p>
+  <p class="note" id="feelNote"></p>
 </main>
 <section id="view" hidden>
   <header>
@@ -338,6 +372,26 @@ header button:disabled { color: var(--line); cursor: default; }
       <button id="filterOn" type="button">フィルタ</button><button id="filterOff" type="button">元波形</button>
     </div>
   </div>
+  <div id="feel">
+    <button id="feelPlay" type="button">▶ 振動</button>
+    <select id="feelStation" aria-label="振動にする拠点"></select>
+    <div class="seg" role="group" aria-label="再生の速さ">
+      <button id="speed1" type="button">×1</button><button id="speedHalf" type="button">×½</button>
+    </div>
+    <button id="feelSound" type="button" aria-pressed="false">音</button>
+  </div>
+  <div id="feel2">
+    <div class="seg" role="group" aria-label="振動にする量">
+      <button id="feelVel" type="button">速度</button><button id="feelAcc" type="button">加速度</button>
+    </div>
+    <div class="seg" role="group" aria-label="強さの基準">
+      <button id="feelEach" type="button">地震ごと</button><button id="feelCommon" type="button">共通</button>
+    </div>
+    <div class="seg" role="group" aria-label="振動の感じ">
+      <button id="feelSoft" type="button">やわらか</button><button id="feelSharp" type="button">くっきり</button>
+    </div>
+  </div>
+  <div id="meter" aria-hidden="true"><div></div></div>
   <div id="stage"><canvas id="wave" aria-label="波形。ピンチで拡大・縮小、ドラッグで移動、ダブルタップで全体に戻す"></canvas><div id="status"></div></div>
 </section>
 <script type="application/json" id="meta">__META__</script>
@@ -437,7 +491,9 @@ function filterSamples(v) {
 // 今の表示に使う波形(フィルタの結果は、初めて使うときに作って覚えておく)
 function traceOf(stationId, comp) {
   const tr = S.data[stationId] && S.data[stationId][comp];
-  if (!tr || !S.filtered) return tr;
+  return tr && S.filtered ? filteredOf(tr) : tr;
+}
+function filteredOf(tr) {
   if (!tr.filtered) {
     const v = filterSamples(tr.v);
     tr.filtered = { v, levels: buildLevels(v), step: tr.step, gaps: tr.gaps };
@@ -469,7 +525,7 @@ async function loadWaves(ev) {
 // --- 描く ---
 function readColors() {
   const css = getComputedStyle(document.documentElement);
-  for (const k of ["bg", "ink", "muted", "line", "grid", "p", "s", "gap", "wave"]) colors[k] = css.getPropertyValue("--" + k).trim();
+  for (const k of ["bg", "ink", "muted", "line", "grid", "p", "s", "gap", "wave", "accent"]) colors[k] = css.getPropertyValue("--" + k).trim();
 }
 function requestDraw() {
   if (drawQueued) return;
@@ -622,7 +678,11 @@ function draw() {
       else labelBox(name, x + 3 * d, top + blockH - 15 * d, "left", color);
       ctx.font = `${11 * d}px -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif`;
     }
-    labelBox(st.label, 6 * d, top + 2 * d, "left", colors.ink);
+    if (st.id === FEEL.station) {   // 振動にする拠点は、左に色の帯を付け、名前を色で書く
+      ctx.fillStyle = colors.accent;
+      ctx.fillRect(0, top, 3 * d, blockH);
+    }
+    labelBox(st.label, 6 * d, top + 2 * d, "left", st.id === FEEL.station ? colors.accent : colors.ink);
     if (any) labelBox("±" + formatAmp(half), W - 6 * d, top + 2 * d, "right", colors.muted);
     else {
       ctx.fillStyle = colors.muted; ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -632,6 +692,87 @@ function draw() {
     const yLine = Math.round(top + blockH) + 0.5;
     ctx.beginPath(); ctx.moveTo(0, yLine); ctx.lineTo(W, yLine); ctx.stroke();
   });
+
+  // 振動の再生中の位置
+  if (FEEL.playing) {
+    const x = Math.round((FEEL.cursor - S.v0) / S.span * W) + 0.5;
+    if (x >= 0 && x <= W) {
+      ctx.strokeStyle = colors.accent; ctx.lineWidth = 2 * d;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke();
+    }
+  }
+}
+
+// --- 振動で感じる(TODO 58 の試作) ---
+__HAPTIC_JS__
+const FEEL = { station: null, speed: 1, sound: false, accel: false, common: false, sharp: 1, playing: false, cursor: 0 };
+// 拠点の揺れの大きさ(3 成分のフィルタをかけた波形から。速度・加速度ごとに覚えておく)と、強さの曲線
+function feelCurve(stationId) {
+  const comps = S.data && S.data[stationId], ev = META.events[S.idx];
+  if (!comps) return null;
+  if (!comps.feel) Object.defineProperty(comps, "feel", { value: {}, enumerable: false });
+  const key = FEEL.accel ? "acc" : "vel";
+  if (!comps.feel[key]) {
+    const traces = META.comps.filter(c => comps[c]).map(c => ({ v: filteredOf(comps[c]).v, step: comps[c].step }));
+    const env = hapticEnvelope(traces, ev.n, META.rate, META.haptic, FEEL.accel);
+    comps.feel[key] = { env, noise: hapticNoise(env, ev.t0, META.rate, META.haptic) };
+  }
+  const { env, noise } = comps.feel[key];
+  let ref = 0;
+  for (const v of env) ref = Math.max(ref, v);
+  if (FEEL.common) ref = Math.max(ref, commonPeak(stationId));
+  return hapticLevels(env, noise, ref, META.haptic);
+}
+// 「共通」の基準: その拠点の全部の地震の中でいちばん大きい揺れ(書き出すときに求めた値)
+function commonPeak(stationId) {
+  let peak = 0;
+  for (const ev of META.events) {
+    const p = ev.peaks && ev.peaks[stationId];
+    if (p) peak = Math.max(peak, p[FEEL.accel ? 1 : 0]);
+  }
+  return peak;
+}
+// 拠点の選択肢(データのある拠点。初めは P波が最も早い拠点 = 震源に近い拠点)
+function fillFeelStations() {
+  const ev = META.events[S.idx], sel = $("feelStation");
+  sel.textContent = "";
+  const have = META.stations.filter(st => S.data && S.data[st.id]);
+  for (const st of have) {
+    const o = document.createElement("option");
+    o.value = st.id; o.textContent = st.label; sel.append(o);
+  }
+  const p = id => (ev.picks[id] && ev.picks[id].p !== undefined) ? ev.picks[id].p : Infinity;
+  if (!have.some(st => st.id === FEEL.station)) FEEL.station = have.length ? have.reduce((a, b) => p(b.id) < p(a.id) ? b : a).id : null;
+  if (FEEL.station) sel.value = FEEL.station;
+  $("feelPlay").disabled = !have.length;
+}
+function updateFeelTools() {
+  pressed($("speedHalf"), $("speed1"), FEEL.speed !== 1);
+  pressed($("feelAcc"), $("feelVel"), FEEL.accel);
+  pressed($("feelCommon"), $("feelEach"), FEEL.common);
+  pressed($("feelSharp"), $("feelSoft"), FEEL.sharp === 1);
+  $("feelSound").setAttribute("aria-pressed", FEEL.sound);
+  $("feelPlay").textContent = FEEL.playing ? "■ 止める" : "▶ 振動";
+}
+function playFeel() {
+  const curve = feelCurve(FEEL.station);
+  if (!curve) return;
+  // 見えている範囲を再生する。ただし、拠点の P波より 2 秒以上前は飛ばす(全体を見ているとき、静かな 10 秒を待たないように)
+  const ev = META.events[S.idx], pick = ev.picks[FEEL.station] || {}, F = META.haptic.frame;
+  let v0 = S.v0;
+  if (pick.p !== undefined) v0 = Math.max(v0, Math.min(S.v0 + S.span, (pick.p - 2 - ev.t0) * META.rate));
+  const k0 = Math.max(0, Math.floor(v0 / F)), k1 = Math.min(curve.length, Math.ceil((S.v0 + S.span) / F));
+  const part = Array.from(curve.subarray(k0, k1), v => Math.round(v * 100) / 100), dt = F / META.rate / FEEL.speed;
+  if (!part.length) return;
+  FEEL.playing = true;
+  hapticPlay(part, dt, { sharpness: META.haptic.sharpness[FEEL.sharp], sound: FEEL.sound, shake: $("stage"),
+                         meter: $("meter").firstElementChild,
+                         onTick: k => { FEEL.cursor = (k0 + k) * F; requestDraw(); },
+                         onStop: () => { FEEL.playing = false; updateFeelTools(); requestDraw(); } });
+  updateFeelTools();
+}
+function stopFeel() {
+  if (FEEL.playing) hapticStop();
 }
 
 // --- 拡大・移動 ---
@@ -683,7 +824,10 @@ function endPointer(e) {
   if (e.type === "pointerup" && !me.moved && pointers.size === 0 && e.timeStamp - me.t0 < 300) {
     if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(me.x - lastTap.x, me.y - lastTap.y) < 30) {
       resetView(); lastTap = null;
-    } else lastTap = { t: e.timeStamp, x: me.x, y: me.y };
+    } else {
+      lastTap = { t: e.timeStamp, x: me.x, y: me.y };
+      selectStationAt(me.y);
+    }
   }
   startGesture();
 }
@@ -723,7 +867,9 @@ function eventSize(ev) {
 async function openEvent(idx) {
   const ev = META.events[idx], token = ++S.token;
   if ($("view").hidden) S.listY = window.scrollY;
+  stopFeel();
   S.idx = idx; S.data = null;
+  $("feelPlay").disabled = true;
   $("list").hidden = true; $("view").hidden = false;
   $("headTime").textContent = `No.${ev.no}  ${ev.time.slice(2)}`;
   updateHeading();
@@ -736,12 +882,14 @@ async function openEvent(idx) {
     if (token !== S.token) return;
     S.data = data;
     $("status").textContent = "";
+    fillFeelStations();
     resetView();
   } catch (err) {
     if (token === S.token) $("status").textContent = "波形を読み込めませんでした: " + err.message;
   }
 }
 function showList() {
+  stopFeel();
   S.token++; S.idx = -1; S.data = null; S.fromList = false;
   $("view").hidden = true; $("list").hidden = false;
   window.scrollTo(0, S.listY);
@@ -784,11 +932,37 @@ $("ampCommon").addEventListener("click", () => { S.common = true; updateTools();
 $("filterOn").addEventListener("click", () => { S.filtered = true; updateTools(); requestDraw(); });
 $("filterOff").addEventListener("click", () => { S.filtered = false; updateTools(); requestDraw(); });
 $("filterNote").textContent = `フィルタは到着時刻の検出と同じ ${META.filter.low}〜${META.filter.high} Hz です。時間のずれはありませんが、急な立ち上がりの少し前にも小さな揺れが出ることがあります。`;
+$("feelPlay").addEventListener("click", () => { if (FEEL.playing) stopFeel(); else playFeel(); });
+$("feelStation").addEventListener("change", e => { stopFeel(); FEEL.station = e.target.value; requestDraw(); });
+// 波形をタップすると、その拠点を振動にする(ダブルタップの 1 回目でも変わるが、そのあと全体に戻るだけ)
+function selectStationAt(clientY) {
+  const r = canvas.getBoundingClientRect(), plotH = r.height - 22;
+  const k = Math.floor((clientY - r.top) / (plotH / META.stations.length));
+  const st = META.stations[k];
+  if (!st || !S.data || !S.data[st.id] || st.id === FEEL.station) return;
+  stopFeel();
+  FEEL.station = st.id;
+  $("feelStation").value = st.id;
+  requestDraw();
+}
+$("speed1").addEventListener("click", () => { stopFeel(); FEEL.speed = 1; updateFeelTools(); });
+$("speedHalf").addEventListener("click", () => { stopFeel(); FEEL.speed = 0.5; updateFeelTools(); });
+$("feelSound").addEventListener("click", () => { stopFeel(); FEEL.sound = !FEEL.sound; updateFeelTools(); });
+for (const [id, key, value] of [["feelVel", "accel", false], ["feelAcc", "accel", true], ["feelEach", "common", false],
+                                ["feelCommon", "common", true], ["feelSoft", "sharp", 0], ["feelSharp", "sharp", 1]]) {
+  $(id).addEventListener("click", () => { stopFeel(); FEEL[key] = value; updateFeelTools(); });
+}
+$("feelNote").textContent = (hapticBridge() ? "「▶ 振動」で、見えている範囲の揺れの強さを、iPhone の振動で再生します。"
+  : "「▶ 振動」で、見えている範囲の揺れの強さを、画面の揺れで再生します(テスト用のアプリの中で開くと、iPhone の振動になります)。")
+  + "強さは、選んだ拠点の 3 成分(フィルタをかけたもの)の揺れの大きさを 0.1 秒ごとに平均し、発生の前の雑音の 2 倍を 0、いちばん大きい揺れを最大にしたものです(割合の " + META.haptic.gamma + " 乗)。"
+  + "「速度」は地震計の測る速度、「加速度」はそれを微分したもの(人が感じる揺れに近く、細かい揺れが強めに出ます)。"
+  + "「地震ごと」はその地震のいちばん大きい所を最大に、「共通」はその拠点の " + META.events.length + " 件の中でいちばん大きい揺れを最大にします(大きい地震ほど強く振動します)。"
+  + "「やわらか」「くっきり」は振動の鋭さです。波形をタップすると、その拠点を振動にします(左に色の帯が付きます)。「音」を選ぶと、同じ強さで低い音も鳴らします。";
 window.addEventListener("hashchange", route);
 new ResizeObserver(resize).observe(canvas);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); requestDraw(); });
 if (typeof DecompressionStream === "undefined") $("unsupported").hidden = false;
-readColors(); updateTools(); buildList(); route();
+readColors(); updateTools(); updateFeelTools(); buildList(); route();
 $("loading").remove();
 </script>
 </body>

@@ -23,6 +23,7 @@
 #   - 波形: ピンチで拡大・縮小、1本指で移動、ダブルタップで全体に戻す(全部の段がいっしょに動く)。フィルタ A〜D・L(0.1〜0.5 Hz)、振幅を段ごと・共通
 #   - 音: 「♪」の段の音、または「上から順に聴く」。速さはテーマごとに選べる。音の大きさは、それぞれ最大にそろえるか、本当の大きさの比のまま
 #   - P波・S波の到着の見込みの線(気象庁の震源リストと USGS の地震)
+#   - 振動(TODO 58): ♪の段の見えている範囲の揺れの強さを、もとの速さで振動にする(テスト用の iPhone のアプリの中で。ほかは画面の揺れ。haptic_page.py)
 #   波形の読み込み・符号化・描画・音・拡大や移動の操作の部品は、ほかの教材のページと同じ(page_common.py)。入れるのは満点の拠点の波形だけ
 #
 #     python3 scripts/shake_compare.py [-o 出力の HTML] [--themes テーマの一覧の CSV]
@@ -35,6 +36,7 @@ from pathlib import Path
 
 import app_paths
 import station_names
+import haptic_page
 import page_common
 import shake_quiz as sq
 from quake_wave_view import count_steps, filter_sections, load_stream, script_json, trace_samples
@@ -235,12 +237,14 @@ def write_page(path, themes):
                  "sections": {str(rate): filter_sections((lo, hi), rate) for rate in rates}} for key, lo, hi, sound in sq.ALL_FILTERS],
     "themes": [info for info, _ in themes],
     "groupTitles": GROUP_TITLES,
+    "haptic": haptic_page.HAPTIC,
     "audio": {"sections": {str(rate): {"base": sq.audio_sections(rate, False), "far": sq.audio_sections(rate, True)} for rate in rates}},
   }
   blocks = "\n".join(f'<script type="application/json" id="w{info["no"]}_{k}">{script_json(data)}</script>'
                      for info, waves in themes for k, data in enumerate(waves))
   page = (PAGE.replace("__TITLE__", html.escape(TITLE))
           .replace("__COMMON_JS__", page_common.PAGE_JS)
+          .replace("__HAPTIC_JS__", haptic_page.HAPTIC_JS)
           .replace("__META__", script_json(meta))
           .replace("__WAVES__", blocks))
   path.parent.mkdir(parents=True, exist_ok=True)
@@ -304,6 +308,8 @@ header button:disabled { color: var(--line); cursor: default; }
 .listenRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 6px; }
 .listen { height: 40px; padding: 0 14px; border-radius: 20px; color: var(--bg); background: var(--accent); font-size: 14px; font-weight: 600; white-space: nowrap; }
 .listen.alt { color: var(--accent); background: none; box-shadow: inset 0 0 0 1.5px var(--accent); }
+#feelMeter { flex: 1; min-width: 60px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+#feelMeter div { width: 0; height: 100%; background: var(--accent); }
 #speedSeg, #loudSeg { flex: 0 0 auto; }
 #speedSeg button, #loudSeg button { flex: 0 0 auto; padding: 0 10px; }
 .look { padding: 8px 10px; border-radius: 8px; background: var(--panel); }
@@ -344,6 +350,10 @@ header button:disabled { color: var(--line); cursor: default; }
       <button class="listen" id="listenOne" type="button"></button>
       <button class="listen alt" id="listenAll" type="button"></button>
     </div>
+    <div class="listenRow" id="feelRow">
+      <button class="listen alt" id="feelOne" type="button"></button>
+      <div id="feelMeter" aria-hidden="true"><div></div></div>
+    </div>
     <div class="listenRow">
       <div class="seg" id="speedSeg" role="group" aria-label="速さ"></div>
       <div class="seg" id="loudSeg" role="group" aria-label="音の大きさ">
@@ -368,6 +378,7 @@ const S = { idx: -1, data: null, filter: "", common: false, real: false, station
             v0: 0, span: 1, dpr: 1, token: 0, listY: 0 };
 let colors = {}, drawQueued = false;
 __COMMON_JS__
+__HAPTIC_JS__
 
 function theme() { return META.themes[S.idx]; }
 function stationOf(row) { return row.station || S.station; }
@@ -591,6 +602,13 @@ function drawSpectra() {
 // 再生位置の線(鳴っている段だけ)
 function drawCursor() {
   const th = theme();
+  if (th && FEEL.playing && !freqMode()) {     // 振動の再生中の位置
+    const W = canvas.width, d = S.dpr, { blockH } = layout(), x = Math.round((FEEL.cursor - S.v0) / S.span * W) + 0.5;
+    if (x >= 0 && x <= W) {
+      ctx.strokeStyle = colors.cursor; ctx.lineWidth = Math.max(2, 2 * d);
+      ctx.beginPath(); ctx.moveTo(x, FEEL.row * blockH); ctx.lineTo(x, (FEEL.row + 1) * blockH); ctx.stroke();
+    }
+  }
   if (!th || freqMode() || AUD.theme !== S.idx || AUD.el.paused || AUD.row < 0) return;
   const W = canvas.width, d = S.dpr, { blockH } = layout();
   const i = AUD.off + AUD.el.currentTime * AUD.speed * th.rate, x = Math.round((i - S.v0) / S.span * W) + 0.5;
@@ -658,6 +676,43 @@ async function startRow(k) {
   try { await play; } catch (err) { stopAudio(); $("status").textContent = "音を鳴らせませんでした: " + err.message; }
 }
 function playing() { return AUD.theme === S.idx && AUD.theme >= 0; }
+
+// --- 振動(TODO 58) ---
+//   ♪の段の、見えている範囲の揺れの強さ(今のフィルタの波形。20 ms ごと)を、もとの速さで振動にする。
+//   強さは、雑音(0 秒の 1 秒前まで)の 2 倍を 0、その段のいちばん大きい揺れを最大にする(音を「本当の大きさの比」にしているときは、テーマの全部の段で同じ基準)
+const FEEL = { playing: false, row: -1, cursor: 0 };
+function feelEnvelope(k) {
+  const th = theme(), tr = traceOf(k);
+  if (!tr) return null;
+  const P = Object.assign({}, META.haptic, { frame: Math.max(1, Math.round(th.rate * 0.02)) });
+  const v = Float64Array.from(tr.v);
+  for (const [a, b] of tr.gaps) v.fill(0, a, b);
+  const env = hapticEnvelope([{ v, step: tr.step }], th.n, th.rate, P, false);
+  return { env, P, noise: hapticNoise(env, th.t0, th.rate, P) };
+}
+function maxOf(a) { let m = 0; for (const v of a) m = Math.max(m, v); return m; }
+function playFeel() {
+  if (FEEL.playing) { hapticStop(); return; }
+  stopAudio();
+  const th = theme(), k = S.sel, f = S.data && feelEnvelope(k);
+  if (!f) return;
+  let ref = maxOf(f.env);
+  if (S.real) for (let j = 0; j < th.rows.length; j++) { const o = j === k ? f : feelEnvelope(j); if (o) ref = Math.max(ref, maxOf(o.env)); }
+  const levels = hapticLevels(f.env, f.noise, ref, f.P), F = f.P.frame;
+  const k0 = Math.max(0, Math.floor(S.v0 / F)), k1 = Math.min(levels.length, Math.ceil((S.v0 + S.span) / F));
+  FEEL.playing = true; FEEL.row = k; FEEL.cursor = k0 * F;
+  hapticPlay(levels.subarray(k0, k1), F / th.rate, {
+    sharpness: META.haptic.sharpness[1], shake: $("stage"), meter: $("feelMeter").firstElementChild,
+    onTick: j => { FEEL.cursor = (k0 + j) * F; requestDraw(); },
+    onStop: () => { FEEL.playing = false; FEEL.row = -1; updateFeelButton(); requestDraw(); } });
+  updateFeelButton();
+}
+function stopFeel() { if (FEEL.playing) hapticStop(); }
+function updateFeelButton() {
+  $("feelOne").textContent = FEEL.playing ? "■ 止める" : (hapticNative() ? "📳 ♪の段を振動で感じる" : "📳 ♪の段を揺れで見る") + "(もとの速さ)";
+  $("feelRow").hidden = freqMode();
+}
+$("feelOne").addEventListener("click", playFeel);
 function play(all) {
   const was = playing() && AUD.all === all;
   stopAudio();
@@ -668,6 +723,7 @@ function play(all) {
   startRow(all ? 0 : S.sel);
 }
 function stopAudio() {
+  stopFeel();
   audioStop(AUD);
   AUD.theme = -1; AUD.row = -1; AUD.speed = 0; AUD.key = null; AUD.queue = []; AUD.all = null;
   updateListenButtons();
@@ -680,6 +736,7 @@ function updateListenButtons() {
   $("listenOne").textContent = playing() && AUD.all === false ? "■ 止める" : `▶ ♪の段を聴く(${filterName()})`;
   $("listenAll").textContent = playing() && AUD.all === true ? "■ 止める" : "▶ 上から順に聴く";
   $("listenAll").hidden = th.rows.length < 2;
+  updateFeelButton();
   for (const b of $("speedSeg").children) b.setAttribute("aria-pressed", Number(b.dataset.speed) === S.speed);
   $("loudEach").setAttribute("aria-pressed", !S.real); $("loudReal").setAttribute("aria-pressed", S.real);
 }
@@ -731,6 +788,7 @@ function buildFilterButtons() {
   }
 }
 function setFilter(key) {
+  stopFeel();
   if (playing()) stopAudio();
   S.filter = key;
   for (const b of $("filters").children) b.setAttribute("aria-pressed", b.dataset.key === key);
@@ -738,6 +796,7 @@ function setFilter(key) {
 }
 // v ... false(段ごと)・true(共通)・"win"(振幅の基準の時間に合わせる)
 function setCommon(v) {
+  stopFeel();
   if (playing() && (v === "win") !== (S.common === "win")) stopAudio();
   S.common = v;
   $("ampCommon").setAttribute("aria-pressed", v === true); $("ampEach").setAttribute("aria-pressed", v === false);
@@ -745,14 +804,16 @@ function setCommon(v) {
   requestDraw();
 }
 function setMode(mode) {
+  stopFeel();
   S.mode = mode;
   $("viewFreq").setAttribute("aria-pressed", mode === "freq"); $("viewWave").setAttribute("aria-pressed", mode === "wave");
   $("amp").hidden = freqMode();
-  showMore(); requestDraw();
+  updateFeelButton(); showMore(); requestDraw();
 }
 $("viewFreq").addEventListener("click", () => setMode("freq"));
 $("viewWave").addEventListener("click", () => setMode("wave"));
 function setStation(id) {
+  stopFeel();
   if (playing()) stopAudio();
   S.station = id;
   for (const b of $("stationSeg").children) b.setAttribute("aria-pressed", b.dataset.id === id);

@@ -219,3 +219,17 @@ def test_extra_lines(tmp_path):
   assert th["lines"] == [[5.0, "PP(見込み)"], [12.0, "SS"]]
   with pytest.raises(ValueError, match="目印の線"):
     sc.read_themes(write_themes(tmp_path / "u.csv", [theme_row(1, **{"目印の線": "99 x", "段の名前": "x"})]))
+
+
+def test_page_has_haptics(tmp_path):
+  # 振動(TODO 58)の部品と設定が入る
+  import haptic_page
+  import json
+  import re
+  import shake_compare as sc
+  path = tmp_path / "compare.html"
+  sc.write_page(path, [])
+  text = path.read_text(encoding="utf-8")
+  assert "__HAPTIC_JS__" not in text and "function hapticPlay(" in text and 'id="feelOne"' in text
+  meta = json.loads(re.search(r'id="meta">(.*?)</script>', text, re.S).group(1))
+  assert meta["haptic"] == haptic_page.HAPTIC

@@ -86,3 +86,14 @@ def test_write_page(tmp_path, monkeypatch):
   assert size > 0 and meta["events"][0]["place"] == "南サンドウィッチ諸島付近"
   assert set(meta["fronts"]) == {"50"} and meta["events"][0]["sound"]["d"]["Nizaemn"]
   assert [s["label"] for s in meta["stations"]][-1] == "Nizaemon"           # 表示は発表用の名前
+
+
+def test_page_has_haptics(tmp_path):
+  # 振動(TODO 58)の部品と、「振動」の切り替えが入る
+  import haptic_page
+  import shake_world as sw
+  path = tmp_path / "world.html"
+  sw.write_page(path, [])
+  text = path.read_text(encoding="utf-8")
+  assert "__HAPTIC_JS__" not in text and "function hapticPlay(" in text and 'id="feel"' in text
+  assert '"haptic":' in text and str(haptic_page.HAPTIC["gamma"]) in text
