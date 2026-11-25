@@ -73,7 +73,16 @@ VP_COLORS = "YlGnBu"
 P_RAY_COLOR = "#1f6fb2"
 P_WAVE_COLOR = "#1565c0"   # 波の動きの P波の点
 S_WAVE_COLOR = "#e65100"   # 波の動きの S波の点
+ARRIVAL_RING_SIZE = 20     # 拠点に届いた合図の輪の大きさ(届いた瞬間は ARRIVAL_PULSE 倍から縮む)
+ARRIVAL_PULSE = 3.0
+ARRIVAL_PULSE_SEC = 0.6    # 輪が縮むまでの、画面の上の時間 [秒](遅くして見ているときも同じ長さ)
+WAVE_END_PAD = 0.3         # 波の動きを、最後の拠点に届いてから何秒続けるか
 WAVE_SLOWDOWNS = (1, 5, 10, 20)   # 波の動きを実際の何倍遅くするかの選択肢(1 は実際の速さ)
+# 波面(震源から広がる面。TODO 57): 震源からの向き(真下 0° 〜 真上 180°)ごとに、時刻 t の波面までの距離を FRONT_DT 秒おきに持つ
+FRONT_ANGLE_STEP = 5       # 向きの刻み [°](画面では間を補って細かくする)
+FRONT_DT = 0.05            # 時刻の刻み [秒](画面では間を直線で補う)
+FRONT_MARGIN_KM = 0.5      # 走時を求める範囲の、箱の外の余白 [km]
+FRONT_OPACITY = 0.3        # 波面の不透明度
 VIDEO_FPS = 30             # 保存する動画のコマ数 [コマ/秒]
 VIDEO_MAX_WIDTH = 1920     # 保存する動画の幅の上限 [画素](図がこれより大きいときは縮める)
 VIDEO_BITRATE = 12_000_000 # 保存する動画のビットレート [bit/秒]
@@ -372,6 +381,50 @@ def timed_path(path, velocity, sx, sy, ux, uy):
   return [[round(sx + ux * p[k, 0], 3), round(sy + uy * p[k, 0], 3), round(-p[k, 1], 3), round(float(t[k]), 4)]
           for k in keep]
 
+# 波面の表(TODO 57): 震源から向きごとに、時刻 j × FRONT_DT の波面までの距離 [km] の並び
+#   1次元の構造なので、走時は震央からの水平距離 r と深さ z だけで決まる。走時表・通り道と同じ格子・同じ最短経路
+#   (velocity_model の格子の作り方)で、震源から格子の各点への走時を求める(拠点の点と同じ時刻に波面が届く)
+#   震源から外へまっすぐ進むと、どの向きでも走時は増えていく(勾配の構造で確かめた)ので、向きごとの距離で面を表せる
+#   r_max ... 震央から箱の角までの距離 [km]。z_max ... 箱の底の深さ [km]。t_end ... 最後の時刻 [秒]
+#   戻り値 ... 向き(0, 5, …, 180°)ごとの距離の並び(範囲の外に出た時刻は None)
+def front_rows(velocity, depth, r_max, z_max, t_end):
+  from scipy.interpolate import RegularGridInterpolator
+  from scipy.sparse.csgraph import dijkstra
+  step = velocity_model.TABLE_STEP
+  r = np.arange(0, r_max + FRONT_MARGIN_KM + step / 2, step)
+  z = np.arange(velocity_model.TABLE_Z_TOP, z_max + FRONT_MARGIN_KM + step / 2, step)
+  nr, nz = len(r), len(z)
+  slowness = np.repeat((1.0 / velocity(z))[:, None], nr, axis=1)
+  k = min(max(int(round((depth - z[0]) / step)), 0), nz - 1)
+  t = dijkstra(velocity_model._graph(slowness, nr, nz), indices=k * nr).reshape(nz, nr)
+  t = t + abs(z[k] - depth) / float(velocity(np.array([depth]))[0])   # 震源を格子の点にのせたずれの分
+  table = RegularGridInterpolator((z, r), t, bounds_error=False, fill_value=np.nan)
+  times = np.arange(0, t_end + FRONT_DT / 2, FRONT_DT)
+  rows = []
+  for th in np.radians(np.arange(0, 180 + FRONT_ANGLE_STEP / 2, FRONT_ANGLE_STEP)):
+    rho = np.arange(0, np.hypot(r[-1], z[-1] - z[0]), step / 2)
+    zz, rr = depth + rho * np.cos(th), rho * np.sin(th)
+    inside = (zz >= z[0]) & (zz <= z[-1]) & (rr <= r[-1])
+    n = int(np.argmin(inside)) if not inside.all() else len(rho)   # 範囲の外に出るまで
+    tt = np.maximum.accumulate(table(np.column_stack([zz[:n], rr[:n]])))
+    tt[0] = 0.0
+    out = np.interp(times, tt, rho[:n])
+    rows.append([round(float(v), 3) if ti <= tt[-1] else None for v, ti in zip(out, times)])
+  return rows
+
+# 地震ごとの波面の表を、表示用の辞書に入れる(箱の大きさが決まってから)
+#   box ... (x0, x1, y0, y1)。bottom ... 箱の底の深さ [km]
+def add_fronts(quakes, model, box, bottom):
+  for q, _rays in quakes:
+    paths = q["waves"]["P"] + q["waves"]["S"]
+    if not paths:
+      continue
+    t_end = max(p[-1][3] for p in paths) + WAVE_END_PAD
+    r_max = max(np.hypot(cx - q["x"], cy - q["y"]) for cx in box[:2] for cy in box[2:])
+    q["front"] = {"x": q["x"], "y": q["y"], "depth": q["depth"], "dt": FRONT_DT, "angle": FRONT_ANGLE_STEP,
+                  "P": front_rows(model.vp, q["depth"], r_max, bottom, t_end),
+                  "S": front_rows(model.vs, q["depth"], r_max, bottom, t_end)}
+
 # 地震を見分ける文字列(地震リストの開始の時刻)。拡大できる波形のページを、この地震の所で開くのに使う
 def event_key(cand):
   return f"{cand['start']:%Y%m%d_%H%M%S}"
@@ -462,6 +515,7 @@ def figure(items, stations, title, model=None, html_dir=None, keep=None, lake_de
   x, y, h, water = terrain(box, proj)
   h, lake, lake_level, depth = lake_floor(x, y, h, water, proj, lake_dem)
   bottom = bottom_depth(quakes)
+  add_fronts(quakes, model, box, bottom)
 
   sides = side_traces(x, y, h, bottom, model)
   traces = [terrain_trace(x, y, h, water, depth)] + sides + [sea_level_trace(box)]
@@ -490,6 +544,20 @@ def figure(items, stations, title, model=None, html_dir=None, keep=None, lake_de
              {"type": "scatter3d", "mode": "markers", "name": "S波(動き)", "showlegend": False, "visible": False,
               "x": [], "y": [], "z": [], "hoverinfo": "skip",
               "marker": {"size": 6, "color": S_WAVE_COLOR, "line": {"color": "white", "width": 1}}}]
+  # 波面(TODO 57): P波・S波の面と、面が地表と交わる線
+  for name, color in (("P波(波面)", P_WAVE_COLOR), ("S波(波面)", S_WAVE_COLOR)):
+    traces.append({"type": "surface", "name": name, "showlegend": False, "visible": False, "x": [[0]], "y": [[0]], "z": [[0]],
+                   "colorscale": [[0, color], [1, color]], "showscale": False, "opacity": FRONT_OPACITY,
+                   "lighting": {"ambient": 0.8, "diffuse": 0.4, "specular": 0.1}, "hoverinfo": "skip"})
+  for name, color in (("P波(地表)", P_WAVE_COLOR), ("S波(地表)", S_WAVE_COLOR)):
+    traces.append({"type": "scatter3d", "mode": "lines", "name": name, "showlegend": False, "visible": False,
+                   "x": [], "y": [], "z": [], "hoverinfo": "skip", "line": {"color": color, "width": 6}})
+  # 拠点に届いた合図: 届いた瞬間に大きな輪が出て、縮んで拠点を囲む輪として残る
+  for name, color in (("P波(到達)", P_WAVE_COLOR), ("S波(到達)", S_WAVE_COLOR)):
+    traces.append({"type": "scatter3d", "mode": "markers", "name": name, "showlegend": False, "visible": False,
+                   "x": [], "y": [], "z": [], "hoverinfo": "skip",
+                   "marker": {"symbol": "circle-open", "size": ARRIVAL_RING_SIZE, "color": color, "line": {"width": 4}}})
+  wave_index = list(range(wave_index[0], len(traces)))
 
   span = max(box[1] - box[0], box[3] - box[2])
   aspect = {"x": (box[1] - box[0]) / span, "y": (box[3] - box[2]) / span, "z": (float(np.max(h)) + bottom) / span}
@@ -518,8 +586,9 @@ def figure(items, stations, title, model=None, html_dir=None, keep=None, lake_de
           "quake_trace": quake_index, "number_trace": number_index, "others_opacity": OTHERS_OPACITY,
           "rays": list(range(ray_start, label_start)), "labels": list(range(label_start, len(traces))),
           "quakes": [{"no": q["no"], "short": q["short"], "key": q["key"], "image": q["image"], "lines": q["lines"], "waves": q["waves"],
-                      "label": q["short"]} for q, _rays in quakes],
-          "waves": wave_index, "attribution": f"{gsi_tiles.DEM_ATTRIBUTION}<br>{ACKNOWLEDGEMENT_SHORT}", "p_color": P_WAVE_COLOR, "s_color": S_WAVE_COLOR,
+                      "front": q.get("front"), "label": q["short"]} for q, _rays in quakes],
+          "waves": wave_index, "wave_end_pad": WAVE_END_PAD,
+          "arrival": {"size": ARRIVAL_RING_SIZE, "pulse": ARRIVAL_PULSE, "sec": ARRIVAL_PULSE_SEC}, "attribution": f"{gsi_tiles.DEM_ATTRIBUTION}<br>{ACKNOWLEDGEMENT_SHORT}", "p_color": P_WAVE_COLOR, "s_color": S_WAVE_COLOR,
           "video": {"fps": VIDEO_FPS, "max_width": VIDEO_MAX_WIDTH, "bitrate": VIDEO_BITRATE}}
   return {"data": traces, "layout": layout}, meta, len(quakes)
 
@@ -640,6 +709,8 @@ function loadingStep(text, sub, error) {{
     <option value="page">拡大できる波形(別のタブ)</option></select></label>
   <button id="wavebtn">波形を表示</button>
   <span class="group"><button id="play">▶ 波を動かす</button>
+    <label>表し方 <select id="wavestyle"><option value="both">点と面</option><option value="surface">面</option>
+      <option value="points">点</option></select></label>
     <label><select id="slow"></select></label>
     <label><input type="checkbox" id="orbit"> 回しながら</label>
     <button id="record">● 動画に保存</button></span>
@@ -838,25 +909,122 @@ function posAt(path, t) {{
   }}
   return path[path.length - 1];
 }}
+// --- 波面(TODO 57): 震源から向きごとの「時刻 t の波面までの距離」の表を、縦の軸のまわりに回して面にする ---
+//   地表より上・箱の外・底より下は描かない。面が地表を横切る所は、地表の上の点に置き、その点をつないで地表の線にする
+const FRONT_SUB = 2, FRONT_AZ = 48;   // 向きの刻みを細かくする数、まわりの向きの数
+const ground = (() => {{
+  const t = fig.data[meta.terrain], xs = t.x, ys = t.y, zs = origZ[meta.terrain];
+  const x0 = xs[0], y0 = ys[0], dx = xs[1] - xs[0], dy = ys[1] - ys[0];
+  return (x, y) => {{
+    const fx = (x - x0) / dx, fy = (y - y0) / dy;
+    if (fx < 0 || fy < 0 || fx > xs.length - 1 || fy > ys.length - 1) return null;
+    const i = Math.min(Math.floor(fx), xs.length - 2), j = Math.min(Math.floor(fy), ys.length - 2), a = fx - i, b = fy - j;
+    return (zs[j][i] * (1 - a) + zs[j][i + 1] * a) * (1 - b) + (zs[j + 1][i] * (1 - a) + zs[j + 1][i + 1] * a) * b;
+  }};
+}})();
+// 向き k(表の行)の、時刻 t の距離(表の時刻の間は直線で補う。範囲の外は null)
+function frontRho(row, t, dt) {{
+  const f = t / dt, i = Math.floor(f), a = row[i];
+  if (a === null || a === undefined) return null;
+  if (f === i) return a;
+  const b = row[i + 1];
+  return b === null || b === undefined ? null : a + (b - a) * (f - i);
+}}
+function frontMesh(q, phase, t) {{
+  const fr = q.front, rows = fr[phase], dense = [];
+  for (let k = 0; k < rows.length; k++) {{
+    const r0 = frontRho(rows[k], t, fr.dt);
+    for (let s = 0; s < (k < rows.length - 1 ? FRONT_SUB : 1); s++) {{
+      let rho = r0;
+      if (s > 0) {{
+        const r1 = frontRho(rows[k + 1], t, fr.dt);
+        rho = r0 === null || r1 === null ? null : r0 + (r1 - r0) * s / FRONT_SUB;
+      }}
+      dense.push([(k + s / FRONT_SUB) * fr.angle * Math.PI / 180, rho]);
+    }}
+  }}
+  const at = (th, rho, ph) => [fr.x + rho * Math.sin(th) * Math.cos(ph), fr.y + rho * Math.sin(th) * Math.sin(ph),
+                               -(fr.depth + rho * Math.cos(th))];
+  const box = {{x0: fig.data[meta.terrain].x[0], x1: fig.data[meta.terrain].x.at(-1),
+               y0: fig.data[meta.terrain].y[0], y1: fig.data[meta.terrain].y.at(-1)}};
+  const inBox = (p) => p[0] >= box.x0 && p[0] <= box.x1 && p[1] >= box.y0 && p[1] <= box.y1 && p[2] >= -meta.bottom;
+  const X = dense.map(() => []), Y = dense.map(() => []), Z = dense.map(() => []), ring = {{x: [], y: [], z: []}};
+  for (let j = 0; j <= FRONT_AZ; j++) {{
+    const ph = 2 * Math.PI * j / FRONT_AZ;
+    let prev = null, cut = false, crossing = null;
+    dense.forEach(([th, rho], i) => {{
+      let p = null;
+      if (!cut && rho !== null && rho > 0) {{
+        const q0 = at(th, rho, ph), g = ground(q0[0], q0[1]);
+        if (g !== null && q0[2] <= g) p = q0;
+        else if (g !== null && prev) {{
+          // 前の点(地表の下)とこの点(地表の上)の間で、地表を横切る所を探す
+          let lo = 0, hi = 1;
+          for (let n = 0; n < 12; n++) {{
+            const m = (lo + hi) / 2, c = at(prev.th + (th - prev.th) * m, prev.rho + (rho - prev.rho) * m, ph);
+            const gc = ground(c[0], c[1]);
+            if (gc !== null && c[2] <= gc) lo = m; else hi = m;
+          }}
+          p = at(prev.th + (th - prev.th) * lo, prev.rho + (rho - prev.rho) * lo, ph);
+          crossing = p;
+          cut = true;
+        }}
+        if (p && !inBox(p)) p = null;
+      }}
+      prev = p && !cut ? {{th, rho}} : null;
+      X[i].push(p ? p[0] : fr.x); Y[i].push(p ? p[1] : fr.y); Z[i].push(p ? stretch(p[2], curAbove) : null);
+    }});
+    ring.x.push(crossing ? crossing[0] : null);
+    ring.y.push(crossing ? crossing[1] : null);
+    ring.z.push(crossing ? stretch(crossing[2], curAbove) + 0.005 : null);
+  }}
+  return {{surface: {{x: X, y: Y, z: Z}}, ring}};
+}}
+// 表し方(点・面・両方)に合わせた、6つの trace(P波の点・S波の点・P波の面・S波の面・P波の地表の線・S波の地表の線)の見え方
+function waveVisible(q) {{
+  const style = $("wavestyle").value, pts = style !== "surface", surf = style !== "points" && !!q.front;
+  return [pts, pts, surf, surf, surf, surf, true, true];
+}}
+// 拠点に届いた合図の輪: 通り道の終わり(拠点)に、届いた時刻から出す。届いた瞬間は大きく、画面の上の時間で
+//   meta.arrival.sec 秒かけて縮む(遅くして見ているときも同じ速さで縮むよう、遅さ slow を掛ける)
+function arrivalRings(paths, t, slow) {{
+  const a = meta.arrival, out = {{x: [], y: [], z: [], size: []}};
+  paths.forEach((path) => {{
+    const end = path[path.length - 1], since = (t - end[3]) * slow, on = t >= end[3];
+    out.x.push(end[0]); out.y.push(end[1]); out.z.push(on ? stretch(end[2], curAbove) + 0.03 : null);
+    const f = Math.min(1, Math.max(0, since) / a.sec);
+    out.size.push(a.size * (a.pulse + (1 - a.pulse) * (1 - (1 - f) * (1 - f))));
+  }});
+  return out;
+}}
 function frameData(q, t) {{
   const pts = (list) => {{
     const p = list.map((path) => posAt(path, t));
     return [p.map((v) => v[0]), p.map((v) => v[1]), p.map((v) => stretch(v[2], curAbove))];
   }};
-  const P = pts(q.waves.P), S = pts(q.waves.S);
-  return {{x: [P[0], S[0]], y: [P[1], S[1]], z: [P[2], S[2]]}};
+  const P = pts(q.waves.P), S = pts(q.waves.S), d = {{x: [P[0], S[0]], y: [P[1], S[1]], z: [P[2], S[2]], size: []}};
+  const vis = waveVisible(q);
+  ["P", "S"].forEach((ph, k) => {{
+    const m = vis[2 + k] ? frontMesh(q, ph, t) : {{surface: {{x: [[0]], y: [[0]], z: [[null]]}}, ring: {{x: [], y: [], z: []}}}};
+    d.x[2 + k] = m.surface.x; d.y[2 + k] = m.surface.y; d.z[2 + k] = m.surface.z;
+    d.x[4 + k] = m.ring.x; d.y[4 + k] = m.ring.y; d.z[4 + k] = m.ring.z;
+    const r = arrivalRings(q.waves[ph], t, parseFloat($("slow").value));
+    d.x[6 + k] = r.x; d.y[6 + k] = r.y; d.z[6 + k] = r.z; d.size[6 + k] = r.size;
+  }});
+  return d;
 }}
-const waveEnd = (q) => Math.max(0, ...q.waves.P.concat(q.waves.S).map((p) => p[p.length - 1][3])) + 0.3;
+const waveEnd = (q) => Math.max(0, ...q.waves.P.concat(q.waves.S).map((p) => p[p.length - 1][3])) + meta.wave_end_pad;
 const infoTitle = (q) => q.label + "(" + speedName($("slow").value) + ")";
 const infoTime = (t) => "発生から " + (Math.floor(t * 10 + 1e-6) / 10).toFixed(1) + " 秒";
 // 1コマ分を描く(波の点、上の文字、「回しながら」の視点)。orbitSec は回し始めからの秒数
 function drawWaves(run, t, orbitSec) {{
   const sc = glScene(), d = frameData(run.q, t);
   run.last = d;
-  [0, 1].forEach((k) => {{
-    const fd = gd._fullData[meta.waves[k]], obj = sc.traces[fd.uid];
-    if (!obj) return;
+  meta.waves.forEach((idx, k) => {{
+    const fd = gd._fullData[idx], obj = sc.traces[fd.uid];
+    if (!obj || !fd.visible) return;
     fd.x = d.x[k]; fd.y = d.y[k]; fd.z = d.z[k];
+    if (d.size[k]) fd.marker.size = d.size[k];
     obj.update(fd);
   }});
   $("infotitle").textContent = infoTitle(run.q);
@@ -869,15 +1037,17 @@ function drawWaves(run, t, orbitSec) {{
 }}
 // 再生の準備(点を出し、今の視点を覚える)
 async function prepareWaves(q) {{
-  await Plotly.update(gd, Object.assign({{visible: true}}, frameData(q, 0)), {{"scene.camera": currentCamera()}}, meta.waves);
+  await Plotly.update(gd, Object.assign({{visible: waveVisible(q)}}, waveUpdate(frameData(q, 0))), {{"scene.camera": currentCamera()}}, meta.waves);
   const cam = currentCamera();
   $("waveinfo").style.display = "block";
   return {{q, cam, r0: Math.hypot(cam.eye.x, cam.eye.y), a0: Math.atan2(cam.eye.y, cam.eye.x), tEnd: waveEnd(q),
           slow: parseFloat($("slow").value)}};
 }}
 // 最後の様子を図のデータにも入れ、今の視点で1回描き直す(この後の操作で、点や視点が戻らないように)
+// frameData の結果を Plotly.update に渡す形にする(輪の大きさは marker.size。輪でない trace は変えない)
+const waveUpdate = (d) => ({{x: d.x, y: d.y, z: d.z, "marker.size": meta.waves.map((_i, k) => d.size[k])}});
 function syncWaves(run) {{
-  return Plotly.update(gd, run.last || {{}}, {{"scene.camera": currentCamera()}}, meta.waves);
+  return Plotly.update(gd, run.last ? waveUpdate(run.last) : {{}}, {{"scene.camera": currentCamera()}}, meta.waves);
 }}
 function stopWaves() {{
   const was = playing;
@@ -913,6 +1083,12 @@ async function playWaves() {{
 $("play").onclick = () => {{ if (recording) return; if (playing) stopWaves(); else playWaves(); }};
 // 地震を選び直したら、動きの点と文字は消す
 $("quake").addEventListener("change", () => {{
+  stopWaves();
+  $("waveinfo").style.display = "none";
+  Plotly.restyle(gd, {{visible: false}}, meta.waves);
+}});
+// 表し方を変えたら、いまの波を消す(次に「波を動かす」を押したときに、選んだ表し方で出す)
+$("wavestyle").addEventListener("change", () => {{
   stopWaves();
   $("waveinfo").style.display = "none";
   Plotly.restyle(gd, {{visible: false}}, meta.waves);
@@ -1145,6 +1321,7 @@ function applyUrlOptions() {{
   check("legend", q.get("legend"));
   if (meta.wave_page) choose("wavekind", q.get("wave"));
   if (q.has("slow")) choose("slow", String(parseFloat(q.get("slow"))));
+  choose("wavestyle", {{points: "points", surface: "surface", both: "both"}}[q.get("front")] || null);
   const quake = q.get("quake");
   if (quake === "all") choose("quake", "all");
   else if (quake !== null) {{

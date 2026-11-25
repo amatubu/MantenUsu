@@ -93,10 +93,17 @@ def test_write_3d_view(tmp_path, monkeypatch):
     ts = [p[3] for p in path]
     assert ts[0] == 0 and all(a <= b for a, b in zip(ts, ts[1:])) and 0.2 < ts[-1] < 1.5
     assert path[0][2] == -0.8   # 震源の深さから出る
-  assert len(meta["waves"]) == 2 and all(fig["data"][i]["visible"] is False for i in meta["waves"])
+  # 点・波面・地表の線・拠点に届いた合図の輪が P波・S波の2つずつ。はじめは隠す
+  assert len(meta["waves"]) == 8 and all(fig["data"][i]["visible"] is False for i in meta["waves"])
+  assert [fig["data"][i]["type"] for i in meta["waves"]] == ["scatter3d"] * 2 + ["surface"] * 2 + ["scatter3d"] * 4
   assert meta["slowdowns"] == [1, 5, 10, 20]
+  # 波面の表: 震源の位置と、向き(0〜180°)ごとの距離。最後の拠点に届いて少しあとまで
+  front = meta["quakes"][0]["front"]
+  assert front["depth"] == 0.8 and len(front["P"]) == 180 // quake_3d_view.FRONT_ANGLE_STEP + 1
+  last = max(p[-1][3] for p in waves["P"]) + quake_3d_view.WAVE_END_PAD
+  assert len(front["P"][0]) == int(last / quake_3d_view.FRONT_DT + 0.5) + 1 and front["P"][0][0] == 0
   # P波・S波の印は同じ形(記号は端末の文字で描かれ、◆ は端末によって大きさが変わるため)
-  marks = [fig["data"][i]["marker"] for i in meta["waves"]]
+  marks = [fig["data"][i]["marker"] for i in meta["waves"][:2]]
   assert marks[0].get("symbol") == marks[1].get("symbol") and marks[0]["size"] == marks[1]["size"]
   assert meta["quakes"][0]["image"] == "images/w.png"
   assert meta["quakes"][0]["key"] == "20250903_232300" and meta["wave_page"] == ""   # 有珠山の一覧でないので波形のページは無い
@@ -184,3 +191,25 @@ def test_lake_floor_uses_bed_only_inside_the_lake():
   # 湖底の形が無ければ、そのまま
   same, _lake, level, depth = quake_3d_view.lake_floor(x, y, h, water, proj, None)
   assert level is None and np.array_equal(same, h) and not depth.any()
+
+
+# 波面の表: 速さが一様なら、どの向きでも距離 = 速さ × 時刻(格子の最短経路なので少しずれる)。範囲の外は None
+def test_front_rows_uniform_velocity():
+  rows = quake_3d_view.front_rows(lambda z: np.full_like(np.asarray(z, float), 2.0), 1.0, 3.0, 3.0, 1.2)
+  t = np.arange(len(rows[0])) * quake_3d_view.FRONT_DT
+  assert len(rows) == 180 // quake_3d_view.FRONT_ANGLE_STEP + 1
+  for row in rows:
+    assert row[0] == 0
+    got = [(v, 2.0 * ti) for v, ti in zip(row, t) if v is not None]
+    assert len(got) >= 10 and all(abs(v - want) <= 0.03 * want + 0.03 for v, want in got)
+  # 真上は、走時を求める範囲の上(海抜 1 km)まで 2 km なので、1.2 秒より前に範囲の外に出る(真下は底 3 km + 余白 0.5 km まで届く)
+  assert rows[-1][-1] is None and rows[0][-1] is not None
+
+
+# 勾配の構造では、下に向かうほど速いので、波面は下にのびる
+def test_front_rows_gradient_stretches_down():
+  model = velocity_model.MODELS[velocity_model.GRADIENT]
+  rows = quake_3d_view.front_rows(model.vp, 0.7, 6.0, 6.0, 1.0)
+  k = int(round(1.0 / quake_3d_view.FRONT_DT))
+  down, side = rows[0][k], rows[90 // quake_3d_view.FRONT_ANGLE_STEP][k]
+  assert 4.5 < down < 5.5 and 3.0 < side < 3.7 and down > 1.3 * side
