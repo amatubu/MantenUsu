@@ -710,9 +710,10 @@ async function startRow(k) {
 function playing() { return AUD.theme === S.idx && AUD.theme >= 0; }
 
 // --- 振動(TODO 58) ---
-//   ♪の段の、見えている範囲の揺れの強さ(今のフィルタの波形。20 ms ごと)を、もとの速さで振動にする。
+//   ♪の段の、見えている範囲の揺れの強さ(今のフィルタの波形。20 ms ごと)を、もとの速さで振動にする(揺れ始めか P波の見込みの早いほうの 2 秒前から)。
 //   強さは、雑音(0 秒の 1 秒前まで)の 2 倍を 0、その段のいちばん大きい揺れを最大にする(音を「本当の大きさの比」にしているときは、テーマの全部の段で同じ基準)
 const FEEL = { playing: false, row: -1, cursor: 0 };
+const FEEL_ONSET = 0.1, FEEL_LEAD = 2;
 function feelEnvelope(k) {
   const th = theme(), tr = traceOf(k);
   if (!tr) return null;
@@ -731,7 +732,14 @@ function playFeel() {
   let ref = maxOf(f.env);
   if (S.real) for (let j = 0; j < th.rows.length; j++) { const o = j === k ? f : feelEnvelope(j); if (o) ref = Math.max(ref, maxOf(o.env)); }
   const levels = hapticLevels(f.env, f.noise, ref, f.P), F = f.P.frame;
-  const k0 = Math.max(0, Math.floor(S.v0 / F)), k1 = Math.min(levels.length, Math.ceil((S.v0 + S.span) / F));
+  const k1 = Math.min(levels.length, Math.ceil((S.v0 + S.span) / F));
+  // 揺れ始め(強さが FEEL_ONSET を超える所)の FEEL_LEAD 秒前より前は飛ばす(もとの速さなので、静かな所を待たないように)
+  let k0 = Math.max(0, Math.floor(S.v0 / F)), onset = k0;
+  while (onset < k1 && levels[onset] < FEEL_ONSET) onset++;
+  // P波の見込みの線があれば、その 2 秒前からは飛ばさない(遠い地震の弱い P波を飛ばさないように)
+  const ph = (th.rows[k].phases || {})[stationOf(th.rows[k])];
+  if (ph && ph.p !== undefined) onset = Math.min(onset, Math.floor((ph.p - th.t0) * th.rate / F));
+  if (onset < k1) k0 = Math.max(k0, onset - Math.round(FEEL_LEAD * th.rate / F));
   FEEL.playing = true; FEEL.row = k; FEEL.cursor = k0 * F;
   hapticPlay(levels.subarray(k0, k1), F / th.rate, {
     sharpness: META.haptic.sharpness[1], shake: $("stage"), meter: $("feelMeter").firstElementChild,
