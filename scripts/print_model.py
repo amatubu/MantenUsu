@@ -53,8 +53,8 @@ LAYERS = [(0.0, 0.5, "layer1"), (0.5, 1.0, "layer2"), (1.0, BOTTOM_KM, "layer3")
 MATERIALS = {
   "mountain": ("山体(海面より上)", "#c9b48a"),
   "water":    ("湖・海の水面", "#4a90d9"),
-  "layer1":   ("海面下 0〜0.5 km(P波 2.2〜2.6 km/s)", "#b9d7a6"),
-  "layer2":   ("海面下 0.5〜1 km(P波 2.6〜3.5 km/s)", "#6fae94"),
+  "layer1":   ("海面下 0〜0.5 km(P波 2.4〜3.0 km/s)", "#b9d7a6"),
+  "layer2":   ("海面下 0.5〜1 km(P波 3.0〜3.5 km/s)", "#6fae94"),
   "layer3":   ("海面下 1 km〜底(P波 3.5〜4.7 km/s)", "#2f6f74"),
   "quake":    ("震源", "#d62728"),
   "marker":   ("拠点・P波の通り道(core の形ではコアの上の印も)", "#f5f5f5"),

@@ -16,7 +16,7 @@ def test_uniform_table_matches_straight_line():
 
 def test_gradient_model_values():
   m = vm.get(vm.GRADIENT)
-  assert m.vp(np.array([-0.5, 1.0, 2.0, 3.5]))[:] == pytest.approx([2.2, 3.5, 4.7, 5.7])
+  assert m.vp(np.array([-0.5, 1.0, 2.0, 3.5]))[:] == pytest.approx([1.9, 3.5, 4.7, 5.7])
   # vp/vs は 1.74 一定と Vp = 1.45 Vs + 0.9 を 3:1 で混ぜたもの(浅いほど大きい。海面下 0.75 km で約 1.80)
   ratio = m.vp_vs(np.array([0.0, 3.0]))
   assert ratio[0] > ratio[1] > 1.74

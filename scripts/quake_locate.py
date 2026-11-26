@@ -291,8 +291,8 @@ def locate_all(candidates, load_hour, stations, proj, on_result=None):
 #   結果も同じとみなす(到着時刻を手直しして保存したり、自動に戻したりすると、その候補だけ計算し直す)
 #   locate_candidate や locate_event の中身を変えたら LOCATE_CACHE_VERSION を上げて、作り直させる
 #   (中身は Python の pickle。このアプリが書いたファイルだけを読む)
-LOCATE_CACHE_VERSION = 4   # 2: P波がほぼ同時に届いたときは近い地震にしない(steep)、3: 深さで速度が変わる構造を既定にした、
-                           # 4: その構造の vp/vs を 1.74 の側に寄せた
+LOCATE_CACHE_VERSION = 5   # 2: P波がほぼ同時に届いたときは近い地震にしない(steep)、3: 深さで速度が変わる構造を既定にした、
+                           # 4: その構造の vp/vs を 1.74 の側に寄せた、5: 地表付近の速さを 1.9 km/s にした
 LOCATE_CACHE_FILE = app_paths.OUTPUT_DIR / "quake_locate" / f"locate_v{LOCATE_CACHE_VERSION}.pkl"
 
 # 候補の結果を保存するときの見分け方

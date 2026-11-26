@@ -6,8 +6,11 @@
 #   深さ z は海面からの深さ [km](下が正)。拠点は z = -標高
 #
 # 既定の構造(GRADIENT): 有珠山の人工地震探査(2001年、Onizawa et al. 2007)の3次元 P波速度構造を
-#   Aoyama et al. (2009) の断面図から読んだ目安。地表付近(海面下 -0.5 km)2.2 km/s、海面下 1 km 3.5 km/s、
+#   Aoyama et al. (2009) の断面図から読んだ目安。地表付近(海面下 -0.5 km)1.9 km/s、海面下 1 km 3.5 km/s、
 #   2 km 4.7 km/s、3.5 km 5.7 km/s、5 km より下 6.0 km/s(間は直線でつなぐ)
+#   地表付近は 2026-11-27 に 2.2 → 1.9 km/s に見直した(海面下 0 km 2.43・0.5 km 2.97 km/s になり、Fig. 6 の
+#   深さ 0・0.5 km の場所ごとの値の平均 約 2.2・2.9 に近づく。有珠山付近の地震 27件で、拠点ごとの補正もこの構造で
+#   求め直すと残差の中央値 0.068 → 0.065 秒、深さの中央値 0.70 → 0.56 km。検証は quake_model_sim.py のページ)
 #   vp/vs は「1.74 一定と Vp = 1.45 Vs + 0.9(Onizawa et al. 2007)を 3:1 で混ぜたもの」(S波の遅さ 1/Vs を
 #   VP_VS_WEIGHT で重み付けして平均。Aoyama et al. (2009) は山頂の浅い地震で、この2つの中間(1:1)がよいとした)。
 #   1:1 では有珠山付近の地震24件で、S波が多くの拠点で計算より 0.1 秒ほど早く届いたため(海面下 0.5〜1 km で vp/vs 1.85〜1.9)、
@@ -62,7 +65,9 @@ def middle_vp_vs(vp, ratio=1.74, weight=VP_VS_WEIGHT):
   # S波の遅さ(1/Vs)を、vp/vs 一定(ratio)のときと Vp = 1.45 Vs + 0.9 のときで重み付けして平均する
   return lambda z: vp(z) * (weight * ratio / vp(z) + (1 - weight) * 1.45 / (vp(z) - 0.9))
 
-GRADIENT_VP = piecewise([(-1.0, 2.2), (-0.5, 2.2), (1.0, 3.5), (2.0, 4.7), (3.5, 5.7), (5.0, 6.0), (10.0, 6.1)])
+# 勾配の構造の P波の速さ: (海面からの深さ [km], 速さ [km/s]) の点を直線でつなぐ(quake_model_sim.py で 1 km の速さを変えて使う)
+GRADIENT_POINTS = ((-1.0, 1.9), (-0.5, 1.9), (1.0, 3.5), (2.0, 4.7), (3.5, 5.7), (5.0, 6.0), (10.0, 6.1))
+GRADIENT_VP = piecewise(GRADIENT_POINTS)
 MODELS = {GRADIENT: Model(GRADIENT, GRADIENT_VP, middle_vp_vs(GRADIENT_VP))}
 
 
