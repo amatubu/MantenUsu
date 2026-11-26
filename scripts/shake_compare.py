@@ -795,11 +795,11 @@ function playFeel() {
 }
 function stopFeel() { if (FEEL.playing) hapticStop(); }
 function updateFeelButton() {
-  $("feelOne").textContent = FEEL.playing ? "■ 止める" : (hapticCanVibrate() ? "📳 ♪の段を振動で感じる" : "📳 ♪の段の揺れを丸で見る") + "(もとの速さ)";
+  $("feelOne").textContent = FEEL.playing ? "■ 止める" : (hapticCanVibrate() ? "📳 ♪の段を振動で感じる" : "📳 ♪の段の地面の動きを丸で見る") + "(もとの速さ)";
   $("feelRow").hidden = $("feelNote").hidden = freqMode();   // 振動できない端末でも、線の上の丸の動きで見られる
 }
 $("feelOne").addEventListener("click", playFeel);
-$("feelNote").textContent = "♪の段の揺れを、もとの速さで見せます。緑の線の上の丸は、地面の上下の動き(上下動の変位。0.5〜5 Hz)に合わせて上下に動きます。"
+$("feelNote").textContent = "♪の段の揺れを、もとの速さで見せます。緑の線の上の丸は、地面が上下にどれだけ動いたか(上下動の変位。0.5〜5 Hz)に合わせて上下に動きます。"
   + (hapticNative() ? "iPhone の振動は、揺れの強さに合わせて強くなります。"
   : hapticCanVibrate() ? "振動は、揺れが強いほど長く振動します(この端末では振動の強さを変えられないため。マナーモードでは振動しないことがあります)。"
   : "Android のスマートフォン(Chrome)で開くと、振動もします。");
