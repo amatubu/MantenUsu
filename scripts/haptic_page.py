@@ -6,6 +6,12 @@
 #     {cmd: "play", interval: 秒, intensity: [0〜1, ...], sharpness: 0〜1} を送り、アプリが Core Haptics で振動させる(止めるときは {cmd: "stop"})。
 #     Safari などアプリの外では振動できないので、振動の操作はページに出さない(hapticHideOutsideApp)。
 #     hapticPlay は、アプリの外でも画面の要素を揺らし(と、選べば低い音)で代わりにする
+#   Android(Vibration API): opts.vibrate のページ(今は揺れを比べるページ)では、navigator.vibrate があれば
+#     強さを VIBRATE_PERIOD ms ごとのオンの時間の割合にした並び(hapticPattern)で振動させる(強さは指定できないため)。
+#     Chrome は 1 回に渡せる並びの長さに上限があるので、VIBRATE_CHUNK 個ずつに分けて続けて渡す
+#   波形で揺らす: opts.motion(コマごとの -1〜1)があれば、画面を、でたらめではなくその値で上下に動かす
+#     「視差効果を減らす」の設定のときは画面を動かさず、opts.marker(小さな点)を同じ値で上下に動かす
+#     (hapticDisplacement で速度を積分した変位にし、0.5〜5 Hz にしぼる。画面の書き換えより速い揺れは見えないため)
 #   使っているページ: quake_wave_view.py(有珠山付近の地震の波形)、shake_compare.py(揺れを比べる)、shake_world.py(世界の地震が届く)
 import numpy as np
 
@@ -118,11 +124,66 @@ function hapticCurve(traces, n, t0, rate, P, accel, ref) {
   for (const v of env) peak = Math.max(peak, v);
   return hapticLevels(env, hapticNoise(env, t0, rate, P), ref === undefined || ref === null ? peak : ref, P);
 }
+// Vibration API の並び(ms。振動・止まるを交互に、振動から始める): 強さを VIBRATE_PERIOD ms ごとのオンの時間の割合にする
+//   オンが VIBRATE_MIN_ON ms より短いと感じにくいので、強さ 0.05 以上なら VIBRATE_MIN_ON ms にし、止まりが短すぎるときは振動のままにする
+const VIBRATE_PERIOD = 40, VIBRATE_MIN_ON = 10;
+function hapticPattern(part, dt) {
+  const total = Math.round(part.length * dt * 1000), out = [];
+  const push = (on, ms) => {
+    if (ms <= 0) return;
+    if (out.length && (out.length % 2 === 1) === on) out[out.length - 1] += ms;   // 同じ状態はつなぐ
+    else { if (!out.length && !on) out.push(0); out.push(ms); }
+  };
+  for (let t = 0; t < total; t += VIBRATE_PERIOD) {
+    const len = Math.min(VIBRATE_PERIOD, total - t);
+    const a = Math.min(part.length - 1, Math.floor(t / 1000 / dt)), b = Math.min(part.length, Math.max(a + 1, Math.ceil((t + len) / 1000 / dt)));
+    let sum = 0;
+    for (let i = a; i < b; i++) sum += part[i];
+    const level = sum / (b - a);
+    let on = Math.round(level * len);
+    if (on < VIBRATE_MIN_ON) on = level >= 0.05 ? Math.min(VIBRATE_MIN_ON, len) : 0;
+    if (on > 0 && len - on < VIBRATE_MIN_ON) on = len;
+    push(true, on); push(false, len - on);
+  }
+  return out;
+}
+// 速度の波形 [nm/s](欠測は 0)から、画面を揺らす変位 [nm] を作る: 0.5 Hz より遅い揺れを除いて積分し、もう一度除いて、5 Hz より速い揺れを除く
+function hapticBiquad(type, f0, fs) {
+  const w = 2 * Math.PI * f0 / fs, cs = Math.cos(w), alpha = Math.sin(w) / (2 * Math.SQRT1_2), a0 = 1 + alpha;
+  const b = type === "low" ? [(1 - cs) / 2, 1 - cs, (1 - cs) / 2] : [(1 + cs) / 2, -(1 + cs), (1 + cs) / 2];
+  return [b[0] / a0, b[1] / a0, b[2] / a0, -2 * cs / a0, (1 - alpha) / a0];
+}
+function hapticFiltfilt(x, c) {
+  const run = () => {
+    let z1 = 0, z2 = 0;
+    for (let i = 0; i < x.length; i++) {
+      const y = c[0] * x[i] + z1;
+      z1 = c[1] * x[i] - c[3] * y + z2;
+      z2 = c[2] * x[i] - c[4] * y;
+      x[i] = y;
+    }
+  };
+  run(); x.reverse(); run(); x.reverse();
+}
+function hapticDisplacement(v, rate) {
+  const x = Float64Array.from(v), hp = hapticBiquad("high", 0.5, rate);
+  hapticFiltfilt(x, hp);
+  let sum = 0;
+  for (let i = 0; i < x.length; i++) { sum += x[i] / rate; x[i] = sum; }
+  hapticFiltfilt(x, hp);
+  hapticFiltfilt(x, hapticBiquad("low", Math.min(5, rate / 4), rate));
+  return x;
+}
 // HAPTIC_CURVE_END
 // --- 振動の再生(ページ共通) ---
 //   テスト用の iPhone のアプリ(ios/UsuMantenFeel)の中では webkit.messageHandlers.usuHaptics に送って Core Haptics で振動させる。
 //   アプリの外では、shake の要素を揺らして代わりにする(視差効果を減らす設定のときは揺らさない)。sound なら低い音も同じ強さで鳴らす
 const HAPTIC_PLAYER = { cur: null, actx: null };
+const VIBRATE_CHUNK = 80;     // 1 回の navigator.vibrate に渡す並びの数(偶数。振動から始まるように)
+// この端末で振動できるか(アプリの中か、タッチの画面で Vibration API があるとき)
+function hapticCanVibrate() {
+  return hapticNative() || (typeof navigator.vibrate === "function" && matchMedia("(pointer: coarse)").matches);
+}
 function hapticBridge() {
   return window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.usuHaptics;
 }
@@ -133,14 +194,27 @@ function hapticHideOutsideApp(...els) {
   for (const el of els) if (el) el.style.display = "none";
 }
 // levels ... 強さ 0〜1 の並び、dt ... 1 コマの秒
-//   opts ... {sharpness, sound, shake: 揺らす要素, meter: 強さの棒(幅を変える要素), onTick(何コマ目か), onStop()}
+//   opts ... {sharpness, sound, shake: 揺らす要素, meter: 強さの棒(幅を変える要素), onTick(何コマ目か), onStop(),
+//             vibrate: アプリの外で Vibration API を使うか, motion: コマごとの -1〜1(あれば画面をその値で上下に動かす), shakeMax: 揺らす最大 [px],
+//             marker: 視差効果を減らす設定のとき、画面の代わりに上下に動かす点, markerMax: 点を動かす最大 [px]}
 function hapticPlay(levels, dt, opts) {
   hapticStop();
   const part = Array.from(levels, v => Math.round(v * 100) / 100);
   if (!part.length || !(dt > 0)) { if (opts.onStop) opts.onStop(); return; }
   const bridge = hapticBridge();
   if (bridge) bridge.postMessage({ cmd: "play", interval: dt, intensity: part, sharpness: opts.sharpness });
-  const cur = { part, dt, opts, start: performance.now(), native: !!bridge, flip: 1, audio: opts.sound ? hapticSound(part, dt) : null };
+  const cur = { part, dt, opts, start: performance.now(), native: !!bridge, flip: 1, audio: opts.sound ? hapticSound(part, dt) : null, timers: [] };
+  if (!bridge && opts.vibrate && typeof navigator.vibrate === "function") {
+    const pattern = hapticPattern(part, dt);
+    let at = 0;
+    for (let i = 0; i < pattern.length; i += VIBRATE_CHUNK) {
+      const chunk = pattern.slice(i, i + VIBRATE_CHUNK);
+      if (at === 0) navigator.vibrate(chunk);      // 最初は押したその場で(画面を押したあとでないと振動できない)
+      else cur.timers.push(setTimeout(() => navigator.vibrate(chunk), at));
+      for (const ms of chunk) at += ms;
+    }
+    cur.vibrating = true;
+  }
   HAPTIC_PLAYER.cur = cur;
   requestAnimationFrame(now => hapticTick(cur, now));
 }
@@ -151,7 +225,10 @@ function hapticStop() {
   const bridge = hapticBridge();
   if (bridge) bridge.postMessage({ cmd: "stop" });
   if (cur.audio) { try { cur.audio.stop(); } catch (_) {} }
+  for (const id of cur.timers) clearTimeout(id);
+  if (cur.vibrating) navigator.vibrate(0);
   if (cur.opts.shake) cur.opts.shake.style.transform = "";
+  if (cur.opts.marker) cur.opts.marker.style.transform = "";
   if (cur.opts.meter) cur.opts.meter.style.width = "0";
   if (cur.opts.onStop) cur.opts.onStop();
 }
@@ -162,7 +239,13 @@ function hapticTick(cur, now) {
   if (k >= cur.part.length) { hapticStop(); return; }
   const level = cur.part[Math.floor(k)];
   if (cur.opts.meter) cur.opts.meter.style.width = (100 * level) + "%";
-  if (cur.opts.shake && !cur.native && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+  const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (cur.opts.motion) {     // 波形の変位で上下に動かす(コマの間はつなぐ)。視差効果を減らす設定なら、画面ではなく点を動かす
+    const m = cur.opts.motion, i = Math.min(m.length - 1, Math.floor(k)), j = Math.min(m.length - 1, i + 1), f = k - Math.floor(k);
+    const y = m[i] * (1 - f) + m[j] * f;
+    if (cur.opts.shake && !still) cur.opts.shake.style.transform = `translateY(${-y * (cur.opts.shakeMax || 12)}px)`;
+    if (cur.opts.marker && still) cur.opts.marker.style.transform = `translateY(${-y * (cur.opts.markerMax || 12)}px)`;
+  } else if (cur.opts.shake && !cur.native && !still) {
     cur.flip = -cur.flip;
     const a = 10 * level;
     cur.opts.shake.style.transform = `translate(${cur.flip * a * (0.5 + Math.random() / 2)}px, ${(Math.random() - 0.5) * a}px)`;

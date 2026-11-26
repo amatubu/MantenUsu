@@ -366,6 +366,7 @@ __LOADING_CSS__
       <button class="listen alt" id="feelOne" type="button"></button>
       <div id="feelMeter" aria-hidden="true"><div></div></div>
     </div>
+    <p class="note" id="feelNote"></p>
     <div class="listenRow">
       <div class="seg" id="speedSeg" role="group" aria-label="速さ"></div>
       <div class="seg" id="loudSeg" role="group" aria-label="音の大きさ">
@@ -508,6 +509,9 @@ function draw() {
     const top = k * blockH, tr = traceOf(k), id = stationOf(row);
     const half = S.common === true ? allHalf : halves[k];
     if (tr) drawTrace(tr, top + headH, blockH - headH, centers[k], half, n);
+    // 速度 0 の高さ(drawTrace と同じ計算。振動の再生中の丸の中心にする)と、波形を描く高さ
+    if (tr) (S.rowBase || (S.rowBase = {}))[k] = { zero: top + headH + (blockH - headH) / 2 + (half > 0 ? centers[k] * ((blockH - headH) / 2 - 2 * S.dpr) / half : 0),
+                             h: blockH - headH };
     // 名前(左)と振幅(右)は段の上の帯に書く。せまい画面で重なるときは名前を「…」で切る
     const sound = k === S.sel;
     ctx.textBaseline = "top";
@@ -639,6 +643,11 @@ function drawCursor() {
     if (x >= 0 && x <= W) {
       ctx.strokeStyle = colors.cursor; ctx.lineWidth = Math.max(2, 2 * d);
       ctx.beginPath(); ctx.moveTo(x, FEEL.row * blockH); ctx.lineTo(x, (FEEL.row + 1) * blockH); ctx.stroke();
+      // 線の上の丸: 波形の速度 0 の高さを中心に、上下動の変位で上下に動かす(いちばん大きい揺れで、波形の高さの FEEL_DOT の割合)
+      const base = (S.rowBase || {})[FEEL.row] || { zero: (FEEL.row + 0.5) * blockH, h: blockH };
+      const y = base.zero - FEEL.y * base.h * FEEL_DOT;
+      ctx.fillStyle = colors.cursor;
+      ctx.beginPath(); ctx.arc(x, y, Math.max(5, 6 * d), 0, 2 * Math.PI); ctx.fill();
     }
   }
   if (!th || freqMode() || AUD.theme !== S.idx || AUD.el.paused || AUD.row < 0) return;
@@ -712,8 +721,23 @@ function playing() { return AUD.theme === S.idx && AUD.theme >= 0; }
 // --- 振動(TODO 58) ---
 //   ♪の段の、見えている範囲の揺れの強さ(今のフィルタの波形。20 ms ごと)を、もとの速さで振動にする(揺れ始めか P波の見込みの早いほうの 2 秒前から)。
 //   強さは、雑音(0 秒の 1 秒前まで)の 2 倍を 0、その段のいちばん大きい揺れを最大にする(音を「本当の大きさの比」にしているときは、テーマの全部の段で同じ基準)
-const FEEL = { playing: false, row: -1, cursor: 0 };
-const FEEL_ONSET = 0.1, FEEL_LEAD = 2;
+//   振動は、テスト用の iPhone のアプリでは Core Haptics、Android の Chrome などでは Vibration API(強さはオンの時間の割合)。
+//   どの端末でも、再生中の位置の線の上の丸を、上下動の変位(0.5〜5 Hz)で上下に動かす(画面そのものは揺らさない)
+const FEEL = { playing: false, row: -1, cursor: 0, y: 0 };
+const FEEL_ONSET = 0.1, FEEL_LEAD = 2, FEEL_DOT = 0.4;
+const FEEL_DEBUG = /[?&]debug\b/.test(location.search);
+// 段 k の上下動の変位(元の波形から。段・拠点ごとに覚えておく)
+function feelDisplacement(k) {
+  const th = theme(), id = stationOf(th.rows[k]), tr = S.data && S.data[k][id] && S.data[k][id].U;
+  if (!tr) return null;
+  if (!tr.disp) {
+    const v = Float64Array.from(tr.v, x => x * tr.step);
+    for (const [a, b] of tr.gaps) v.fill(0, a, b);
+    tr.disp = hapticDisplacement(v, th.rate);
+  }
+  return tr.disp;
+}
+function maxAbs(a) { let m = 0; for (const v of a) m = Math.max(m, Math.abs(v)); return m; }
 function feelEnvelope(k) {
   const th = theme(), tr = traceOf(k);
   if (!tr) return null;
@@ -740,19 +764,45 @@ function playFeel() {
   const ph = (th.rows[k].phases || {})[stationOf(th.rows[k])];
   if (ph && ph.p !== undefined) onset = Math.min(onset, Math.floor((ph.p - th.t0) * th.rate / F));
   if (onset < k1) k0 = Math.max(k0, onset - Math.round(FEEL_LEAD * th.rate / F));
-  FEEL.playing = true; FEEL.row = k; FEEL.cursor = k0 * F;
+  // 画面を動かす変位(コマの中ほどの値)。いちばん大きい所を 1 にする(「本当の大きさの比」なら全部の段で同じ基準)
+  const disp = feelDisplacement(k);
+  let motion = null;
+  if (disp) {
+    let peak = 0;
+    if (S.real) for (let j = 0; j < th.rows.length; j++) { const d = feelDisplacement(j); if (d) peak = Math.max(peak, maxAbs(d)); }
+    else peak = maxAbs(disp);
+    motion = new Float64Array(k1 - k0);
+    if (peak > 0) for (let j = 0; j < motion.length; j++) motion[j] = disp[Math.min(disp.length - 1, (k0 + j) * F + (F >> 1))] / peak;
+  }
+  FEEL.playing = true; FEEL.row = k; FEEL.cursor = k0 * F; FEEL.y = 0;
   hapticPlay(levels.subarray(k0, k1), F / th.rate, {
-    sharpness: META.haptic.sharpness[1], shake: $("stage"), meter: $("feelMeter").firstElementChild,
-    onTick: j => { FEEL.cursor = (k0 + j) * F; requestDraw(); },
-    onStop: () => { FEEL.playing = false; FEEL.row = -1; updateFeelButton(); requestDraw(); } });
+    sharpness: META.haptic.sharpness[1], meter: $("feelMeter").firstElementChild, vibrate: true,
+    onTick: j => {
+      FEEL.cursor = (k0 + j) * F;
+      if (motion && motion.length) {     // コマの間はつなぐ
+        const a = Math.min(motion.length - 1, Math.floor(j)), b = Math.min(motion.length - 1, a + 1), f = j - Math.floor(j);
+        FEEL.y = motion[a] * (1 - f) + motion[b] * f;
+      }
+      requestDraw();
+    },
+    onStop: () => {
+      // 調べるとき(URL に ?debug): 何が止めたかを出す(iPhone の Safari で、指で動かしたあと止まる件)
+      if (FEEL_DEBUG) $("status").textContent = `止まった: ${((FEEL.cursor - k0 * F) / th.rate).toFixed(1)} 秒 / ${((k1 - k0) * F / th.rate).toFixed(1)} 秒 ・ `
+        + String(new Error().stack || "").split("\n").slice(1, 6).map(s => s.replace(/@.*/, "").trim() || "?").join(" < ");
+      FEEL.playing = false; FEEL.row = -1; updateFeelButton(); requestDraw();
+    } });
   updateFeelButton();
 }
 function stopFeel() { if (FEEL.playing) hapticStop(); }
 function updateFeelButton() {
-  $("feelOne").textContent = FEEL.playing ? "■ 止める" : (hapticNative() ? "📳 ♪の段を振動で感じる" : "📳 ♪の段を揺れで見る") + "(もとの速さ)";
-  $("feelRow").hidden = freqMode() || !hapticNative();   // アプリの外では振動できないので出さない
+  $("feelOne").textContent = FEEL.playing ? "■ 止める" : (hapticCanVibrate() ? "📳 ♪の段を振動で感じる" : "📳 ♪の段の揺れを丸で見る") + "(もとの速さ)";
+  $("feelRow").hidden = $("feelNote").hidden = freqMode();   // 振動できない端末でも、線の上の丸の動きで見られる
 }
 $("feelOne").addEventListener("click", playFeel);
+$("feelNote").textContent = "♪の段の揺れを、もとの速さで見せます。緑の線の上の丸は、地面の上下の動き(上下動の変位。0.5〜5 Hz)に合わせて上下に動きます。"
+  + (hapticNative() ? "iPhone の振動は、揺れの強さに合わせて強くなります。"
+  : hapticCanVibrate() ? "振動は、揺れが強いほど長く振動します(この端末では振動の強さを変えられないため。マナーモードでは振動しないことがあります)。"
+  : "Android のスマートフォン(Chrome)で開くと、振動もします。");
 function play(all) {
   const was = playing() && AUD.all === all;
   stopAudio();
