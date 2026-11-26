@@ -11,7 +11,7 @@
 #     発破 ... 有珠山の震源リストの「発破」。無ければ場所は採石場(sp_locate.csv の正解の場所)、発生時刻は P の読み取りから
 #     花火 ... 打ち上げの船は西から東へ動くので、東西に長い楕円で示す。東の端が 4 拠点の音の遅れから決めた場所(notes/fireworks_3comp)。
 #             音(空気を伝わる音波、340 m/s。地震波の速さではない)の輪は楕円の中心から出し、Kawaminami の揺れの山(ふだんの 6 倍をこえたもの)の時刻から、音が届くまでの時間をさかのぼって出す
-#   有珠山の震源リストにある地震・発破は、満点の拠点の P・S の印をリストの読み取り(output/picks/<手直し>)にする(震源の計算から除いたものは計算の見込み)
+#   有珠山の震源リストにある地震・発破は、満点の拠点の P・S の印をリストの読み取り(<ユーザーの設定>/picks/<手直し>)にする(震源の計算から除いたものは計算の見込み)
 #   続けて起きた揺れ(前の揺れの終わりから GROUP_GAP 秒以内)は 1 つの場面にまとめる(--group-gap で変えられる)
 #   波形は、真ん中の縦線を今にして左右に描く。早送りの間は前後 30 分の揺れの強さで、揺れの場面に入ると真ん中を中心に拡大して本当の波形に替わる
 #   有珠山のまわりの P波・S波の速さは、S-P 時間の教材(sp_locate)の大森係数 k = 3.7 と vp/vs = 1.74 に合わせる
@@ -54,7 +54,8 @@ FIREWORKS_AREA = (0.7, 0.15)       # 打ち上げ場所の楕円の半径 [km](�
                                    # 楕円の東の端を FIREWORKS(音の遅れから決めた場所)にし、中心はそこから西へ半径の分ずらす。音の輪は中心から出す
 SUMMIT = (42.5436, 140.8394)
 GROUP_GAP = 60.0                   # 前の揺れの終わりからこれ以内 [秒] に始まる揺れは、1 つの場面にまとめて見せる
-PICKS_DIR = app_paths.OUTPUT_DIR / "picks"   # 有珠山の震源リストの読み取り(「手直し」の列のファイル)
+PICKS_DIR = app_paths.PICKS_DIR    # 有珠山の震源リストの読み取り(「手直し」の列のファイル。震源推定の画面で保存したもの)
+SCENE_WALL = 45.0                  # 1 つの場面にかける時間の目安 [秒](長い揺れは、種類ごとの速さより速くしてこれに収める)
 USU_DEPTH = 1.5                    # 有珠山の地震の深さの仮の値 [km](4 拠点の P だけでは深さが決まらないため)
 MAP_ZOOM_USU, MAP_ZOOM_JAPAN = 13, 6
 MAP_MARGIN_KM = 2.5
@@ -64,7 +65,7 @@ KINDS = {
   "発破": {"band": (0.5, 2.0), "speed": 2, "span": 60},
   "少し遠い地震": {"band": (0.5, 10.0), "speed": 4, "span": 90},
   "遠くの地震": {"band": (0.5, 10.0), "speed": 6, "span": 120},
-  "花火": {"band": (2.0, 20.0), "speed": 20, "span": 60},
+  "花火": {"band": (20.0, 40.0), "speed": 20, "span": 60},
   "地震ではない揺れ": {"band": (0.5, 20.0), "speed": 4, "span": 90},
   "列車": {"band": (0.5, 20.0), "speed": 4, "span": 90},
 }
@@ -165,7 +166,7 @@ def usu_hypocenters(path=USU_LIST):
                                         "blast": row.get("種別", "") == "発破", "picks": row.get("手直し", "")}
   return out
 
-# 震源リストの読み取り(output/picks/<手直し>)で、満点の拠点の P・S の到着を置き換える(日の始まりからの秒)
+# 震源リストの読み取り(<ユーザーの設定>/picks/<手直し>)で、満点の拠点の P・S の到着を置き換える(日の始まりからの秒)
 #   震源の計算から除いた読み取り(excluded・s_excluded)は使わない。戻り値 ... 置き換えた (拠点, "p" または "s") の数
 def observed_arrivals(arr, name, day):
   path = PICKS_DIR / name if name else None
@@ -258,19 +259,68 @@ def far_source(q, day, stations):
 
 
 # --- 花火: Kawaminami の揺れの山ごとに、打ち上げの時刻を逆算する ---
-def fireworks_bursts(x, ev, d_km, band=(5.0, 20.0)):
-  i0, i1 = int((ev["start"] - 30) * RATE), int((ev["end"] + 30) * RATE)
-  y = bandpass(x[i0:i1], band)
-  e = np.sqrt(np.convolve(np.nan_to_num(y) ** 2, np.ones(RATE // 5) / (RATE // 5), "same"))
-  base = np.median(e)
-  out, last = [], -1e9
-  thr = base * 6
-  for i in range(1, len(e) - 1):
-    if e[i] > thr and e[i] >= e[i - 1] and e[i] >= e[i + 1] and i - last > RATE * 1.5:
-      t = (i0 + i) / RATE
-      if ev["start"] - 5 <= t <= ev["end"] + 5:
-        out.append([round(t - d_km / SOUND_KMS, 2), round(float(e[i] / base), 1)])
-        last = i
+# --- 花火: 20〜40 Hz(音で揺れる帯域。50 Hz に間引いた記録には無いので、元の 250 Hz の記録から作る) ---
+FIREWORKS_BAND = (20.0, 40.0)
+FIREWORKS_RATE = 125               # 花火の波形の間引き [Hz](250 Hz の 1/2。40 Hz まで描ける)
+FIREWORKS_SHOW = 600.0             # 見せるのは最後の強い 1 発の前のこの秒数(はっきり見えるのは最後の 10 分ほど)
+FIREWORKS_PROGRAM = app_paths.BATCH_PLOTS_DIR / "fireworks" / "program_days.csv"   # 日ごとの最後の強い揺れ(fireworks_stack.py)
+
+# 4 拠点の 20〜40 Hz の上下動(物理量)を、t0〜t1(日の始まりからの秒)について FIREWORKS_RATE で返す
+def fireworks_waveforms(day, t0, t1, stations):
+  import warnings
+  from scipy import signal
+  import quake_wave_view as wv
+  steps = wv.count_steps(app_paths.ETC_DIR)
+  n = int(round((t1 - t0) * FIREWORKS_RATE))
+  out = {nm: np.full(n, np.nan) for nm in stations}
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    st = wv.load_stream(day + timedelta(seconds=t0 - 10), day + timedelta(seconds=t1 + 10))
+  for tr in st:
+    nm = tr.stats.station
+    if nm not in out or not tr.stats.channel.endswith("U"):
+      continue
+    fs = tr.stats.sampling_rate
+    k = int(round(fs / FIREWORKS_RATE))
+    if k < 1 or abs(fs / FIREWORKS_RATE - k) > 1e-6:
+      continue
+    x = np.ma.filled(np.ma.asarray(tr.data, dtype=float), np.nan) * steps.get((nm, "U"), 1.0)
+    gap = np.isnan(x)
+    x = np.where(gap, 0.0, x - np.nanmean(x))
+    y = signal.sosfiltfilt(signal.butter(4, FIREWORKS_BAND, "bandpass", fs=fs, output="sos"), x)
+    y[gap] = np.nan
+    off = (tr.stats.starttime.datetime - day).total_seconds() - t0      # t0 からの秒
+    idx = np.arange(0, len(y), k)
+    j = np.round((off + idx / fs) * FIREWORKS_RATE).astype(int)
+    ok = (j >= 0) & (j < n)
+    out[nm][j[ok]] = y[idx[ok]]
+  return out
+
+# 最後の強い 1 発の時刻(日の始まりからの秒): 花火の分析の program_days.csv、無ければ Kawaminami の 20〜40 Hz がいちばん大きい所
+def fireworks_last(day, ev, ys, t0):
+  import csv
+  if FIREWORKS_PROGRAM.exists():
+    with open(FIREWORKS_PROGRAM, encoding="utf-8-sig") as f:
+      for r in csv.DictReader(f):
+        if r.get("日") == f"{day:%Y-%m-%d}" and r.get("最後の強い揺れ"):
+          hh, mm, ss = r["最後の強い揺れ"].split(":")
+          return int(hh) * 3600 + int(mm) * 60 + float(ss), "花火の分析(program_days.csv)"
+  y = np.nan_to_num(ys["Hokudai"])
+  return t0 + int(np.argmax(np.abs(y))) / FIREWORKS_RATE, "Kawaminami の 20〜40 Hz の最大"
+
+# 1 発ずつ: Kawaminami の 20〜40 Hz の強さ(0.2 秒)の山のうち、ふだん(読んだ範囲の中央値)の 6 倍をこえたもの。
+#   戻り値 ... [[打ち上げの時刻(音が Kawaminami に届くまでをさかのぼる), 倍率], ...]
+def fireworks_bursts(y, t0, w0, w1, delay):
+  from scipy import signal
+  n = FIREWORKS_RATE // 5
+  e = np.sqrt(np.convolve(np.nan_to_num(y) ** 2, np.ones(n) / n, "same"))
+  base = float(np.median(e[e > 0])) if (e > 0).any() else 1.0
+  pk, _ = signal.find_peaks(e, height=base * 6, distance=int(FIREWORKS_RATE * 1.5))
+  out = []
+  for i in pk:
+    t = t0 + i / FIREWORKS_RATE
+    if w0 <= t <= w1:
+      out.append([round(t - delay, 2), round(float(e[i] / base), 1)])
   return out
 
 
@@ -284,9 +334,13 @@ def event_waves(wf, stations, w0, w1, band):
     a, b = max(i0 - 30 * RATE, 0), min(i1 + 30 * RATE, len(wf[nm]))
     y = bandpass(wf[nm][a:b], band)[i0 - a:i0 - a + (i1 - i0)]
     ys[nm] = y
+  return encode_waves(ys, w0, RATE)
+
+# 4 拠点の波形({拠点: 物理量の配列}、最初の点が t0 秒)を、拠点の間で共通の物差しで 8 ビットにする
+def encode_waves(ys, t0, rate):
   peaks = [float(np.percentile(np.abs(y[np.isfinite(y)]), 99.9)) for y in ys.values() if np.isfinite(y).any()]
   scale = max(peaks) if peaks else 1.0
-  out = {"t0": w0, "rate": RATE, "scale": round(scale / 1000, 4), "st": {}}   # scale は µm/s
+  out = {"t0": t0, "rate": rate, "scale": round(scale / 1000, 4), "st": {}}   # scale は µm/s
   for nm, y in ys.items():
     if not np.isfinite(y).any():
       continue
@@ -377,6 +431,7 @@ def group_scenes(items, group_gap):
       sc["end"] = max(sc["end"], it["end"])
       sc["w0"], sc["w1"] = min(sc["w0"], it["w0"]), max(sc["w1"], it["w1"])
       sc["speed"], sc["span"] = min(sc["speed"], it["speed"]), max(sc["span"], it["span"])
+      sc["fw"] = sc.get("fw") or it.get("fw")
     else:
       scenes.append({**it, "src": list(it["src"]), "parts": [part]})
   return scenes
@@ -440,17 +495,29 @@ def build(day, out, group_gap=GROUP_GAP):
     elif ev["kind"] == "花火":
       fx, fy = fireworks_center(proj)
       d = {nm: float(np.hypot(xy[nm][0] - fx, xy[nm][1] - fy)) for nm in stations}
-      bursts = fireworks_bursts(wf["Hokudai"], ev, d["Hokudai"])
+      delay = {nm: v / SOUND_KMS for nm, v in d.items()}
+      # 見せるのは最後の強い 1 発の FIREWORKS_SHOW 秒前から(それより前は花火ではない揺れがまじり、花火の揺れも小さい)
+      ft0 = max(ev["start"] - 60, 0.0)
+      fys = fireworks_waveforms(day, ft0, ev["end"] + 120, stations)
+      last, how_last = fireworks_last(day, ev, fys, ft0)
+      show0, show1 = last - FIREWORKS_SHOW, last + max(delay.values()) + 3
+      bursts = fireworks_bursts(fys["Hokudai"], ft0, show0, show1, delay["Hokudai"])
+      fw = {"ys": fys, "t0": ft0}
       srcs.append({"type": "sound", "x": round(fx, 3), "y": round(fy, 3), "bursts": bursts,
-                   "area": list(FIREWORKS_AREA),
-                   "delay": {nm: round(v / SOUND_KMS, 2) for nm, v in d.items()}})
+                   "area": list(FIREWORKS_AREA), "last": round(last, 2), "show": [round(show0, 1), round(show1, 1)],
+                   "delay": {nm: round(v, 2) for nm, v in delay.items()}})
+      print(f"     花火: 最後の強い 1 発 {fmt(last)}({how_last})。{fmt(show0)}〜{fmt(show1)} を見せる")
     # 窓: 発生(遠い地震は震源での発生)の少し前から、揺れの終わりの少し後まで
     t_first = min([ev["start"]] + [s["t0"] for s in srcs if "t0" in s])
     pre, post = (3, 3) if ev["kind"] == "有珠山の地震" else (8, 10)   # 有珠山の地震は短いので、前後を短く
     w0 = float(max(0.0, np.floor(t_first - pre)))
     w1 = float(min(86400.0, np.ceil(ev["end"] + post)))
+    sound = [s for s in srcs if s["type"] == "sound"]
+    if sound:                                   # 花火は、はっきり見える最後の 10 分ほどだけ
+      w0, w1 = float(np.floor(sound[0]["show"][0])), float(np.ceil(sound[0]["show"][1] + 5))
     items.append({**ev, "color": sd.KIND_COLORS.get(ev["kind"], sd.INK), "w0": w0, "w1": w1,
-                  "band": list(kind["band"]), "speed": kind["speed"], "span": kind["span"], "src": srcs})
+                  "band": list(kind["band"]), "speed": kind["speed"], "span": kind["span"], "src": srcs,
+                  "fw": fw if sound else None})
     desc = []
     for s in srcs:
       if s["type"] == "far":
@@ -464,9 +531,15 @@ def build(day, out, group_gap=GROUP_GAP):
     print(f"  {ev['no']:>2} {ev['kind']} {fmt(ev['start'])}  " + (" / ".join(desc) or "震源なし"))
   scenes = group_scenes(items, group_gap)
   for sc in scenes:
+    sc["speed"] = max(sc["speed"], round((sc["w1"] - sc["w0"]) / SCENE_WALL))   # 長い揺れ(大きな地震・花火)は速く
     # 波形は窓の前後に、見える幅の半分を足す(今の時刻を真ん中にして、左右いっぱいに描くため)
     a, b = max(0.0, sc["w0"] - sc["span"] / 2), min(86400.0, sc["w1"] + sc["span"] / 2)
-    waves = event_waves(wf, stations, a, b, sc["band"])
+    fw = sc.pop("fw", None)
+    if fw:                                      # 花火: 20〜40 Hz の波形(元の 250 Hz の記録から)
+      i0, i1 = int(round((a - fw["t0"]) * FIREWORKS_RATE)), int(round((b - fw["t0"]) * FIREWORKS_RATE))
+      waves = encode_waves({nm: y[max(i0, 0):i1] for nm, y in fw["ys"].items()}, fw["t0"] + max(i0, 0) / FIREWORKS_RATE, FIREWORKS_RATE)
+    else:
+      waves = event_waves(wf, stations, a, b, sc["band"])
     (out / "wave" / f"{sc['no']}.json").write_text(json.dumps(waves, separators=(",", ":")), encoding="utf-8")
     if len(sc["parts"]) > 1:
       print(f"  場面 {sc['no']}: {'・'.join(str(q['no']) for q in sc['parts'])} をまとめる")
@@ -731,8 +804,10 @@ function drawMap() {
   };
   let [kx, ox, oy] = fitTo(W);
   const jb = $("jpBox"), r0 = c.getBoundingClientRect(), r1 = jb.getBoundingClientRect();
+  let inset = null;                 // 小さな地図が重なる所(左の端, 下の端)[px]
   if (!jb.classList.contains("hide") && r1.left > r0.left + 10 && r1.left < r0.right && r1.top < r0.bottom && r1.bottom > r0.top) {
     const ix0 = r1.left - r0.left - 6, iy1 = r1.bottom - r0.top + 6;
+    inset = [ix0, iy1];
     const hidden = pts.some(([x, y]) => ox + (x - m.x0) * kx > ix0 && oy + (m.y1 - y) * kx < iy1 + 14);
     if (hidden) [kx, ox, oy] = fitTo(ix0);
   }
@@ -805,10 +880,22 @@ function drawMap() {
           text(g, name, lp[0], lp[1], fs, col, "center");
         }
         // 震源の向きの矢印(地図のふち)
-        const cc = P(cx, cy), L = Math.min(W, H) / 2 - 18;
-        const ex = cc[0] + ux * L, ey = cc[1] - uy * L;
-        arrow(g, cc[0] + ux * (L - 40), cc[1] - uy * (L - 40), ex, ey, ev.color);
-        text(g, `${s.place} M${s.m} ${s.km} km`, Math.max(60, Math.min(W - 60, ex - ux * 52)), Math.max(14, Math.min(H - 8, ey + uy * 18 + (uy < 0 ? 4 : -4))), fs, ev.color, "center", true);
+        // 矢印の先は、地図の真ん中から震源の向きに進んで、ふち(18 px 手前)に当たる所
+        const cc = [W / 2, H / 2], m18 = 18;
+        const L = Math.min(Math.abs(ux) > 1e-6 ? (W / 2 - m18) / Math.abs(ux) : Infinity,
+                           Math.abs(uy) > 1e-6 ? (H / 2 - m18) / Math.abs(uy) : Infinity);
+        // 小さな地図が重なる所にかかるときは、矢印を手前で止める
+        let Lt = L;
+        while (inset && Lt > 60 && cc[0] + ux * Lt > inset[0] - 30 && cc[1] - uy * Lt < inset[1] + 30) Lt -= 4;
+        const ex = cc[0] + ux * Lt, ey = cc[1] - uy * Lt;
+        arrow(g, cc[0] + ux * (Lt - 40), cc[1] - uy * (Lt - 40), ex, ey, ev.color);
+        // 震源の名前は、拠点の名前と重ならないように地図の左の角に(場面に震源が 2 つあれば 2 行)
+        const dirs = ["北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東", "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西"];
+        const row = ev.src.filter(q => q.type === "far").indexOf(s);
+        const nFar = ev.src.filter(q => q.type === "far").length;
+        // 矢印と反対側の角に置く(南の地震は左上、北の地震は左下)
+        const ly = uy < 0 ? fs + 8 + row * (fs + 6) : H - 8 - (nFar - 1 - row) * (fs + 6);
+        text(g, `${dirs[Math.round(s.az / 22.5) % 16]} ${s.km} km の ${s.place} M${s.m.toFixed(1)}`, 8, ly, fs + 1, ev.color, "left", true);
       } else if (s.type === "sound") {
         const e = P(s.x, s.y), life = Math.max(...Object.values(s.delay)) + 3;   // いちばん遠い拠点に届くまで
         for (const [tb, size] of s.bursts) {
@@ -900,7 +987,10 @@ function drawJapan() {
       }
       g.stroke();
     }
-    text(g, `${s.place} M${s.m}`, p[0], p[1] + 16, fs, ev.color, "center", true);
+    const lab = `${s.place} M${s.m.toFixed(1)}`;
+    g.font = `600 ${fs}px -apple-system,"Hiragino Sans",sans-serif`;
+    const hw = g.measureText(lab).width / 2 + 3;
+    text(g, lab, Math.max(hw, Math.min(W - hw, p[0])), Math.max(fs + 2, Math.min(H - 14, p[1] + 16)), fs, ev.color, "center", true);
   }
   const u = P(D.center.lat, D.center.lon);
   g.fillStyle = "#ffb300"; g.strokeStyle = "#333"; g.lineWidth = 1;
@@ -1054,7 +1144,7 @@ function drawStrip() {
 function srcText(ev) {
   const out = [];
   for (const s of ev.src) {
-    if (s.type === "far") out.push(`震源: ${s.place} M${s.m}(深さ ${Math.round(s.z)} km、有珠山から ${s.km} km)。${hms(s.t0)} に起き、P波は ${Math.round(s.arr.Hokudai.p - s.t0)} 秒後、S波は ${Math.round(s.arr.Hokudai.s - s.t0)} 秒後に届く`);
+    if (s.type === "far") out.push(`震源: ${s.place} M${s.m.toFixed(1)}(深さ ${Math.round(s.z)} km、有珠山から ${s.km} km)。${hms(s.t0)} に起き、P波は ${Math.round(s.arr.Hokudai.p - s.t0)} 秒後、S波は ${Math.round(s.arr.Hokudai.s - s.t0)} 秒後に届く`);
     else if (s.type === "local") out.push(`震源: ${ev.kind === "発破" ? "採石場" : `有珠山の山頂から ${dirText(s)}(深さ ${s.z.toFixed(1)} km)`}。${hms(s.t0)} に起き、${(Math.min(...Object.values(s.arr).map(a => a.p)) - s.t0).toFixed(1)} 秒で最初の拠点に P波が届く${s.obs ? "(波形の P・S の印の実線は読み取った時刻、点線は計算の見込み)" : "(P・S の印は計算の見込み)"}`);
     else if (s.type === "sound") out.push(`打ち上げ場所から音(空気の振動、秒速 340 m)で届く。Kawaminami まで ${s.delay.Hokudai.toFixed(1)} 秒、Bamba まで ${s.delay.Bamba.toFixed(1)} 秒。地図の輪は、Kawaminami の揺れが大きくなった時刻から、音が届くまでの時間をさかのぼって描いたもの(打ち上げの船は西から東へ動くので、場所は楕円で示す)`);
   }
