@@ -23,7 +23,7 @@
 #     <出力>/map_usu.jpg・map_japan.jpg … 地理院タイル(淡色地図)をつないだ地図
 #
 #     python3 scripts/shake_oneday.py 2026-07-08 [-o 出力のフォルダ]
-#   省略すると batch_plots/quiz/oneday/<日>/ に書く
+#   省略すると batch_plots/quiz/oneday/<日>/ に書き、日の一覧のページ batch_plots/quiz/oneday/index.html も書き直す
 
 import argparse
 import base64
@@ -1199,6 +1199,54 @@ load().catch(e => { $("info").textContent = "読み込めませんでした(フ�
 """
 
 
+# 日の一覧のページ(<出力の親>/index.html)。フォルダにある日(<日>/day.json)を全部並べる
+def write_index(folder):
+  folder = Path(folder)
+  items = []
+  for path in sorted(folder.glob("*/day.json")):
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    kinds = {}
+    for sc in meta["events"]:
+      for part in sc.get("parts") or [sc]:
+        kinds[part["kind"]] = kinds.get(part["kind"], 0) + 1
+    note = "、".join(f"{k} {n}" for k, n in kinds.items())
+    items.append(f'<li><a href="{path.parent.name}/">{html.escape(meta["title"])}</a>'
+                 f'<div class="note">出てくる揺れ: {html.escape(note) or "なし"}</div></li>')
+  page = INDEX.replace("__ITEMS__", "\n".join(items))
+  (folder / "index.html").write_text(page, encoding="utf-8")
+  return folder / "index.html"
+
+INDEX = """<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ある有珠満点地震計の1日</title>
+<style>
+:root { color-scheme: light dark; --bg: #f6f7f9; --panel: #fff; --ink: #1c2126; --muted: #68727d; --line: #d5dae0; --accent: #1565c0; }
+@media (prefers-color-scheme: dark) { :root { --bg: #15181b; --panel: #1f2327; --ink: #e8eaed; --muted: #9aa3ad; --line: #3a4046; --accent: #64a8f0; } }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+main { max-width: 720px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 19px; margin: 0 0 8px; }
+.note { color: var(--muted); font-size: 13px; }
+ul { list-style: none; padding: 0; }
+li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin: 8px 0; }
+a { color: var(--accent); font-weight: 600; font-size: 16px; text-decoration: none; }
+</style>
+</head>
+<body>
+<main>
+<h1>ある有珠満点地震計の1日</h1>
+<p class="note">有珠山のまわりの満点地震計 4 か所に、1 日のあいだにどんな揺れが、どこから、どう届くのかを、時計を進めながら見るページです。揺れの無い時間は早送りになります。日を選んでください。</p>
+<ul>
+__ITEMS__
+</ul>
+</main>
+</body>
+</html>
+"""
+
+
 def main():
   parser = argparse.ArgumentParser(description="「ある有珠満点地震計の1日」のページを作る(試作)")
   parser.add_argument("day", help="日(例: 2026-07-08)")
@@ -1212,6 +1260,8 @@ def main():
   page = build(day, out, args.group_gap)
   size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
   print(f"書き出しました({size / 1e6:.1f} MB): {page}")
+  if not args.output:
+    print(f"日の一覧: {write_index(OUTPUT_DIR)}")
 
 if __name__ == "__main__":
   main()
