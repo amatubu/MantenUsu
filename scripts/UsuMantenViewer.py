@@ -477,6 +477,12 @@ warnings.filterwarnings(
 #     「視差効果を減らす」の設定(iPhone、Android の「アニメーションを削除」)では動かせないので、保留にした。
 #     部品は haptic_page.py の hapticPattern・hapticDisplacement(ほかのページはまだアプリの中だけ)。
 #     Android の実機では、まだ確かめていない
+#     App Store のアプリで鳴らせるようにした(2026-11-27): HapticSync(無料。音声・動画・AHAP から振動を作る)は、音声を読み込ませると
+#     目立つ揺れを拾った「トン」という振動の並びにし、強さを 0.6〜1 に縮めるので、P波と S波の差が消える。AHAP の強さの曲線(ParameterCurve)は読まずに捨てる。
+#     0.04 秒の連続した振動をすき間なく並べ、1 つずつの強さを曲線の区間の平均にした AHAP なら、そのまま読み込め、
+#     UsuMantenFeel とあまり変わらない振動になった(No.17 M1.2 の Mimatsu で確かめた)。haptic_export.py で地震・拠点ごとに書き出し、
+#     ファイルへのリンクと鳴らし方のページ(batch_plots/haptic/index.html)も書く。フォルダごとサーバに置き、iPhone でページを開いて
+#     ファイルを保存し、HapticSync で読み込んでもらう。HapticSync は 1 つずつ読み込んで保存し、切り替えて鳴らす
 #     やること: ② のアプリを iPhone に入れ、強さの段階が分かるか、P と S の違いが分かるかを確かめる(HAPTIC の gamma・sharpness を合わせる)
 #     ③ 音(TODO 44 の速めた音)と合わせるかを決める
 # [完了]59. 地下構造の想定を変えると、震源の位置がどう動くかを見るページを作る(3Dの図とは別のページ)
