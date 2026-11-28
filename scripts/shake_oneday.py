@@ -19,7 +19,7 @@
 #   書き出すもの(フォルダごとサーバーに置く。/usu/oneday/<日>/ の想定):
 #     <出力>/index.html … ページ
 #     <出力>/day.json … 揺れの一覧・震源・届く時刻、4 拠点の 1 日の揺れの強さ(10 秒ごと)
-#     <出力>/wave/<番号>.json … 揺れごとの 4 拠点の上下動(50 Hz、8 ビット)
+#     <出力>/wave/<番号>.json … 揺れごとの 4 拠点の上下動(速度)と水平動(変位、東西・南北)(50 Hz、花火は 125 Hz。8 ビット)
 #     <出力>/map_usu.jpg・map_japan.jpg … 地理院タイル(淡色地図)をつないだ地図
 #
 #     python3 scripts/shake_oneday.py 2026-07-08 [-o 出力のフォルダ]
@@ -58,7 +58,7 @@ PICKS_DIR = app_paths.PICKS_DIR    # 有珠山の震源リストの読み取り(
 SCENE_WALL = 45.0                  # 1 つの場面にかける時間の目安 [秒](長い揺れは、種類ごとの速さより速くしてこれに収める)
 USU_DEPTH = 1.5                    # 有珠山の地震の深さの仮の値 [km](4 拠点の P だけでは深さが決まらないため)
 MAP_ZOOM_USU, MAP_ZOOM_JAPAN = 13, 6
-MAP_MARGIN_KM = 2.5
+MAP_MARGIN_KM = 8.5                # 拠点・目印のまわりに広げる地図の幅。スマホの縦長の画面でも、地図の外の余白が出ないように
 # 揺れの種類ごと: フィルタ(帯域 Hz)、揺れの間の速さ、波形の見える幅 [秒]
 KINDS = {
   "有珠山の地震": {"band": (1.0, 20.0), "speed": 1, "span": 30},
@@ -262,6 +262,7 @@ def far_source(q, day, stations):
 # --- 花火: 20〜40 Hz(音で揺れる帯域。50 Hz に間引いた記録には無いので、元の 250 Hz の記録から作る) ---
 FIREWORKS_BAND = (20.0, 40.0)
 FIREWORKS_RATE = 125               # 花火の波形の間引き [Hz](250 Hz の 1/2。40 Hz まで描ける)
+FIREWORKS_AFTER = 60.0            # 最後の 1 発の音が届いたあとも、この秒数はゆっくり見せる(余韻)
 FIREWORKS_SHOW = 600.0             # 見せるのは最後の強い 1 発の前のこの秒数(はっきり見えるのは最後の 10 分ほど)
 FIREWORKS_PROGRAM = app_paths.BATCH_PLOTS_DIR / "fireworks" / "program_days.csv"   # 日ごとの最後の強い揺れ(fireworks_stack.py)
 
@@ -335,6 +336,53 @@ def event_waves(wf, stations, w0, w1, band):
     y = bandpass(wf[nm][a:b], band)[i0 - a:i0 - a + (i1 - i0)]
     ys[nm] = y
   return encode_waves(ys, w0, RATE)
+
+# 揺れの窓の 4 拠点の水平動の変位(東西・南北)。元の 250 Hz の記録を、場面の周波数で絞ってから積分する
+#   (積分で出る長い周期のずれは、もう一度、場面の周波数の下の端で除く)。地震計の N は真北に合わせてある前提
+#   戻り値 ... {拠点: (東西, 南北)} 変位 [nm]、最初の点が t0 秒、rate [Hz] で n 点
+def horizontal_disp(day, t0, n, rate, band, stations):
+  import warnings
+  from scipy import signal
+  import quake_wave_view as wv
+  steps = wv.count_steps(app_paths.ETC_DIR)
+  out = {nm: [np.full(n, np.nan), np.full(n, np.nan)] for nm in stations}
+  with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    st = wv.load_stream(day + timedelta(seconds=t0 - 20), day + timedelta(seconds=t0 + n / rate + 20))
+  for tr in st:
+    nm, comp = tr.stats.station, tr.stats.channel[-1:]
+    if nm not in out or comp not in "EN":
+      continue
+    fs = tr.stats.sampling_rate
+    x = np.ma.filled(np.ma.asarray(tr.data, dtype=float), np.nan) * steps.get((nm, comp), 1.0)
+    gap = np.isnan(x)
+    if gap.all():
+      continue
+    x = np.where(gap, 0.0, x - np.nanmean(x))
+    v = signal.sosfiltfilt(signal.butter(4, band, "bandpass", fs=fs, output="sos"), x)
+    d = signal.sosfiltfilt(signal.butter(2, band[0], "highpass", fs=fs, output="sos"), np.cumsum(v) / fs)
+    d[gap] = np.nan
+    off = (tr.stats.starttime.datetime - day).total_seconds()
+    j = np.round((t0 + np.arange(n) / rate - off) * fs).astype(int)
+    ok = (j >= 0) & (j < len(d))
+    out[nm]["EN".index(comp)][ok] = d[j[ok]]
+  return out
+
+# 水平動の変位を、拠点と成分の間で共通の物差しで 8 ビットにして waves に足す
+def add_horizontal(waves, day, n, band):
+  h = horizontal_disp(day, waves["t0"], n, waves["rate"], band, list(waves["st"]))
+  vals = np.concatenate([np.abs(c[np.isfinite(c)]) for e_n in h.values() for c in e_n])
+  if not vals.size:
+    return
+  scale = float(np.percentile(vals, 99.9)) or 1.0
+  waves["hscale"] = round(scale / 1000, 4)     # µm
+  for nm, (e, nn) in h.items():
+    if nm not in waves["st"] or not (np.isfinite(e).any() and np.isfinite(nn).any()):
+      continue
+    for key, c in (("e", e), ("n", nn)):
+      q = np.round(np.clip(np.nan_to_num(c / scale), -1, 1) * 127).astype(int)
+      q[~np.isfinite(c)] = -128
+      waves["st"][nm][key] = b64_int8(q)
 
 # 4 拠点の波形({拠点: 物理量の配列}、最初の点が t0 秒)を、拠点の間で共通の物差しで 8 ビットにする
 def encode_waves(ys, t0, rate):
@@ -514,7 +562,7 @@ def build(day, out, group_gap=GROUP_GAP):
     w1 = float(min(86400.0, np.ceil(ev["end"] + post)))
     sound = [s for s in srcs if s["type"] == "sound"]
     if sound:                                   # 花火は、はっきり見える最後の 10 分ほどだけ
-      w0, w1 = float(np.floor(sound[0]["show"][0])), float(np.ceil(sound[0]["show"][1] + 5))
+      w0, w1 = float(np.floor(sound[0]["show"][0])), float(np.ceil(sound[0]["show"][1] + FIREWORKS_AFTER))
     items.append({**ev, "color": sd.KIND_COLORS.get(ev["kind"], sd.INK), "w0": w0, "w1": w1,
                   "band": list(kind["band"]), "speed": kind["speed"], "span": kind["span"], "src": srcs,
                   "fw": fw if sound else None})
@@ -540,6 +588,9 @@ def build(day, out, group_gap=GROUP_GAP):
       waves = encode_waves({nm: y[max(i0, 0):i1] for nm, y in fw["ys"].items()}, fw["t0"] + max(i0, 0) / FIREWORKS_RATE, FIREWORKS_RATE)
     else:
       waves = event_waves(wf, stations, a, b, sc["band"])
+    n = len(base64.b64decode(next(iter(waves["st"].values()))["d"])) if waves["st"] else 0
+    if n:
+      add_horizontal(waves, day, n, FIREWORKS_BAND if fw else sc["band"])
     (out / "wave" / f"{sc['no']}.json").write_text(json.dumps(waves, separators=(",", ":")), encoding="utf-8")
     if len(sc["parts"]) > 1:
       print(f"  場面 {sc['no']}: {'・'.join(str(q['no']) for q in sc['parts'])} をまとめる")
@@ -554,7 +605,7 @@ def build(day, out, group_gap=GROUP_GAP):
     "center": {"lat": center[0], "lon": center[1]},
     "stations": [{"id": nm, "label": station_names.full(nm), "x": round(xy[nm][0], 3), "y": round(xy[nm][1], 3),
                   "env": day_envelope(bandpass_day(wf[nm]))} for nm in stations],
-    "envStep": ENV_STEP, "maps": maps, "marks": marks, "events": scenes, "groupGap": group_gap,
+    "built": datetime.now().strftime("%Y%m%d%H%M%S"), "envStep": ENV_STEP, "maps": maps, "marks": marks, "events": scenes, "groupGap": group_gap,
   }
   (out / "day.json").write_text(json.dumps(meta, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
   page = PAGE.replace("__TITLE__", html.escape(meta["title"]))
@@ -618,12 +669,27 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:
 #info a{color:var(--btnon)}
 #info .extra{margin-top:3px;padding:3px 8px;border-left:3px solid #f9a825;background:var(--extra)}
 #info .extra::before{content:"見どころ ";font-weight:700;color:#e68a00}
+#info .sumhead{font-weight:700;font-size:15px}
+#info .sum{margin:4px 0}
+#info .row{cursor:pointer;padding:2px 4px;border-radius:6px}
+#info .row:hover{background:var(--btn)}
+#snd.on{background:#fff3e0;border-color:#f9a825;color:#8a5a00}
+@media (prefers-color-scheme:dark){#snd.on{background:#3a3220;color:#ffcc66}}
 #stripBox{grid-area:strip;height:44px}
 #ctl{grid-area:ctl;display:flex;gap:6px;align-items:center;justify-content:center;flex-wrap:wrap}
-button,select{font:inherit;font-size:15px;border:1px solid var(--line);background:var(--btn);color:var(--fg);border-radius:8px;padding:6px 12px;min-height:38px}
+button,select{white-space:nowrap;font:inherit;font-size:15px;border:1px solid var(--line);background:var(--btn);color:var(--fg);border-radius:8px;padding:6px 12px;min-height:38px}
 button.main{background:var(--btnon);color:#fff;border-color:var(--btnon);min-width:5.5em;font-weight:700}
 select{padding:6px 6px}
 #links{font-size:11px;color:var(--sub);text-align:center;grid-area:ctl;align-self:end;display:none}
+/* 幅の狭いスマホ: ボタンが 1 行に収まるように詰める */
+@media (max-width:420px){
+  #ctl{gap:4px}
+  button,select{padding:6px 8px}
+  button.main{min-width:0}
+}
+@media (max-width:350px){
+  button,select{padding:5px 6px;font-size:13px}
+}
 /* スマホの横 */
 @media (orientation:landscape) and (max-height:560px){
   #app{grid-template-columns:52% 1fr;grid-template-rows:auto minmax(0,1fr) auto auto auto;
@@ -654,14 +720,16 @@ select{padding:6px 6px}
     <button id="prev" title="前の揺れ">⏮</button>
     <button id="play" class="main">▶ 再生</button>
     <button id="next" title="次の揺れ">⏭</button>
-    <select id="mult" title="速さ"><option value="0.5">ゆっくり</option><option value="1" selected>ふつう</option><option value="2">はやく</option></select>
+    <button id="snd" title="揺れが届いたときの音(押すと入・切)">🔇 音</button>
+    <select id="mult" title="速さ"><option value="0.5">ゆっくり</option><option value="1" selected>ふつう</option><option value="2">はやく</option><option value="only">揺れだけ</option></select>
   </div>
 </div>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
 const FAST = 1200;              // 揺れの無い時間の速さ(1 時間 ≒ 3 秒)
-const RAMP = 1.5;               // 速さを変える時間の目安 [秒](画面の上の時間)
+const FAST_ONLY = 4800;         // 「揺れだけ」のときの、揺れの無い時間の速さ(1 時間 ≒ 0.75 秒。揺れの所は「ふつう」)
+const BRAKE = 2.5;              // ×1200 から揺れの速さまで落とす(上げる)時間 [秒](画面の上の時間)
 const S = {t: 0, playing: false, mult: 1, last: null, waves: {}, img: {}, loaded: 0};
 let D = null;                   // day.json
 const dpr = () => window.devicePixelRatio || 1;
@@ -675,7 +743,7 @@ const label = id => D.stations.find(s => s.id === id).label;
 // --- データ ---
 function b64(s, T) { const b = Uint8Array.from(atob(s), c => c.charCodeAt(0)); return new T(b.buffer); }
 async function load() {
-  D = await (await fetch("day.json")).json();
+  D = await (await fetch("day.json", {cache: "no-cache"})).json();      // 作り直したら新しいほうを読む
   document.title = D.title;
   $("title").textContent = D.title;
   for (const st of D.stations) st.lev = b64(st.env, Uint8Array);
@@ -684,17 +752,34 @@ async function load() {
   for (const key of ["usu", "japan"]) {
     const m = D.maps[key];
     if (!m) continue;
-    const im = new Image(); im.onload = () => draw(); im.src = m.src; S.img[key] = im;
+    const im = new Image(); im.onload = () => draw(); im.src = `${m.src}?v=${D.built || ""}`; S.img[key] = im;
   }
   if (!D.maps.japan) $("jpBox").classList.add("hide");
   for (const ev of D.events) for (const s of ev.src) if (s.tt) s.tt.inv = true;
+  // 音を左右に振る(拠点の東西の位置)
+  const xs = D.stations.map(st => st.x), xm = (Math.min(...xs) + Math.max(...xs)) / 2, xh = (Math.max(...xs) - Math.min(...xs)) / 2 || 1;
+  for (const st of D.stations) st.pan = 0.8 * (st.x - xm) / xh;
+  // 拠点に波(花火は音)が届く時刻の一覧 [時刻, 拠点, "p" | "s" | "snd"]
+  D.hits = [];
+  for (const ev of D.events) for (const s of ev.src) {
+    if (s.arr) for (const st of D.stations) { const a = s.arr[st.id]; if (a) D.hits.push([a.p, st, "p"], [a.s, st, "s"]); }
+    if (s.type === "sound") for (const [tb, size] of s.bursts) {
+      D.hits.push([tb, {size, pan: Math.max(-1, Math.min(1, 0.8 * (s.x - xm) / xh))}, "boom"]);   // 打ち上げ場所で開く「ドン」
+      for (const st of D.stations) if (s.delay[st.id] != null) D.hits.push([tb + s.delay[st.id], st, "snd"]);
+    }
+  }
+  D.hits.sort((a, b) => a[0] - b[0]);
   resize();
   showInfo(true);
   // 揺れの波形は順に読む(はじめの揺れから)
   for (const ev of D.events) {
     try {
-      const w = await (await fetch(`wave/${ev.no}.json`)).json();
-      for (const k in w.st) w.st[k].v = b64(w.st[k].d, Int8Array);
+      const w = await (await fetch(`wave/${ev.no}.json?v=${D.built || ""}`)).json();
+      for (const k in w.st) {
+        const o = w.st[k];
+        o.v = b64(o.d, Int8Array); o.noise = noiseOf(o.v, w.rate);
+        if (o.e && o.n) { o.he = b64(o.e, Int8Array); o.hn = b64(o.n, Int8Array); }
+      }
       S.waves[ev.no] = w;
     } catch (e) { console.warn("波形を読めません", ev.no, e); }
     S.loaded++;
@@ -702,12 +787,14 @@ async function load() {
   }
 }
 
-// --- 時間の進め方: 揺れの窓から離れるほど速く(窓の中は種類ごとの速さ) ---
+// --- 時間の進め方: 揺れの窓から離れるほど速く(窓の中は種類ごとの速さ)。BRAKE 秒かけて速さを 1/1200 まで落とす ---
 function speedAt(t) {
-  let v = FAST;
+  const fast = S.fast || FAST;
+  let v = fast;
   for (const ev of D.events) {
     const d = t < ev.w0 ? ev.w0 - t : t > ev.w1 ? t - ev.w1 : 0;
-    v = Math.min(v, ev.speed * Math.exp(d / (RAMP * ev.speed)));
+    // 速さを窓までの距離に比例させると、画面の上の時間では速さが一定の割合で落ちる(なめらかなブレーキ)
+    v = Math.min(v, ev.speed + Math.log(fast / ev.speed) / BRAKE * d);
   }
   return v;
 }
@@ -728,17 +815,95 @@ function tick(now) {
   let t = S.t + v * dt;
   const nx = nextEvent(S.t);
   if (nx && t > nx.w0) t = nx.w0;         // 早送りで揺れを飛ばさない
+  const t0 = S.t;
   S.t = Math.min(t, 86400);
-  if (S.t >= 86400) setPlaying(false);
+  if (A.on) for (const h of D.hits) if (h[0] > t0 && h[0] <= S.t) tone(h[1], h[2]);
+  if (S.t >= 86400) { setPlaying(false); S.endAt = performance.now(); S.endPlayed = 0; endAnim(); }
   draw();
   requestAnimationFrame(tick);
 }
 function setPlaying(on) {
   S.playing = on;
-  $("play").textContent = on ? "⏸ 止める" : (S.t >= 86400 ? "↺ はじめから" : "▶ 再生");
-  if (on) { if (S.t >= 86400) S.t = 0; requestAnimationFrame(tick); }
+  $("play").textContent = on ? "⏸ 止める" : (S.t >= 86400 ? "↺ 最初へ" : "▶ 再生");
+  if (on) { if (S.t >= 86400) S.t = 0; S.endAt = null; S.endPlayed = 0; ensureAudio(); requestAnimationFrame(tick); }
 }
-function seek(t) { S.t = Math.max(0, Math.min(86400, t)); draw(); }
+function seek(t) { S.t = Math.max(0, Math.min(86400, t)); S.endAt = null; draw(); }
+
+// --- 音: P波・S波(花火は音)が拠点に届いた瞬間に、拠点ごとの高さの音を鳴らす ---
+const NOTES = [523.3, 659.3, 784.0, 880.0, 1046.5];   // ド・ミ・ソ・ラ・ド(拠点の順)
+const A = {on: false, ctx: null, last: {}};
+function ensureAudio() {
+  if (!A.on) return;
+  if (!A.ctx) { const C = window.AudioContext || window.webkitAudioContext; if (C) A.ctx = new C(); }
+  if (A.ctx && A.ctx.state === "suspended") A.ctx.resume();
+}
+function setSound(on) {
+  A.on = on;
+  $("snd").textContent = on ? "🔈 音" : "🔇 音";
+  $("snd").classList.toggle("on", on);
+  try { localStorage.setItem("oneday-sound", on ? "1" : "0"); } catch (e) {}
+}
+function tone(st, kind) {
+  const c = A.ctx;
+  if (!c || c.state !== "running") return;
+  if (kind === "boom") return boom(st.size, st.pan);
+  const now = c.currentTime, key = st.id + kind;
+  if (A.last[key] && now - A.last[key] < 0.08) return;     // 花火のように続くときは間引く
+  A.last[key] = now;
+  const j = D.stations.indexOf(st);
+  const f = NOTES[j % NOTES.length] * (kind === "s" ? 0.5 : kind === "snd" ? 2 : 1);   // S波は 1 オクターブ低く、花火は高く
+  const len = kind === "s" ? 0.9 : kind === "snd" ? 0.15 : 0.5, vol = kind === "s" ? 0.28 : kind === "snd" ? 0.05 : 0.22;
+  beep(f, len, vol, st.pan, kind === "s" ? "triangle" : "sine");
+}
+// 花火が開く「ドン」: 低い音が下がりながら消える音と、こもった雑音。大きい花火ほど大きく
+function boom(size, pan) {
+  const c = A.ctx, now = c.currentTime, vol = Math.min(0.6, 0.18 + size / 80);
+  const o = c.createOscillator(), go = c.createGain();
+  o.type = "sine"; o.frequency.setValueAtTime(95, now); o.frequency.exponentialRampToValueAtTime(38, now + 0.45);
+  go.gain.setValueAtTime(0.0001, now); go.gain.exponentialRampToValueAtTime(vol, now + 0.01); go.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
+  const nb = c.createBuffer(1, Math.round(c.sampleRate * 0.5), c.sampleRate), d = nb.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (c.sampleRate * 0.08));
+  const ns = c.createBufferSource(), lp = c.createBiquadFilter(), gn = c.createGain();
+  ns.buffer = nb; lp.type = "lowpass"; lp.frequency.value = 300; gn.gain.value = vol * 0.8;
+  let out = c.destination;
+  if (c.createStereoPanner) { const pn = c.createStereoPanner(); pn.pan.value = pan; pn.connect(c.destination); out = pn; }
+  o.connect(go); go.connect(out); ns.connect(lp); lp.connect(gn); gn.connect(out);
+  o.start(now); o.stop(now + 0.85); ns.start(now);
+}
+function beep(f, len, vol, pan, type) {
+  const c = A.ctx, now = c.currentTime;
+  const o = c.createOscillator(), gn = c.createGain();
+  o.type = type; o.frequency.value = f;
+  gn.gain.setValueAtTime(0.0001, now);
+  gn.gain.exponentialRampToValueAtTime(vol, now + 0.008);
+  gn.gain.exponentialRampToValueAtTime(0.0001, now + len);
+  o.connect(gn);
+  if (c.createStereoPanner) { const pn = c.createStereoPanner(); pn.pan.value = pan; gn.connect(pn); pn.connect(c.destination); }
+  else gn.connect(c.destination);
+  o.start(now); o.stop(now + len + 0.05);
+}
+
+// --- 1 日の終わり: 震源の印を、起きた順に 1 つずつ光らせる ---
+const POP_STEP = 0.6, POP_LEN = 1.2;   // [秒]
+const endEl = () => S.endAt ? (performance.now() - S.endAt) / 1000 : Infinity;
+const isEnd = t => !current(t) && !nextEvent(t) && D.events.length && t > D.events[D.events.length - 1].w1 + 4;
+function popOf(ev) {
+  if (!S.endAt) return 0;
+  const d = (performance.now() - S.endAt) / 1000 - D.events.indexOf(ev) * POP_STEP;
+  return d >= 0 && d < POP_LEN ? 1 - d / POP_LEN : 0;
+}
+function endAnim() {
+  if (!S.endAt || S.playing) return;
+  // 印が光るのに合わせて、音を 1 つずつ高くしていく(🔈 のとき)
+  const el = endEl(), SCALE = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26, 28, 31];
+  while ((S.endPlayed || 0) < D.events.length && el >= (S.endPlayed || 0) * POP_STEP) {
+    const i = S.endPlayed || 0;
+    if (A.on && A.ctx && A.ctx.state === "running") beep(392 * 2 ** (SCALE[i % SCALE.length] / 12), 0.6, 0.18, 0, "triangle");
+    S.endPlayed = i + 1;
+  }
+  draw();
+  if ((performance.now() - S.endAt) / 1000 < D.events.length * POP_STEP + POP_LEN) requestAnimationFrame(endAnim);
+}
 
 // --- 画面の大きさ ---
 function fit(c) {
@@ -749,7 +914,31 @@ function fit(c) {
 }
 function resize() { for (const id of ["map", "jp", "wave", "strip"]) fit($(id)); draw(); }
 window.addEventListener("resize", resize);
-if (window.ResizeObserver) new ResizeObserver(() => resize()).observe($("app"));
+if (window.ResizeObserver) { const ro = new ResizeObserver(() => resize()); for (const id of ["app", "mapBox", "waveBox"]) ro.observe($(id)); }
+
+// 説明の欄を書き換える。スマホ(説明の高さが中身で決まる画面)では、高さを「にゅー」っと変えて、
+// 上の地図と波形の広さがなめらかに変わるようにする
+const infoAuto = () => !matchMedia("(min-width:900px) and (min-height:600px)").matches;
+function setInfo(html) {
+  const el = $("info");
+  cancelAnimationFrame(setInfo.raf);
+  if (!infoAuto()) { el.style.height = ""; el.style.overflow = ""; el.innerHTML = html; return; }
+  const h0 = el.getBoundingClientRect().height;
+  el.style.height = ""; el.innerHTML = html;
+  const h1 = el.getBoundingClientRect().height;        // 新しい中身の高さ(max-height まで)
+  if (!h0 || Math.abs(h1 - h0) < 2) return;
+  const t0 = performance.now(), DUR = 700;
+  el.style.overflow = "hidden";
+  const step = now => {
+    const k = Math.min(1, (now - t0) / DUR), e = 1 - (1 - k) ** 3;      // はじめ速く、終わりはゆっくり
+    el.style.height = (h0 + (h1 - h0) * e) + "px";
+    resize();
+    if (k < 1) setInfo.raf = requestAnimationFrame(step);
+    else { el.style.height = ""; el.style.overflow = ""; resize(); }
+  };
+  el.style.height = h0 + "px";
+  setInfo.raf = requestAnimationFrame(step);
+}
 
 // --- 描く ---
 let lastInfo = null;
@@ -765,17 +954,38 @@ function draw() {
   showInfo(false);
 }
 
-// 揺れの強さ(0〜1): 揺れの窓では波形の最近 0.3 秒の最大、それ以外は 1 日の揺れの強さ
-function amp(st, t) {
+// 場面の波形の、ふだんの揺れの大きさ(1 秒ごとの RMS の小さいほうから 20% の所。揺れの前後の静かな所)
+function noiseOf(x, rate) {
+  const n = Math.round(rate), r = [];
+  for (let i0 = 0; i0 + n <= x.length; i0 += n) {
+    let q = 0, c = 0;
+    for (let i = i0; i < i0 + n; i++) if (x[i] !== -128) { q += x[i] * x[i]; c++; }
+    if (c > n / 2) r.push(Math.sqrt(q / c));
+  }
+  r.sort((a, b) => a - b);
+  return Math.max(0.5, r.length ? r[Math.floor(r.length * 0.2)] : 1);
+}
+// 揺れの強さ(0〜1。印の大きさ)と、印を動かす向き(水平動の変位)。
+//   強さは上下動(速度)が、ふだんの揺れより何 dB 大きいかで決める(ふだんの揺れでは、ほとんど大きくならない)
+//   揺れの窓: 波形の最近 0.3 秒の最大 ÷ ふだんの RMS。12 dB(ふだんの揺れの山くらい)で 0、40 dB で 1
+//   それ以外(早送りの間): 1 日の揺れの強さ(10 秒の RMS、その日の中央値からの dB)。10 dB で 0、40 dB で ENV_MAX。
+//     昼間は列車や人の活動で 4 拠点のどこかが 10〜20 dB 上がっていることが多く、地震と見分けられないので、小さく抑える
+const AMP_DB = [12, 40], ENV_DB = [10, 40], ENV_MAX = 0.3;
+const HMOVE = 16, TRAIL = 1.5;     // 水平動のいちばん大きい所で印が動く幅 [px]、軌跡を残す時間 [秒]
+const ramp = (db, [a, b]) => Math.max(0, Math.min(1, (db - a) / (b - a)));
+function shake(st, t) {
   const ev = current(t), w = ev && S.waves[ev.no];
   if (w && w.st[st.id]) {
-    const x = w.st[st.id].v, i1 = Math.floor((t - w.t0) * w.rate), i0 = Math.max(0, i1 - Math.round(0.3 * w.rate));
+    const o = w.st[st.id], x = o.v, i1 = Math.floor((t - w.t0) * w.rate), i0 = Math.max(0, i1 - Math.round(0.3 * w.rate));
     let m = 0;
     for (let i = i0; i <= Math.min(i1, x.length - 1); i++) if (x[i] !== -128) m = Math.max(m, Math.abs(x[i]));
-    return Math.min(1, m / 127 * 1.3);
+    const a = m ? ramp(20 * Math.log10(m / o.noise), AMP_DB) : 0;
+    // 水平の動き: 水平動の変位(東西・南北)。4 拠点で共通の物差しなので、揺れの小さい拠点はあまり動かない
+    const he = o.he, hn = o.hn, ok = he && i1 >= 0 && i1 < he.length && he[i1] !== -128 && hn[i1] !== -128;
+    return {a, dx: ok ? he[i1] / 127 : 0, dy: ok ? hn[i1] / 127 : 0, w, o, i1};
   }
   const lv = st.lev[Math.floor(t / D.envStep)] || 0;
-  return lv ? Math.max(0, Math.min(1, (lv - 44) / 60)) : 0;
+  return {a: lv ? ENV_MAX * ramp((lv - 40) / 2, ENV_DB) : 0, dx: 0, dy: 0};
 }
 // 震央距離 [km] → 届くまでの秒(表)の逆: 秒 → km
 function ttInv(tab, key, sec) {
@@ -828,6 +1038,7 @@ function drawMap() {
     if (!D.events.some(ev => ev.w0 <= t && ev.parts.some(kindOf))) continue;
     const on = evs.some(ev => ev.parts.some(kindOf));
     const q = P(mk[key].x, mk[key].y);
+    for (const ev of D.events) if (ev.parts.some(kindOf)) { const pp = popOf(ev); if (pp) popRings(g, q, pp, ev.color); }
     g.globalAlpha = on ? 1 : 0.45;
     g.fillStyle = key === "quarry" ? "#d84e00" : "#c2185b";
     if (key === "fireworks" && mk.fireworks.area) {
@@ -845,8 +1056,9 @@ function drawMap() {
   for (const ev of D.events) {
     if (ev.w1 + 4 >= t) continue;
     for (const s of ev.src) if (s.type === "local") {
-      const e = P(s.x, s.y);
-      g.globalAlpha = 0.6; cross(g, e[0], e[1], 4, ev.color);
+      const e = P(s.x, s.y), pp = popOf(ev);
+      if (pp) popRings(g, e, pp, ev.color);
+      g.globalAlpha = S.endAt ? 0.9 : 0.6; cross(g, e[0], e[1], 4 + 6 * pp, ev.color);
       text(g, circled(ev.no), e[0] + 6, e[1] - 4, fs - 1, ev.color, "left", true); g.globalAlpha = 1;
     }
   }
@@ -910,26 +1122,98 @@ function drawMap() {
     }
   }
   // 拠点
+  // 拠点: 今の波形に合わせて震え、P波・S波(花火は音)が届いた瞬間に光る
   for (const st of D.stations) {
-    const p = P(st.x, st.y), a = amp(st, t);
+    const sh = shake(st, t), a = sh.a;
+    const p0 = P(st.x, st.y), p = [p0[0] + sh.dx * HMOVE, p0[1] - sh.dy * HMOVE];
+    // 水平動の軌跡(最近 TRAIL 秒): 地面が東西・南北にどう動いたか
+    if (sh.o && sh.o.he) {
+      const he = sh.o.he, hn = sh.o.hn, n = Math.round(TRAIL * sh.w.rate), i0 = Math.max(0, sh.i1 - n);
+      g.strokeStyle = "#333"; g.lineWidth = 1.3; g.lineJoin = "round";
+      let prev = null;
+      for (let i = i0; i <= Math.min(sh.i1, he.length - 1); i++) {
+        if (he[i] === -128 || hn[i] === -128) { prev = null; continue; }
+        const q = [p0[0] + he[i] / 127 * HMOVE, p0[1] - hn[i] / 127 * HMOVE];
+        if (prev) { g.globalAlpha = 0.15 + 0.6 * (i - i0) / n; g.beginPath(); g.moveTo(prev[0], prev[1]); g.lineTo(q[0], q[1]); g.stroke(); }
+        prev = q;
+      }
+      g.globalAlpha = 1;
+      g.fillStyle = "#333"; g.beginPath(); g.arc(p0[0], p0[1], 1.5, 0, 7); g.fill();     // 拠点の本当の位置
+    }
     const flash = [];
-    for (const ev of evs) for (const s of ev.src) {
-      if (!s.arr || !s.arr[st.id]) continue;
-      for (const [key, col] of [["p", css("--p")], ["s", css("--s")]]) {
-        const d = t - s.arr[st.id][key];
-        if (d >= 0 && d < 1.5) flash.push([d, col]);
+    for (const ev of evs) {
+      const dur = 1.2 * ev.speed * S.mult;       // 画面の上で 1.2 秒ほど光る
+      for (const s of ev.src) {
+        if (s.arr && s.arr[st.id]) for (const [key, col] of [["p", css("--p")], ["s", css("--s")]]) {
+          const d = (t - s.arr[st.id][key]) / dur;
+          if (d >= 0 && d < 1) flash.push([d, col, key === "p" ? "P" : "S"]);
+        }
+        if (s.type === "sound" && s.delay[st.id] != null) for (const [tb] of s.bursts) {
+          const d = (t - tb - s.delay[st.id]) / dur;
+          if (d >= 0 && d < 1) flash.push([d, css("--snd"), ""]);
+        }
       }
     }
-    for (const [d, col] of flash) {
-      g.strokeStyle = col; g.lineWidth = 3; g.globalAlpha = 1 - d / 1.5;
-      g.beginPath(); g.arc(p[0], p[1], 8 + d * 18, 0, 7); g.stroke(); g.globalAlpha = 1;
+    for (const [d, col, lab] of flash) {
+      const e = 1 - d;
+      g.fillStyle = col; g.strokeStyle = col;
+      g.globalAlpha = 0.3 * e * e; g.beginPath(); g.arc(p[0], p[1], 10 + 16 * d, 0, 7); g.fill();
+      g.globalAlpha = e; g.lineWidth = 0.5 + 3.5 * e;
+      g.beginPath(); g.arc(p[0], p[1], 8 + 28 * d, 0, 7); g.stroke();
+      g.beginPath(); g.arc(p[0], p[1], 8 + 14 * d, 0, 7); g.stroke();
+      if (lab) text(g, lab, p[0] + 13, p[1] - 12 - 14 * d, fs + 3, col, "left", true);
+      g.globalAlpha = 1;
     }
     const r = 5 + 11 * a;
     g.fillStyle = `hsl(${40 - 40 * a},100%,${55 - 10 * a}%)`; g.strokeStyle = "#333"; g.lineWidth = 1.2;
     g.beginPath(); g.arc(p[0], p[1], r, 0, 7); g.fill(); g.stroke();
-    text(g, st.label, p[0], p[1] + r + fs + 1, fs, "#111", "center", true);
+    // 名前は拠点の本当の位置に止めておく(動くのは丸だけ。丸がいちばん大きくなっても重ならない高さ)
+    text(g, st.label, p0[0], p0[1] + 16 + fs + 1, fs, "#111", "center", true);
+    // 震源の無い揺れ(地震ではない揺れなど)は、1 日の終わりに拠点を光らせる
+    for (const ev of D.events) if (!ev.src.length) { const pp = popOf(ev); if (pp) popRings(g, p0, pp, ev.color); }
   }
+  if (isEnd(t) && !phonePortrait()) drawCard(g, W, H, fs);
   g.restore();
+}
+// 光る輪(1 日の終わりのふり返り): P波・S波のように 2 重に広がる
+function popRings(g, e, pp, col) {
+  const d = 1 - pp;
+  for (const [k, c] of [[1, css("--p")], [0.6, css("--s")]]) {
+    g.strokeStyle = c; g.lineWidth = 1 + 3 * pp; g.globalAlpha = pp;
+    g.beginPath(); g.arc(e[0], e[1], 6 + 70 * d * k, 0, 7); g.stroke();
+  }
+  g.fillStyle = col; g.globalAlpha = 0.35 * pp; g.beginPath(); g.arc(e[0], e[1], 8 + 14 * d, 0, 7); g.fill();
+  g.globalAlpha = 1;
+}
+// 1 日のまとめの札(地図の下の真ん中): 揺れの数(光った分だけ数える)と、種類ごとの数
+function drawCard(g, W, H, fs, inWave) {
+  const el = endEl(), list = [];
+  D.events.forEach((sc, i) => { if (el >= i * POP_STEP) for (const p of sc.parts) list.push(p); });
+  const kinds = new Map();
+  for (const p of list) { const k = kinds.get(p.kind) || {n: 0, color: p.color}; k.n++; kinds.set(p.kind, k); }
+  // 種類ごとの数は、入りきらなければ次の行へ
+  // 地図が低い(スマホの縦)ときは、拠点を隠さないように左上に小さく
+  const small = !inWave && H < 320, bw = small ? Math.min(W * 0.6, 260) : Math.min(W - 20, 320), chips = [];
+  g.font = `600 ${fs - 1}px -apple-system,"Hiragino Sans",sans-serif`;
+  let cx = 14, row = 0;
+  for (const [k, v] of kinds) {
+    const label = `${k} ${v.n}`, w = g.measureText(label).width + 16;
+    if (cx + w > bw - 6 && cx > 14) { cx = 14; row++; }
+    chips.push({label, color: v.color, x: cx, row}); cx += w;
+  }
+  const bh = 74 + row * (fs + 6), x0 = small ? 6 : (W - bw) / 2, y0 = small ? 6 : inWave ? Math.max(4, (H - bh) / 2) : H - bh - 22;
+  g.globalAlpha = 0.92; g.fillStyle = css("--panel"); g.strokeStyle = css("--line"); g.lineWidth = 1;
+  g.beginPath(); g.roundRect ? g.roundRect(x0, y0, bw, bh, 10) : g.rect(x0, y0, bw, bh); g.fill(); g.stroke(); g.globalAlpha = 1;
+  const pop = list.length && el < D.events.length * POP_STEP + 0.3 ? 1 + 0.25 * Math.max(0, 1 - (el % POP_STEP) / 0.25) : 1;
+  text(g, "この日の揺れ", x0 + 14, y0 + 30, fs + 1, css("--fg"), "left");
+  g.font = `800 ${Math.round(32 * pop)}px -apple-system,"Hiragino Sans",sans-serif`; g.fillStyle = css("--btnon"); g.textAlign = "right";
+  g.fillText(String(list.length), x0 + bw - 46, y0 + 36);
+  text(g, "件", x0 + bw - 40, y0 + 34, fs + 1, css("--fg"), "left");
+  for (const c of chips) {
+    const x = x0 + c.x, y = y0 + 56 + c.row * (fs + 6);
+    g.fillStyle = c.color; g.beginPath(); g.arc(x + 4, y, 4, 0, 7); g.fill();
+    text(g, c.label, x + 11, y + 4, fs - 1, c.color, "left");
+  }
 }
 function text(g, s, x, y, size, col, align, box) {
   g.font = `600 ${size}px -apple-system,"Hiragino Sans",sans-serif`;
@@ -971,8 +1255,9 @@ function drawJapan() {
     if (s.type !== "far" || t < ev.w0) continue;       // まだ起きていない地震は出さない
     const on = evs.includes(ev);
     const p = P(s.lat, s.lon);
-    g.globalAlpha = on ? 1 : 0.55;
-    cross(g, p[0], p[1], on ? 6 : 4, ev.color);
+    const pp = popOf(ev);
+    g.globalAlpha = on || S.endAt ? 1 : 0.55;
+    cross(g, p[0], p[1], (on ? 6 : 4) + 6 * pp, ev.color);
     if (!on) text(g, circled(ev.no), p[0] + 6, p[1] - 4, fs - 1, ev.color, "left", true);
     g.globalAlpha = 1;
     if (!on) continue;
@@ -993,6 +1278,21 @@ function drawJapan() {
     text(g, lab, Math.max(hw, Math.min(W - hw, p[0])), Math.max(fs + 2, Math.min(H - 14, p[1] + 16)), fs, ev.color, "center", true);
   }
   const u = P(D.center.lat, D.center.lon);
+  // 1 日の終わり: 遠くの地震の震源から有珠山へ、線をのばす
+  if (isEnd(t)) {
+    const el = endEl();
+    D.events.forEach((ev, i) => {
+      for (const s of ev.src) if (s.type === "far") {
+        const f = Math.max(0, Math.min(1, (el - i * POP_STEP) / 0.6)), p = P(s.lat, s.lon);
+        if (!f) continue;
+        g.strokeStyle = ev.color; g.lineWidth = 2; g.globalAlpha = 0.75; g.setLineDash([6, 4]);
+        g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(p[0] + (u[0] - p[0]) * f, p[1] + (u[1] - p[1]) * f); g.stroke();
+        g.setLineDash([]); g.globalAlpha = 1;
+        const pp = popOf(ev);
+        if (pp) { g.strokeStyle = ev.color; g.lineWidth = 3; g.globalAlpha = pp; g.beginPath(); g.arc(p[0], p[1], 6 + 30 * (1 - pp), 0, 7); g.stroke(); g.globalAlpha = 1; }
+      }
+    });
+  }
   g.fillStyle = "#ffb300"; g.strokeStyle = "#333"; g.lineWidth = 1;
   g.beginPath(); g.arc(u[0], u[1], 4.5, 0, 7); g.fill(); g.stroke();
   text(g, "有珠山", u[0] - 7, u[1] + 3, fs, "#333", "right", true);
@@ -1033,7 +1333,7 @@ function drawWave() {
   const L = Math.ceil(Math.max(...D.stations.map(s => g.measureText(s.label).width))) + 12;
   const pw = W - L - Rm, X = tt => L + (tt - (t - span / 2)) / span * pw, mx = L + pw / 2;
   const fine = z > 0.5 && w;
-  text(g, fine ? `${ev.band[0]}〜${ev.band[1]} Hz の上下動(4 拠点で同じ倍率)` : "前後 30 分の揺れの強さ(10 秒ごと)", L, H - 4, 10, css("--sub"), "left");
+  text(g, fine ? `${ev.band[0]}〜${ev.band[1]} Hz の上下動(4 拠点で同じ倍率)` : "前後 30 分の揺れの強さ(上下動・10 秒ごと)", L, H - 4, 10, css("--sub"), "left");
   const sw = span >= 600 ? `${Math.round(span / 60)} 分` : `${Math.round(span)} 秒`;
   text(g, `幅 ${sw}`, W - Rm, H - 4, 10, css("--sub"), "right");
   D.stations.forEach((st, j) => {
@@ -1042,7 +1342,7 @@ function drawWave() {
     g.beginPath(); g.moveTo(L, y0 + rh); g.lineTo(W - Rm, y0 + rh); g.stroke();
     text(g, st.label, L - 6, mid + 4, fs, css("--fg"), "right");
     g.save(); g.beginPath(); g.rect(L, y0, pw, rh); g.clip();
-    // ざっくり: 揺れの強さ(拡大するにつれて薄くする)
+    // ざっくり: 揺れの強さ(10 秒ごとの上下動の RMS)を、0 を真ん中にして上下に同じだけ広げる(拡大するにつれて薄くする)
     if (z < 1) {
       const lev = st.lev, step = D.envStep;
       g.globalAlpha = 1 - z;
@@ -1053,7 +1353,7 @@ function drawWave() {
         const e = tt <= t ? partAt(tt, step) : null;     // これから来る揺れには色を付けない
         g.fillStyle = e ? e.color : css("--wave");
         g.globalAlpha = (1 - z) * (e ? 0.95 : 0.55);
-        g.fillRect(X(tt), mid + rh * 0.47 - hgt, Math.max(1, X(tt + step) - X(tt)), hgt);
+        g.fillRect(X(tt), mid - hgt / 2, Math.max(1, X(tt + step) - X(tt)), hgt);
       }
       g.globalAlpha = 1;
     }
@@ -1092,14 +1392,22 @@ function drawWave() {
   g.strokeStyle = css("--now"); g.lineWidth = 2;
   g.beginPath(); g.moveTo(mx, top + 12); g.lineTo(mx, H - bot); g.stroke();
   text(g, "今", mx, top + 10, 11, css("--now"), "center", true);
+  // スマホの縦: 1 日のまとめの札は、地図にかぶらないように波形の所に出す
+  if (isEnd(t) && phonePortrait()) {
+    g.globalAlpha = 0.6; g.fillStyle = css("--panel"); g.fillRect(0, 0, W, H); g.globalAlpha = 1;
+    drawCard(g, W, H, 13, true);
+  }
 }
+// スマホの縦の画面(広い画面でも、スマホの横でもない)
+const phonePortrait = () => !matchMedia("(min-width:900px) and (min-height:600px)").matches
+  && !matchMedia("(orientation:landscape) and (max-height:560px)").matches;
 // tt〜tt+step にかかる揺れ(場面の中の 1 つ)
 function partAt(tt, step) {
   for (const sc of D.events) for (const p of sc.parts) if (tt + step >= p.start && tt <= p.end) return p;
   return null;
 }
 
-// 1 日の帯(0〜24 時): 4 拠点のうち大きいほうの揺れの強さ、揺れの印、今の時刻
+// 1 日の帯(0〜24 時): 4 拠点のうち大きいほうの揺れの強さ(上下動)、揺れの印、今の時刻
 function drawStrip() {
   const c = $("strip"), [W, H] = fit(c), g = c.getContext("2d"), k = dpr();
   g.setTransform(k, 0, 0, k, 0, 0);
@@ -1112,11 +1420,12 @@ function drawStrip() {
     for (let q = Math.floor(i * per); q < Math.floor((i + 1) * per); q++) m = Math.max(m, env[q]);
     if (!m) continue;
     const h = Math.max(1, Math.min(1, (m - 30) / 120) * (base - 2));
-    g.fillRect(L + i, base - h, 1, h);
+    g.fillRect(L + i, (2 + base - h) / 2, 1, h);         // 真ん中から上下に同じだけ
   }
   g.globalAlpha = 1;
   for (const sc of D.events) for (const ev of sc.parts) {
-    const a = X(ev.start), b = Math.max(a + 3, X(ev.end));
+    const a = X(ev.start), b = Math.max(a + 3, X(ev.end)), pp = popOf(sc);
+    if (pp) { g.fillStyle = ev.color; g.globalAlpha = 0.35 * pp; g.fillRect(a - 8 * pp, 0, b - a + 16 * pp, base + 2); g.globalAlpha = 1; }
     g.fillStyle = ev.color; g.fillRect(a, 2, b - a, base - 2);
   }
   for (let h = 0; h <= 24; h += 3) {
@@ -1172,14 +1481,40 @@ function showInfo(force) {
       <span class="kind" style="color:${p.color}">${esc(p.kind)}</span><span class="src">${hms(p.start)}〜${hms(p.end)}・${esc(p.vis)}</span></div>
       <div class="what">${esc(p.text)}</div><div>${esc(p.note)}</div>${p.extra ? `<div class="extra">${esc(p.extra)}</div>` : ""}`).join("");
     const together = cur.parts.length > 1 ? `<div class="src">続けて起きた ${cur.parts.length} つの揺れを、まとめて見せています</div>` : "";
-    $("info").innerHTML = `${parts}${together}<div class="src">${srcText(cur)}</div>
-      <div class="src"><a href="${D.dayLink}#${encodeURIComponent(lab)}/z/${Math.round(cur.start)}" target="_blank">この揺れを拡大して聴く ›</a></div>${loading}`;
+    setInfo(`${parts}${together}<div class="src">${srcText(cur)}</div>
+      <div class="src"><a href="${D.dayLink}#${encodeURIComponent(lab)}/z/${Math.round(cur.start)}" target="_blank">この揺れを拡大して聴く ›</a></div>${loading}`);
   } else if (nx) {
     // つぎの揺れは番号と時刻だけ(何の揺れかは、届いてからのお楽しみ)
-    $("info").innerHTML = `<div class="head"><span class="src">つぎの揺れ</span><span class="no" style="background:#777">${nx.no}</span>
-      <span class="src">${hm(nx.start)} ごろ。どこで起きた、何の揺れかな?</span></div>${t === 0 ? `<div class="src">▶ を押すと 0 時から時計が進みます。揺れの無い時間は早送り(1 時間 ≒ 3 秒)、揺れが来る所でゆっくりになります。⏭ で次の揺れへ、下の帯をなぞると好きな時刻へ。</div>` : ""}${loading}`;
+    setInfo(`<div class="head"><span class="src">つぎの揺れ</span><span class="no" style="background:#777">${nx.no}</span>
+      <span class="src">${hm(nx.start)} ごろ。どこで起きた、何の揺れかな?</span></div>${t === 0 ? `<div class="src">▶ を押すと 0 時から時計が進みます。揺れの無い時間は早送り(1 時間 ≒ 3 秒)、揺れが来る所でゆっくりになります。⏭ で次の揺れへ、下の帯をなぞると好きな時刻へ。</div>` : ""}${loading}`);
   } else {
-    $("info").innerHTML = `<div>この日の揺れは ${D.events.length} 件でした。下の帯の色の所をなぞると、もう一度見られます。</div>${loading}`;
+    // 1 日のまとめ: 揺れの数と種類、いちばん遠い・大きい地震、揺れの一覧(押すとその揺れへ)
+    const kinds = {}, rows = [];
+    let far = null, big = null;
+    for (const sc of D.events) sc.parts.forEach((p, i) => {
+      kinds[p.kind] = (kinds[p.kind] || 0) + 1;
+      const s = sc.src.length === sc.parts.length ? sc.src[i] : sc.src[0];
+      let where = "";
+      if (s && s.type === "far") {
+        where = `${s.place} M${s.m.toFixed(1)}・${s.km} km`;
+        if (!far || s.km > far.s.km) far = {p, s};
+        if (!big || s.m > big.s.m) big = {p, s};
+      } else if (s && s.type === "local") where = p.kind === "発破" ? D.marks.quarry.name : `有珠山の山頂から ${dirText(s)}`;
+      else if (s && s.type === "sound") where = D.marks.fireworks.name;
+      rows.push(`<div class="row" data-t="${sc.w0}"><span class="no" style="background:${p.color}">${p.no}</span>
+        <span class="src">${hm(p.start)}</span> <b style="color:${p.color}">${esc(p.kind)}</b> <span class="src">${esc(where)}</span></div>`);
+    });
+    const n = Object.values(kinds).reduce((a, b) => a + b, 0);
+    const tops = [];
+    if (far && big && far.p === big.p) tops.push(`いちばん遠く、いちばん大きいのは ${circled(far.p.no)} ${far.s.place} M${far.s.m.toFixed(1)}(${far.s.km} km)`);
+    else {
+      if (far) tops.push(`いちばん遠いのは ${circled(far.p.no)} ${far.s.place}(${far.s.km} km)`);
+      if (big) tops.push(`いちばん大きいのは ${circled(big.p.no)} ${big.s.place} M${big.s.m.toFixed(1)}`);
+    }
+    setInfo(`<div class="sumhead">この日の揺れは ${n} 件</div>
+      <div class="src">${esc(Object.entries(kinds).map(([k, v]) => `${k} ${v}`).join("、"))}</div>
+      ${tops.length ? `<div>${tops.join("。")}。</div>` : ""}<div class="sum">${rows.join("")}</div>
+      <div class="src">行を押すと、その揺れをもう一度見られます。</div>${loading}`);
   }
 }
 
@@ -1187,7 +1522,16 @@ function showInfo(force) {
 $("play").addEventListener("click", () => setPlaying(!S.playing));
 $("next").addEventListener("click", () => { const ev = nextEvent(S.t); if (ev) { seek(ev.w0); if (!S.playing) setPlaying(true); } else seek(86400); });
 $("prev").addEventListener("click", () => { const ev = prevEvent(S.t); seek(ev ? ev.w0 : 0); });
-$("mult").addEventListener("change", e => { S.mult = +e.target.value; draw(); });
+$("snd").addEventListener("click", () => { setSound(!A.on); ensureAudio(); });
+$("info").addEventListener("click", e => { const r = e.target.closest(".row"); if (r) { seek(+r.dataset.t); setPlaying(true); } });
+try { setSound(localStorage.getItem("oneday-sound") === "1"); } catch (e) { setSound(false); }
+// 速さ: ゆっくり・ふつう・はやく は全体の倍率。「揺れだけ」は、揺れの所はふつうで、揺れの無い時間を ×4800 で飛ばす
+$("mult").addEventListener("change", e => {
+  const v = e.target.value;
+  S.mult = v === "only" ? 1 : +v;
+  S.fast = v === "only" ? FAST_ONLY : FAST;
+  draw();
+});
 document.addEventListener("keydown", e => {
   if (e.key === " ") { e.preventDefault(); setPlaying(!S.playing); }
   else if (e.key === "ArrowRight") $("next").click();
